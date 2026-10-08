@@ -23,6 +23,7 @@ local M = {}
 local defaults = {
     -- Focus the window under the pointer as it moves.
     focusFollowsMouse = true,
+    reassertFocus = true, -- undo macOS moving focus right after we set it
 
     -- Seconds to wait on an unresponsive app's accessibility API before
     -- giving up on a call.
@@ -87,13 +88,27 @@ end
 
 cfg = deepMerge(defaults, {})
 
+-- Our own record of focus, kept in step with the BSP tree. macOS's idea of
+-- the focused window lags our actions and can be moved by the system (e.g. on
+-- close), so actions read this; macOS is only asked to *do* things.
+local bspFocusHistory = {} -- most recent first
+local bspFocusTimes = {}   -- window id -> when it last gained focus
+local bspWinByID = {}      -- window id -> hs.window, for every tiled window
+
+-- macOS's view of focus (an accessibility query). Use currentWindow() for
+-- actions; this is for checking what macOS actually did.
 local function focusedWindow()
     return hs.window.focusedWindow()
 end
 
+-- Assigned in the tree section: the tile rectangle of a tiled window, or nil.
+local bspRectFor
+
 local function warpToWindow(win)
     if not win then return end
-    local f = win:frame()
+    -- Tiled windows warp to where their tile is, not where the app currently
+    -- reports the window (which lags while it resizes).
+    local f = bspRectFor and bspRectFor(win:id()) or win:frame()
     hs.mouse.absolutePosition({
         x = f.x + f.w / 2,
         y = f.y + f.h / 2,
@@ -128,6 +143,56 @@ local bspAutoFloat   -- window id -> floating? (assigned in the float section)
 local ffmFocusedID = nil    -- tracked from windowFocused, avoids an AX query
 local FFM_SNAPSHOT_TTL = 1.0
 local FFM_HOVER_DELAY = 0.03
+
+-- ---------------------------------------------------------------------------
+-- Internal focus
+-- ---------------------------------------------------------------------------
+--
+-- Focus is recorded when macOS reports it *and* when we ask for it, so the
+-- model is right immediately after our own actions. If macOS then moves focus
+-- elsewhere within REASSERT_WINDOW of one of our requests (it does this when
+-- windows close or open), the request is re-applied.
+
+local REASSERT_WINDOW = 0.4
+local bspIntent = nil -- { id =, time = } for our most recent focus request
+
+local function bspNoteFocus(win)
+    local id = win:id()
+    if not id then return end
+    for i = #bspFocusHistory, 1, -1 do
+        if bspFocusHistory[i] == id then table.remove(bspFocusHistory, i) end
+    end
+    table.insert(bspFocusHistory, 1, id)
+    local dropped = bspFocusHistory[21]
+    bspFocusHistory[21] = nil
+    if dropped then bspFocusTimes[dropped] = nil end
+    bspFocusTimes[id] = hs.timer.secondsSinceEpoch()
+    bspWinByID[id] = bspWinByID[id] or win
+    ffmFocusedID = id
+end
+
+-- Focus a window on our own initiative.
+local function bspFocus(win)
+    if not win then return end
+    if cfg.reassertFocus then
+        bspIntent = { id = win:id(), time = hs.timer.secondsSinceEpoch() }
+    end
+    bspNoteFocus(win)
+    win:focus()
+end
+
+-- The window actions apply to: our own record of focus, falling back to
+-- macOS's when an app we don't track (ignored apps) is frontmost.
+local function currentWindow()
+    local id = bspFocusHistory[1]
+    local win = id and bspWinByID[id]
+    if win and win:id() == id then
+        local front = hs.application.frontmostApplication()
+        local app = win:application()
+        if front and app and front:pid() == app:pid() then return win end
+    end
+    return focusedWindow()
+end
 
 -- Rebuilds the snapshot shortly after invalidations go quiet, so the next
 -- mouse move doesn't pay for several accessibility calls per window.
@@ -243,8 +308,6 @@ local function bspSaveTrees()
 end
 
 local bspFloatingFrames = {}
-local bspFocusHistory = {} -- most recent first
-local bspFocusTimes = {}   -- window id -> when it last gained focus
 local bspRetileTimer = nil
 local bspPendingRefocus = nil -- window id to focus once the next retile is done
 local bspApplyingLayout = false
@@ -441,6 +504,39 @@ local function bspAncestors(node, windowID)
     return nil
 end
 
+-- Where a window sits in the trees, by id (no accessibility calls): the path
+-- of splits above it, its leaf and its tree key. If a stale tree still holds
+-- it (e.g. an emptied display that was never reconciled), the tree for an
+-- active Space wins.
+local bspKeyForScreen -- defined with the layout code below
+
+local function bspFindByID(windowID)
+    if not windowID then return nil end
+    local found = {}
+    for key, tree in pairs(bspTrees) do
+        local path, leaf = bspAncestors(tree, windowID)
+        if path then found[#found + 1] = { path = path, leaf = leaf, key = key } end
+    end
+    if #found > 1 then
+        local active = {}
+        for _, screen in ipairs(hs.screen.allScreens()) do
+            active[bspKeyForScreen(screen)] = true
+        end
+        for _, f in ipairs(found) do
+            if active[f.key] then return f.path, f.leaf, f.key end
+        end
+    end
+    local f = found[1]
+    if f then return f.path, f.leaf, f.key end
+    return nil
+end
+
+bspRectFor = function(windowID)
+    if not bspTilingEnabled then return nil end
+    local _, leaf = bspFindByID(windowID)
+    return leaf and leaf.rect
+end
+
 -- Nearest split of the given orientation with the window on the given
 -- branch ("a" = split line after the window, i.e. its right/bottom edge).
 local function bspBoundingSplit(path, split, branch)
@@ -478,7 +574,7 @@ end
 -- Space lookups are cached for the duration of one layout pass.
 local bspKeyCache = nil
 
-local function bspKeyForScreen(screen)
+bspKeyForScreen = function(screen)
     local uuid = screen:getUUID()
     if bspKeyCache and bspKeyCache[uuid] then return bspKeyCache[uuid] end
 
@@ -706,6 +802,7 @@ local function bspReconcileTree(key, windows)
         local id = win:id()
         valid[id] = true
         byID[id] = win
+        bspWinByID[id] = win
 
         if not bspFloatingFrames[id] then
             bspFloatingFrames[id] = win:frame()
@@ -899,7 +996,7 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
             local win = hs.window.get(pick)
             if not win then return end
             local cur = focusedWindow()
-            if not cur or cur:id() ~= pick then win:focus() end
+            if not cur or cur:id() ~= pick then bspFocus(win) else bspNoteFocus(win) end
             warpToWindow(win)
         end
         refocus()
@@ -962,12 +1059,7 @@ end
 -- The tree path and leaf for a tiled window, or nil if it isn't tiled.
 local function bspLocate(win)
     if not bspTilingEnabled or not win then return nil end
-
-    local screen = win:screen()
-    if not screen then return nil end
-
-    local key = bspKeyForScreen(screen)
-    local path, leaf = bspAncestors(bspTrees[key], win:id())
+    local path, leaf, key = bspFindByID(win:id())
     if not path then return nil end
     return path, leaf, key
 end
@@ -976,6 +1068,7 @@ end
 local function bspKeyUUID(key)
     return key and key:match("^(.-):")
 end
+
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: resizing
@@ -1304,19 +1397,19 @@ function M.toggleTiling()
 end
 
 function M.closeWindow()
-    local win = focusedWindow()
+    local win = currentWindow()
     if win then win:close() end
 end
 
 -- Native macOS fullscreen (its own Space).
 function M.toggleFullScreen()
-    local win = focusedWindow()
+    local win = currentWindow()
     if win then win:toggleFullScreen() end
 end
 
 -- Fill the screen without creating a fullscreen Space.
 function M.maximize()
-    local win = focusedWindow()
+    local win = currentWindow()
     if win then
         win:maximize(0)
         warpToWindow(win)
@@ -1375,13 +1468,13 @@ end
 -- Focus the nearest window in a direction ("left"/"right"/"up"/"down") and
 -- warp the cursor to it.
 function M.focus(direction)
-    local win = focusedWindow()
+    local win = currentWindow()
     if not win then return end
 
     local target = neighbourInDirection(win, direction)
     local changed = false
     if target then
-        target:focus()
+        bspFocus(target)
         changed = true
     else
         -- Nothing directly beside it (e.g. another display): let Hammerspoon
@@ -1397,7 +1490,7 @@ end
 -- Swap the focused window with its neighbour in a direction. Tiled windows
 -- swap places in the tree; floating windows swap frames.
 function M.swap(direction)
-    local win = focusedWindow()
+    local win = currentWindow()
     if not win then return end
 
     local other = neighbourInDirection(win, direction)
@@ -1424,14 +1517,14 @@ function M.swap(direction)
         win:setFrame(b, 0)
     end
 
-    win:focus()
+    bspFocus(win)
     warpToWindow(win)
 end
 
 -- Toggle floating for the focused window (overrides the automatic choice).
 -- Floating windows are centred and kept above the tiles.
 function M.toggleFloat()
-    local win = focusedWindow()
+    local win = currentWindow()
     if not win or not bspTilingEnabled then return end
 
     local id = win:id()
@@ -1471,14 +1564,14 @@ function M.focusFloat()
             break
         end
     end
-    target:focus()
+    bspFocus(target)
     warpToWindow(target)
 end
 
 -- Flip the split containing the focused window between vertical and
 -- horizontal. Deepest ancestor first, so it's the window's own sibling split.
 function M.toggleSplit()
-    local win = focusedWindow()
+    local win = currentWindow()
     local path, _, key = bspLocate(win)
     local parent = path and path[1] and path[1].node
     if not parent then return end
@@ -1492,7 +1585,7 @@ end
 -- resize(10, 0) grows width by 10%. Tiled windows move the split bordering
 -- them in the key's direction instead (see bspResizePercent).
 function M.resize(xPct, yPct)
-    local win = focusedWindow()
+    local win = currentWindow()
     if not win then return end
 
     if bspResizePercent(win, xPct, yPct) then return end
@@ -1646,7 +1739,7 @@ end
 -- Move the focused window to a workspace and follow it there, like
 -- Hyprland's movetoworkspace (not movetoworkspacesilent).
 function M.moveToWorkspace(index)
-    local win = focusedWindow()
+    local win = currentWindow()
     if not win then return end
 
     local target = spaceAt(index)
@@ -1936,16 +2029,21 @@ function M.setup(opts)
     filter:subscribe(hs.window.filter.windowFocused, function(win)
         if win then
             local id = win:id()
-            bspRaiseFloating()
-            for i = #bspFocusHistory, 1, -1 do
-                if bspFocusHistory[i] == id then
-                    table.remove(bspFocusHistory, i)
+            local intent = bspIntent
+            if intent and id == intent.id then
+                bspIntent = nil
+            elseif intent and hs.timer.secondsSinceEpoch() - intent.time < REASSERT_WINDOW then
+                -- macOS moved focus right after our request: put it back.
+                bspIntent = nil
+                local wanted = bspWinByID[intent.id]
+                if wanted and wanted:id() == intent.id then
+                    wanted:focus()
+                    invalidateWindowCache()
+                    return
                 end
             end
-            table.insert(bspFocusHistory, 1, id)
-            bspFocusHistory[21] = nil
-            bspFocusTimes[id] = hs.timer.secondsSinceEpoch()
-            ffmFocusedID = id
+            bspRaiseFloating()
+            bspNoteFocus(win)
         end
         invalidateWindowCache()
     end)
@@ -1962,6 +2060,7 @@ function M.setup(opts)
         if id then
             bspForgetFloat(id)
             bspFloatingFrames[id] = nil
+            bspWinByID[id] = nil
         end
     end)
 
