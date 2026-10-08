@@ -783,14 +783,23 @@ local function bspBackgroundTabFilter(windows)
     end
 end
 
+-- Windows skipped as background tabs in the latest pass. When a tab closes,
+-- its replacement can still look like one for a moment (the app's window
+-- list lags), so the tile handoff considers these too.
+local bspGhosts = {}
+
 local function bspWindowsByScreen(onlyUUID)
     local byScreen = {}
+    bspGhosts = {}
 
     local allWindows = running.windowFilter:getWindows() or {}
     local isBackgroundTab = bspBackgroundTabFilter(allWindows)
 
     for _, win in ipairs(allWindows) do
-        if isBackgroundTab(win) then goto continue end
+        if isBackgroundTab(win) then
+            bspGhosts[#bspGhosts + 1] = win
+            goto continue
+        end
         local info = bspWindowInfoFor(win)
         local uuid = info.uuid
         -- The filter only passes visible, standard windows.
@@ -883,13 +892,20 @@ local function bspReconcileTree(key, windows)
     for oldID in pairs(before) do
         if not valid[oldID] then
             local _, leaf = bspAncestors(previous, oldID)
-            for _, win in ipairs(windows) do
+            local candidates = {}
+            for _, win in ipairs(windows) do candidates[#candidates + 1] = win end
+            for _, win in ipairs(bspGhosts) do candidates[#candidates + 1] = win end
+            for _, win in ipairs(candidates) do
                 local newID = win:id()
-                if not before[newID] and bspPidByID[newID] == bspPidByID[oldID]
+                if not before[newID] and win:pid() == bspPidByID[oldID]
                    and leaf and leaf.rect then
                     local f = win:frame()
                     if pointInFrame({ x = f.x + f.w / 2, y = f.y + f.h / 2 }, leaf.rect) then
                         leaf.windowID = newID
+                        valid[newID] = true
+                        byID[newID] = win
+                        bspWinByID[newID] = win
+                        bspPidByID[newID] = win:pid()
                         for i, fid in ipairs(bspFocusHistory) do
                             if fid == oldID then bspFocusHistory[i] = newID end
                         end
@@ -1096,6 +1112,7 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
 end
 
 local BSP_RETILE_DELAY = 0.06
+
 local bspRetilePending = false
 local bspRetileForce = false
 
@@ -1131,6 +1148,21 @@ local function scheduleBSPRetile(force, immediate)
     end
 
     bspRetileTimer = hs.timer.doAfter(BSP_RETILE_DELAY, bspRetileFlush)
+end
+
+-- Apps update their window lists a little after the events that announce a
+-- change (notably native tabs opening and closing), so look again shortly
+-- after windows come or go. Skipped by the signature check when nothing
+-- changed.
+local bspRecheckTimers = {}
+local function bspScheduleRecheck()
+    for _, t in ipairs(bspRecheckTimers) do t:stop() end
+    bspRecheckTimers = {}
+    for _, delay in ipairs({ 0.2, 0.6 }) do
+        bspRecheckTimers[#bspRecheckTimers + 1] = hs.timer.doAfter(delay, function()
+            scheduleBSPRetile()
+        end)
+    end
 end
 
 local function bspRestoreFloatingFrames()
@@ -2230,6 +2262,7 @@ function M.setup(opts)
         if win then bspWindowInfo[win:id()] = nil end
         invalidateWindowCache()
         scheduleBSPRetile()
+        bspScheduleRecheck()
     end)
 
     -- Windows going away: the remaining tiles can grow straight away.
@@ -2243,6 +2276,7 @@ function M.setup(opts)
         if win then bspWindowInfo[win:id()] = nil end
         invalidateWindowCache()
         scheduleBSPRetile(false, true)
+        bspScheduleRecheck()
     end)
 
     running.spaceWatcher = hs.spaces.watcher.new(function()
