@@ -52,7 +52,7 @@ function M.run(rounds)
     local win = hs.window.focusedWindow()
     if win then
         add('focus.current', function() f.currentWindow() end)
-        add('focus.neighbour', function() f.neighbourInDirection(win, 'up') end)
+        add('focus.neighbour', function() f.neighbourInDirection(win, 'up', true) end)
     end
     local index, round = 1, 1
     M.done, M.result = false, nil

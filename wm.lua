@@ -115,6 +115,21 @@ local function focusedWindow()
     return hs.window.focusedWindow()
 end
 
+-- Match the dedicated player title, not browser tabs mentioning PiP.
+local PIP_TITLES = {
+    "^[Pp]icture[- ][Ii]n[- ][Pp]icture$",
+    "^[Pp][Ii][Pp]$",
+}
+
+local function isPictureInPicture(win)
+    if not win then return false end
+    local title = win:title() or ""
+    for _, pattern in ipairs(PIP_TITLES) do
+        if title:match(pattern) then return true end
+    end
+    return false
+end
+
 -- Assigned in the tree section: the tile rectangle of a tiled window, or nil.
 local bspRectFor
 
@@ -225,6 +240,11 @@ end
 -- The window actions apply to: our own record of focus, falling back to
 -- macOS's when an app we don't track (ignored apps) is frontmost.
 local function currentWindow()
+    local actual
+    if running.pipFilter and #running.pipFilter:getWindows() > 0 then
+        actual = focusedWindow()
+        if isPictureInPicture(actual) then return nil end
+    end
     local id = bspFocusHistory[1]
     local win = id and bspWinByID[id]
     if win and win:id() == id then
@@ -232,7 +252,7 @@ local function currentWindow()
         local pid = bspPidByID[id]
         if front and pid and front:pid() == pid then return win end
     end
-    return focusedWindow()
+    return actual or focusedWindow()
 end
 
 -- Rebuilds the snapshot shortly after invalidations go quiet, so the next
@@ -251,6 +271,14 @@ local function windowSnapshot(fresh)
     local now = hs.timer.secondsSinceEpoch()
     if fresh or not ffmSnapshot or now - ffmSnapshot.time > FFM_SNAPSHOT_TTL then
         local entries = {}
+        -- PiP is an unmanaged overlay: remember its bounds solely so hover
+        -- focus doesn't steal focus for the tile underneath it.
+        local unmanaged = {}
+        if running.pipFilter then
+            for _, win in ipairs(running.pipFilter:getWindows() or {}) do
+                unmanaged[#unmanaged + 1] = win:frame()
+            end
+        end
         -- orderedWindows() enumerates every app over AX, even though the
         -- filter already tracks our visible, standard windows. WindowServer
         -- supplies live stacking order and floating geometry in one call.
@@ -278,7 +306,7 @@ local function windowSnapshot(fresh)
             end
             -- Non-overlapping tiles need no stacking-order query at all.
             if disjointTiles then
-                ffmSnapshot = { time = now, entries = entries }
+                ffmSnapshot = { time = now, entries = entries, unmanaged = unmanaged }
                 return entries
             end
             entries = {}
@@ -299,7 +327,7 @@ local function windowSnapshot(fresh)
                 end
             end
         end
-        ffmSnapshot = { time = now, entries = entries }
+        ffmSnapshot = { time = now, entries = entries, unmanaged = unmanaged }
     end
     return ffmSnapshot.entries
 end
@@ -318,6 +346,9 @@ end)
 -- stacked above them (a buried float is still reachable).
 local function snapshotEntryAt(point, fresh)
     local entries = windowSnapshot(fresh)
+    for _, frame in ipairs(ffmSnapshot.unmanaged or {}) do
+        if pointInFrame(point, frame) then return nil end
+    end
     for _, entry in ipairs(entries) do
         if bspAutoFloat[entry.id] and pointInFrame(point, entry.frame) then
             return entry
@@ -774,7 +805,8 @@ local function bspShouldFloat(win)
     local function check(step)
         bspFloatChecks[id] = hs.timer.doAfter(delays[step], function()
             bspFloatChecks[id] = nil
-            if win:id() ~= id or not running.windowFilter or not bspTilingEnabled then return end
+            if win:id() ~= id or not running.windowFilter or not bspTilingEnabled
+               or isPictureInPicture(win) then return end
             local ok, settable = pcall(function()
                 local ax = hs.axuielement.windowElement(win)
                 return ax and ax:isAttributeSettable("AXSize")
@@ -874,7 +906,9 @@ local function bspAppWindows(pid, app)
     if cached and now - cached.time < BSP_APP_CACHE_TTL then return cached.wins end
     local wins = {}
     for _, win in ipairs(app:allWindows()) do
-        if win:id() and win:isStandard() and win:isVisible() then wins[#wins + 1] = win end
+        if win:id() and win:isStandard() and win:isVisible() and not isPictureInPicture(win) then
+            wins[#wins + 1] = win
+        end
     end
     bspAppWindowCache[pid] = { time = now, wins = wins }
     return wins
@@ -1244,7 +1278,7 @@ local function bspVerifyLayout(win, rect, rectKey)
                 -- is needed. Matching frames require no further AX calls.
                 local screen = win:screen()
                 if not screen or key ~= bspKeyForScreen(screen)
-                   or not win:isVisible() or win:isFullScreen() then
+                   or not win:isVisible() or win:isFullScreen() or isPictureInPicture(win) then
                     bspLayoutChecks[id] = nil
                     return
                 end
@@ -1490,7 +1524,7 @@ local function bspRestoreFloatingFrames()
 
     for id, frame in pairs(bspFloatingFrames) do
         local win = current[id]
-        if win and win:isStandard() then
+        if win and win:isStandard() and not isPictureInPicture(win) then
             win:setFrame(frame, 0)
         end
     end
@@ -1935,14 +1969,40 @@ end
 -- For a tiled window the neighbour comes from the tree's own tile rects (no
 -- accessibility calls). Otherwise (floats, other displays) it falls back to
 -- the live window snapshot.
-local function neighbourInDirection(win, direction)
+local function neighbourInDirection(win, direction, preferHistory)
     local id = win:id()
-    local _, leaf, key = bspFindByID(bspTilingEnabled and id or nil)
+    local path, leaf, key = bspFindByID(bspTilingEnabled and id or nil)
     if leaf and leaf.rect then
+        if preferHistory then
+            local split = (direction == "left" or direction == "right") and "vertical" or "horizontal"
+            local from = (direction == "right" or direction == "down") and "a" or "b"
+            -- Walk outward to the first split with a sibling in this
+            -- direction. Return to the last-used leaf of that section.
+            for _, step in ipairs(path) do
+                if step.node.split == split and step.branch == from then
+                    local sibling = step.node[from == "a" and "b" or "a"]
+                    local candidates = bspTiles(sibling)
+                    local byID = {}
+                    for _, entry in ipairs(candidates) do byID[entry.id] = entry.win end
+                    for _, fid in ipairs(bspFocusHistory) do
+                        if byID[fid] then return byID[fid] end
+                    end
+                    local closest = nearestInDirection(leaf.rect, id, candidates, direction)
+                    if closest then return closest end
+                    if candidates[1] then return candidates[1].win end
+                end
+            end
+        end
         local found = nearestInDirection(leaf.rect, id, bspTiles(bspTrees[key]), direction)
         if found then return found end
     end
     return nearestInDirection(win:frame(), id, windowSnapshot(), direction)
+end
+
+local function directionalCandidates()
+    local windows = {}
+    for _, entry in ipairs(windowSnapshot()) do windows[#windows + 1] = entry.win end
+    return windows
 end
 
 -- Focus the nearest window in a direction ("left"/"right"/"up"/"down") and
@@ -1951,11 +2011,11 @@ function M.focus(direction)
     local win = currentWindow()
     if not win then return end
 
-    local target = neighbourInDirection(win, direction)
+    local target = neighbourInDirection(win, direction, true)
     if target then
         bspFocus(target)
         warpToWindow(target)
-    elseif win[focusMethods[direction]](win, nil, true, false) then
+    elseif win[focusMethods[direction]](win, directionalCandidates(), true, false) then
         -- Nothing directly beside it (e.g. another display): Hammerspoon
         -- picked. Focus change can finish one event-loop tick after the call.
         warpToFocusedWindow(0.01)
@@ -1970,7 +2030,7 @@ function M.swap(direction)
 
     local other = neighbourInDirection(win, direction)
     if not other then
-        local candidates = win[windowListMethods[direction]](win, nil, true, false)
+        local candidates = win[windowListMethods[direction]](win, directionalCandidates(), true, false)
         other = candidates and candidates[1]
     end
     if not other then return end
@@ -2377,7 +2437,8 @@ local function ffmFocusPending()
     local entry = ffmPending
     ffmPending = nil
     if not entry or dragState
-       or not pointInFrame(hs.mouse.absolutePosition(), entry.frame) then
+       or not pointInFrame(hs.mouse.absolutePosition(), entry.frame)
+       or snapshotEntryAt(hs.mouse.absolutePosition()) ~= entry then
         return
     end
     if ffmFocusedID ~= entry.id then
@@ -2401,7 +2462,7 @@ local function onMouseMoved(event)
 
     -- Fast path: still inside the same window (no accessibility calls).
     if ffmLastWindow and ffmSnapshot and pointInFrame(point, ffmLastWindow.frame)
-       and (bspAutoFloat[ffmLastWindow.id] or snapshotEntryAt(point) == ffmLastWindow) then
+       and snapshotEntryAt(point) == ffmLastWindow then
         return false
     end
 
@@ -2476,6 +2537,7 @@ function M.stop()
     if running.mouseTap then running.mouseTap:stop() end
     if running.moveTap then running.moveTap:stop() end
     if running.windowFilter then running.windowFilter:unsubscribeAll() end
+    if running.pipFilter then running.pipFilter:unsubscribeAll() end
     if running.spaceWatcher then running.spaceWatcher:stop() end
     if running.screenWatcher then running.screenWatcher:stop() end
     if bspRetileTimer then bspRetileTimer:stop() end
@@ -2534,11 +2596,24 @@ function M.setup(opts)
 
     local filter = hs.window.filter.new()
     filter:setDefaultFilter({ allowRoles = "AXStandardWindow", visible = true })
+    filter:setOverrideFilter({ rejectTitles = PIP_TITLES })
     for _, app in ipairs(cfg.ignoreApps or {}) do
         filter:rejectApp(app)
     end
     filter:setCurrentSpace(true)
     running.windowFilter = filter
+
+    -- A separate read-only filter tracks PiP bounds for hover occlusion.
+    -- These windows never enter the tiling/floating/focus management filter.
+    local pipFilter = hs.window.filter.new(false)
+    pipFilter:setDefaultFilter({ allowTitles = PIP_TITLES, visible = true, allowRoles = "*" })
+    pipFilter:setCurrentSpace(true)
+    pipFilter:subscribe({
+        hs.window.filter.windowAllowed,
+        hs.window.filter.windowRejected,
+        hs.window.filter.windowMoved,
+    }, invalidateWindowCache)
+    running.pipFilter = pipFilter
 
     -- Track the last focused leaf so a newly-created window splits next to it.
     filter:subscribe(hs.window.filter.windowFocused, function(win)
@@ -2601,6 +2676,7 @@ function M.setup(opts)
 
     -- Retile when the set of manageable windows changes.
     filter:subscribe({
+        hs.window.filter.windowAllowed,
         hs.window.filter.windowCreated,
         hs.window.filter.windowVisible,
         hs.window.filter.windowUnminimized,
@@ -2617,6 +2693,7 @@ function M.setup(opts)
 
     -- Windows going away: the remaining tiles can grow straight away.
     filter:subscribe({
+        hs.window.filter.windowRejected,
         hs.window.filter.windowDestroyed,
         hs.window.filter.windowHidden,
         hs.window.filter.windowMinimized,
