@@ -157,6 +157,7 @@ local bspAutoFloat   -- window id -> floating? (assigned in the float section)
 local ffmFocusedID = nil    -- tracked from windowFocused, avoids an AX query
 local FFM_SNAPSHOT_TTL = 1.0
 local FFM_HOVER_DELAY = 0.03
+local bspSettleUntil = 0 -- see onWindowMoved
 
 -- ---------------------------------------------------------------------------
 -- Internal focus
@@ -204,8 +205,8 @@ local function currentWindow()
     local win = id and bspWinByID[id]
     if win and win:id() == id then
         local front = hs.application.frontmostApplication()
-        local app = win:application()
-        if front and app and front:pid() == app:pid() then return win end
+        local pid = bspPidByID[id]
+        if front and pid and front:pid() == pid then return win end
     end
     return focusedWindow()
 end
@@ -256,6 +257,11 @@ end
 
 ffmPrebuild = hs.timer.delayed.new(0.15, function()
     if ffmSnapshot or dragState or not cfg.focusFollowsMouse then return end
+    -- Our own layout is still echoing back; wait for it to go quiet.
+    if hs.timer.secondsSinceEpoch() < bspSettleUntil then
+        ffmPrebuild:start()
+        return
+    end
     windowSnapshot(true)
 end)
 
@@ -621,7 +627,6 @@ bspKeyForScreen = function(screen)
 end
 
 -- Moves we caused ourselves fire windowMoved shortly after; see onWindowMoved.
-local bspSettleUntil = 0
 local BSP_SETTLE = 0.35
 
 -- Windows that can't be resized (popups, settings panes) float, centred on
@@ -787,6 +792,23 @@ local function bspMarkDirty(win)
     if pid then bspDirtyPids[pid] = hs.timer.secondsSinceEpoch() + BSP_DIRTY_FOR end
 end
 
+-- pid -> { time =, wins = } : an app's standard, visible windows, reused for
+-- a moment so a burst of retiles asks each app once.
+local bspAppWindowCache = {}
+local BSP_APP_CACHE_TTL = 0.1
+
+local function bspAppWindows(pid, app)
+    local now = hs.timer.secondsSinceEpoch()
+    local cached = bspAppWindowCache[pid]
+    if cached and now - cached.time < BSP_APP_CACHE_TTL then return cached.wins end
+    local wins = {}
+    for _, win in ipairs(app:allWindows()) do
+        if win:id() and win:isStandard() and win:isVisible() then wins[#wins + 1] = win end
+    end
+    bspAppWindowCache[pid] = { time = now, wins = wins }
+    return wins
+end
+
 local function bspWithRecentlyChangedApps(windows)
     local now = hs.timer.secondsSinceEpoch()
     local seen = {}
@@ -800,12 +822,13 @@ local function bspWithRecentlyChangedApps(windows)
     for pid, expires in pairs(bspDirtyPids) do
         if expires < now then
             bspDirtyPids[pid] = nil
+            bspAppWindowCache[pid] = nil
         else
             local app = hs.application.applicationForPID(pid)
             if app and not ignored[app:name()] then
-                for _, win in ipairs(app:allWindows()) do
+                for _, win in ipairs(bspAppWindows(pid, app)) do
                     local id = win:id()
-                    if id and not seen[id] and win:isStandard() and win:isVisible() then
+                    if id and not seen[id] then
                         seen[id] = true
                         out[#out + 1] = win
                         dlog("added from app list: %s", tostring(id))
@@ -1185,6 +1208,7 @@ end
 -- What each screen last laid out (window IDs + screen frame). Retiles caused
 -- by window set changes are skipped for screens whose signature is unchanged.
 local bspSignatures = {}
+local bspLayoutGen = 0 -- bumped whenever a pass re-lays-out a screen
 
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
 -- flips only ever affect the layout of the window's own screen).
@@ -1216,6 +1240,7 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
 
             if not (onlyIfChanged and bspSignatures[key] == signature) then
                 bspSignatures[key] = signature
+                bspLayoutGen = bspLayoutGen + 1
                 local tree, byID = bspReconcileTree(key, windows)
                 bspApplyTree(tree, usableFrame, byID)
             end
@@ -1324,15 +1349,18 @@ end
 -- change (notably native tabs opening and closing), so look again shortly
 -- after windows come or go. Skipped by the signature check when nothing
 -- changed.
-local bspRecheckTimers = {}
-local function bspScheduleRecheck()
-    for _, t in ipairs(bspRecheckTimers) do t:stop() end
-    bspRecheckTimers = {}
-    for _, delay in ipairs({ 0.2, 0.6 }) do
-        bspRecheckTimers[#bspRecheckTimers + 1] = hs.timer.doAfter(delay, function()
-            scheduleBSPRetile()
-        end)
-    end
+local bspRecheckTimer = nil
+local function bspScheduleRecheck(step)
+    step = step or 1
+    local delays = { 0.2, 0.4 }
+    if bspRecheckTimer then bspRecheckTimer:stop() end
+    bspRecheckTimer = hs.timer.doAfter(delays[step], function()
+        bspRecheckTimer = nil
+        local gen = bspLayoutGen
+        bspTileNow(true)
+        -- Only look a second time if the first look found something new.
+        if bspLayoutGen ~= gen and step < #delays then bspScheduleRecheck(step + 1) end
+    end)
 end
 
 local function bspRestoreFloatingFrames()
@@ -1586,7 +1614,7 @@ local function bspBeginDrag(win)
         local sKey = bspKeyForScreen(s)
         for _, w in ipairs(byScreen[s:getUUID()] or {}) do
             if w:id() ~= win:id() then
-                table.insert(targets, { win = w, frame = w:frame(), key = sKey })
+                table.insert(targets, { win = w, frame = bspRectFor(w:id()) or w:frame(), key = sKey })
             end
         end
     end
@@ -2314,6 +2342,7 @@ function M.stop()
     if running.spaceWatcher then running.spaceWatcher:stop() end
     if running.screenWatcher then running.screenWatcher:stop() end
     if bspRetileTimer then bspRetileTimer:stop() end
+    if bspRecheckTimer then bspRecheckTimer:stop() bspRecheckTimer = nil end
     if running.ffmTimer then running.ffmTimer:stop() end
     if moveWaitTimer then moveWaitTimer:stop() end
     if ffmPrebuild then ffmPrebuild:stop() end
@@ -2390,7 +2419,9 @@ function M.setup(opts)
                     return
                 end
             end
-            bspRaiseFloating()
+            -- A focused float raises itself above the tiles; the others only
+            -- need re-raising when a tile took focus.
+            if not bspAutoFloat[id] then bspRaiseFloating() end
             bspNoteFocus(win)
         end
         invalidateWindowCache()
