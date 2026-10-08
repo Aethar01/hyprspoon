@@ -971,6 +971,8 @@ local function bspReconcileTree(key, windows)
     -- the same app now centred inside its tile are the same tile: hand it
     -- over (and its focus) instead of splitting a new one in.
     local before = bspCollectIDs(previous)
+    local beforeIDs = {}
+    for id in pairs(before) do beforeIDs[#beforeIDs + 1] = id end
     if cfg.debug then
         local removed, added = {}, {}
         for id in pairs(before) do if not valid[id] then removed[#removed + 1] = id end end
@@ -982,7 +984,7 @@ local function bspReconcileTree(key, windows)
                 idList(bspFocusHistory):sub(1, 40))
         end
     end
-    for oldID in pairs(before) do
+    for _, oldID in ipairs(beforeIDs) do
         if not valid[oldID] then
             local _, leaf = bspAncestors(previous, oldID)
             local candidates = {}
@@ -1161,6 +1163,9 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
     bspApplyingLayout = true
     bspKeyCache = {}
 
+    -- An error mid-pass must not leave bspApplyingLayout set, or every later
+    -- retile would be skipped. Run guarded, report, and force the next pass.
+    local function pass()
     local byScreen = bspWindowsByScreen(onlyScreenUUID)
 
     for _, screen in ipairs(hs.screen.allScreens()) do
@@ -1182,6 +1187,13 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
                 bspApplyTree(tree, usableFrame, byID)
             end
         end
+    end
+    end
+
+    local ok, err = xpcall(pass, debug.traceback)
+    if not ok then
+        print("wm: tiling pass failed: " .. tostring(err))
+        bspSignatures = {}
     end
 
     bspKeyCache = nil
