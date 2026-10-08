@@ -23,7 +23,7 @@ local M = {}
 local defaults = {
     -- Focus the window under the pointer as it moves.
     focusFollowsMouse = true,
-    debug = true, -- log tab/tile decisions to the Hammerspoon console
+    debug = false, -- log tab/tile decisions to the Hammerspoon console
     reassertFocus = true, -- undo macOS moving focus right after we set it
 
     -- Seconds to wait on an unresponsive app's accessibility API before
