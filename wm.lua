@@ -174,7 +174,9 @@ end
 -- Focus a window on our own initiative.
 local function bspFocus(win)
     if not win then return end
-    if cfg.reassertFocus then
+    -- Nothing to defend if it's already focused (no focus event would clear
+    -- the request, and it would then undo the next thing the user does).
+    if cfg.reassertFocus and ffmFocusedID ~= win:id() then
         bspIntent = { id = win:id(), time = hs.timer.secondsSinceEpoch() }
     end
     bspNoteFocus(win)
@@ -1884,6 +1886,9 @@ end
 local function onMouseEvent(event)
     local eventType = event:getType()
 
+    -- A click is the user choosing focus; drop any request of ours.
+    bspIntent = nil
+
     -- Drags and releases only matter during one of our own drags; skip the
     -- location and flag lookups for everything else.
     if not dragState and eventType ~= mouseTypes.leftMouseDown
@@ -1954,7 +1959,11 @@ local function ffmFocusPending()
        or not pointInFrame(hs.mouse.absolutePosition(), entry.frame) then
         return
     end
-    if ffmFocusedID ~= entry.id then entry.win:focus() end
+    if ffmFocusedID ~= entry.id then
+        -- The pointer is the user's say: it overrides any request of ours.
+        bspIntent = nil
+        entry.win:focus()
+    end
 end
 
 local function onMouseMoved(event)
