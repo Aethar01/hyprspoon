@@ -753,34 +753,61 @@ local function bspWindowInfoFor(win)
     return info
 end
 
--- Native tabs: the filter reports every tab of a tabbed window as a window
--- (same frame, all "visible"), but the app's own window list holds only the
--- selected tab. A window the app doesn't list is a background tab and must
--- not get a tile of its own. Only apps with several windows can have one, so
--- the app is asked once per such app per pass.
-local function bspBackgroundTabFilter(windows)
+-- Native tabs: the filter reports every tab of a tabbed window as a window,
+-- all "visible" and at the same frame, but only one is the live tab. Tiles
+-- never share a frame, so windows of one app stacked at an identical frame
+-- are tabs of one group, and all but one are background tabs that must not
+-- get a tile. The live one is the tab the app itself lists, else the one
+-- already tiled, else the oldest. A window alone at its frame is always
+-- live: the app's own list can lag behind events (e.g. right after the
+-- selected tab closes), so it's only used to choose within a group.
+local function bspBackgroundTabs(windows)
     local perPid = {}
     for _, win in ipairs(windows) do
         local pid = win:pid()
-        perPid[pid] = (perPid[pid] or 0) + 1
+        perPid[pid] = perPid[pid] or {}
+        table.insert(perPid[pid], win)
     end
 
-    local listed = {} -- pid -> set of the app's own window ids, or false
-    return function(win)
-        local pid = win:pid()
-        if (perPid[pid] or 0) < 2 then return false end
-        if listed[pid] == nil then
-            local set, any = {}, false
-            local app = hs.application.applicationForPID(pid)
-            for _, w in ipairs(app and app:allWindows() or {}) do
-                set[w:id()] = true
-                any = true
+    local background = {}
+    for pid, wins in pairs(perPid) do
+        if #wins >= 2 then
+            local groups = {}
+            for _, win in ipairs(wins) do
+                local f = win:frame()
+                local gk = string.format("%d,%d,%d,%d",
+                    math.floor(f.x + 0.5), math.floor(f.y + 0.5),
+                    math.floor(f.w + 0.5), math.floor(f.h + 0.5))
+                groups[gk] = groups[gk] or {}
+                table.insert(groups[gk], win)
             end
-            -- If the app can't list its windows, trust the filter.
-            listed[pid] = any and set or false
+
+            local listed = nil
+            for _, group in pairs(groups) do
+                if #group >= 2 then
+                    if not listed then
+                        listed = {}
+                        local app = hs.application.applicationForPID(pid)
+                        for _, w in ipairs(app and app:allWindows() or {}) do
+                            listed[w:id()] = true
+                        end
+                    end
+                    local function rank(win)
+                        local id = win:id()
+                        return (listed[id] and 0 or 2) + (bspFindByID(id) and 0 or 1), id
+                    end
+                    table.sort(group, function(a, b)
+                        local ra, ia = rank(a)
+                        local rb, ib = rank(b)
+                        if ra ~= rb then return ra < rb end
+                        return ia < ib
+                    end)
+                    for i = 2, #group do background[group[i]:id()] = true end
+                end
+            end
         end
-        return listed[pid] and not listed[pid][win:id()] or false
     end
+    return function(win) return background[win:id()] == true end
 end
 
 -- Windows skipped as background tabs in the latest pass. When a tab closes,
@@ -793,7 +820,7 @@ local function bspWindowsByScreen(onlyUUID)
     bspGhosts = {}
 
     local allWindows = running.windowFilter:getWindows() or {}
-    local isBackgroundTab = bspBackgroundTabFilter(allWindows)
+    local isBackgroundTab = bspBackgroundTabs(allWindows)
 
     for _, win in ipairs(allWindows) do
         if isBackgroundTab(win) then
