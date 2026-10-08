@@ -94,6 +94,7 @@ cfg = deepMerge(defaults, {})
 local bspFocusHistory = {} -- most recent first
 local bspFocusTimes = {}   -- window id -> when it last gained focus
 local bspWinByID = {}      -- window id -> hs.window, for every tiled window
+local bspPidByID = {}      -- window id -> owning process, for telling tab swaps
 
 -- macOS's view of focus (an accessibility query). Use currentWindow() for
 -- actions; this is for checking what macOS actually did.
@@ -752,10 +753,44 @@ local function bspWindowInfoFor(win)
     return info
 end
 
+-- Native tabs: the filter reports every tab of a tabbed window as a window
+-- (same frame, all "visible"), but the app's own window list holds only the
+-- selected tab. A window the app doesn't list is a background tab and must
+-- not get a tile of its own. Only apps with several windows can have one, so
+-- the app is asked once per such app per pass.
+local function bspBackgroundTabFilter(windows)
+    local perPid = {}
+    for _, win in ipairs(windows) do
+        local pid = win:pid()
+        perPid[pid] = (perPid[pid] or 0) + 1
+    end
+
+    local listed = {} -- pid -> set of the app's own window ids, or false
+    return function(win)
+        local pid = win:pid()
+        if (perPid[pid] or 0) < 2 then return false end
+        if listed[pid] == nil then
+            local set, any = {}, false
+            local app = hs.application.applicationForPID(pid)
+            for _, w in ipairs(app and app:allWindows() or {}) do
+                set[w:id()] = true
+                any = true
+            end
+            -- If the app can't list its windows, trust the filter.
+            listed[pid] = any and set or false
+        end
+        return listed[pid] and not listed[pid][win:id()] or false
+    end
+end
+
 local function bspWindowsByScreen(onlyUUID)
     local byScreen = {}
 
-    for _, win in ipairs(running.windowFilter:getWindows() or {}) do
+    local allWindows = running.windowFilter:getWindows() or {}
+    local isBackgroundTab = bspBackgroundTabFilter(allWindows)
+
+    for _, win in ipairs(allWindows) do
+        if isBackgroundTab(win) then goto continue end
         local info = bspWindowInfoFor(win)
         local uuid = info.uuid
         -- The filter only passes visible, standard windows.
@@ -764,6 +799,7 @@ local function bspWindowsByScreen(onlyUUID)
             byScreen[uuid] = byScreen[uuid] or {}
             table.insert(byScreen[uuid], win)
         end
+        ::continue::
     end
 
     -- Stable order for initial tree construction.
@@ -828,6 +864,7 @@ local function bspReconcileTree(key, windows)
         valid[id] = true
         byID[id] = win
         bspWinByID[id] = win
+        bspPidByID[id] = win:pid()
 
         if not bspFloatingFrames[id] then
             bspFloatingFrames[id] = win:frame()
@@ -837,7 +874,36 @@ local function bspReconcileTree(key, windows)
     -- Windows in the tree that are no longer present: if one was focused,
     -- remember its surviving sibling so the retile can hand focus back.
     local previous = bspTrees[key]
-    for id in pairs(bspCollectIDs(previous)) do
+
+    -- Switching, opening or closing a native tab swaps which window id is the
+    -- live one, in the same place. A window that vanished and a new window of
+    -- the same app now centred inside its tile are the same tile: hand it
+    -- over (and its focus) instead of splitting a new one in.
+    local before = bspCollectIDs(previous)
+    for oldID in pairs(before) do
+        if not valid[oldID] then
+            local _, leaf = bspAncestors(previous, oldID)
+            for _, win in ipairs(windows) do
+                local newID = win:id()
+                if not before[newID] and bspPidByID[newID] == bspPidByID[oldID]
+                   and leaf and leaf.rect then
+                    local f = win:frame()
+                    if pointInFrame({ x = f.x + f.w / 2, y = f.y + f.h / 2 }, leaf.rect) then
+                        leaf.windowID = newID
+                        for i, fid in ipairs(bspFocusHistory) do
+                            if fid == oldID then bspFocusHistory[i] = newID end
+                        end
+                        bspFocusTimes[newID] = bspFocusTimes[oldID]
+                        if ffmFocusedID == oldID then ffmFocusedID = newID end
+                        before[newID], before[oldID] = true, nil
+                        break
+                    end
+                end
+            end
+        end
+    end
+
+    for id in pairs(before) do
         if not valid[id] and bspWasFocused(id) then
             bspPendingRefocus = bspSiblingToFocus(previous, id, valid) or bspPendingRefocus
             break
