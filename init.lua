@@ -207,12 +207,6 @@ local function ghosttyNewWindow()
 				win:moveToScreen(targetScreen, false, true, 0)
 			end
 			win:focus()
-			-- The retile hasn't placed it yet; wm warps once its tile is laid
-			-- out. This is the fallback for windows that aren't tiled.
-			hs.timer.doAfter(0.3, function()
-				local cur = hs.window.focusedWindow()
-				if cur and cur:id() == win:id() then wm.warpToWindow(win) end
-			end)
 		end
 	end)
 end

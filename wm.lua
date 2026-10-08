@@ -400,7 +400,6 @@ end
 local bspFloatingFrames = {}
 local bspRetileTimer = nil
 local bspPendingRefocus = nil -- window id to focus once the next retile is done
-local bspPendingWarp = nil -- new focused window id to warp to once the next retile is done
 local bspApplyingLayout = false
 
 local function bspLeaf(windowID)
@@ -1158,7 +1157,6 @@ local function bspReconcileTree(key, windows)
         local id = win:id()
 
         if not present[id] then
-            if ffmFocusedID == id then bspPendingWarp = id end
             if not tree then
                 tree = bspLeaf(id)
             else
@@ -1396,22 +1394,8 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
         invalidateWindowCache()
     end
 
-    -- A closed window hands focus back to its tree sibling. This runs last,
-    -- after the layout, so the cursor warps to the sibling's final frame.
-    -- Re-checked shortly after in case macOS focuses its own pick late.
-    local warpID = bspPendingWarp
-    bspPendingWarp = nil
-    if warpID then
-        -- A new window that took focus: warp once its tile is laid out, and
-        -- again in case it is still being placed. Skip if focus has moved on.
-        local function warpNew()
-            local win = bspWinByID[warpID]
-            if win and ffmFocusedID == warpID then warpToWindow(win) end
-        end
-        warpNew()
-        hs.timer.doAfter(0.1, warpNew)
-    end
-
+    -- A closed window hands focus back to its tree sibling without moving
+    -- the pointer. Re-check in case macOS focuses its own pick late.
     local pick = bspPendingRefocus
     bspPendingRefocus = nil
     if pick then
@@ -1420,7 +1404,6 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
             if not win or win:id() ~= pick then return end
             local cur = focusedWindow()
             if not cur or cur:id() ~= pick then bspFocus(win) else bspNoteFocus(win) end
-            warpToWindow(win)
         end
         refocus()
         hs.timer.doAfter(0.1, refocus)
@@ -1882,7 +1865,6 @@ function M.maximize()
     local win = currentWindow()
     if win then
         win:maximize(0)
-        warpToWindow(win)
     end
 end
 
@@ -2000,7 +1982,7 @@ function M.swap(direction)
         -- next retile.
         if keyA == keyB then
             bspSwapIDs(bspTrees[keyA], win:id(), other:id())
-            -- Retile synchronously so the cursor warp sees the new frames.
+            -- Apply the swapped positions immediately.
             bspTileNow(false, bspKeyUUID(keyA))
         end
     else
@@ -2011,7 +1993,6 @@ function M.swap(direction)
     end
 
     bspFocus(win)
-    warpToWindow(win)
 end
 
 -- Toggle floating for the focused window (overrides the automatic choice).
@@ -2035,7 +2016,6 @@ function M.toggleFloat()
 
     invalidateWindowCache()
     bspTileNow()
-    warpToWindow(win)
 end
 
 -- Cycle focus through the floating windows. Works however they're stacked
@@ -2072,7 +2052,6 @@ function M.toggleSplit()
 
     parent.split = (parent.split == "vertical") and "horizontal" or "vertical"
     bspTileNow(false, bspKeyUUID(key))
-    warpToWindow(win)
 end
 
 -- Resize the focused window by a percentage of its own size, e.g.
@@ -2157,8 +2136,8 @@ local function spaceAt(index)
 end
 
 -- After a Space switch macOS often leaves no window focused until the mouse
--- moves. Once the switch has settled, focus the window under the pointer,
--- else the topmost one on the new Space, and put the cursor on it. The
+-- moves. Once the switch has settled, restore focus on the new Space while
+-- leaving the pointer in place. The
 -- switch animation length varies, so this waits for the Space-changed event
 -- (with a timer as a fallback) and retries while the window list is empty.
 local spaceFocusPending = false
@@ -2193,7 +2172,6 @@ local function focusCurrentSpaceWindow(attempt)
 
     if win then
         bspFocus(win)
-        warpToWindow(win)
     elseif attempt < 6 then
         spaceRetryTimer = hs.timer.doAfter(0.15, function() focusCurrentSpaceWindow(attempt + 1) end)
     end
@@ -2269,7 +2247,6 @@ function M.moveToWorkspace(index)
 
     hs.timer.doAfter((hs.spaces.MCwaitTime or 0.3) + 0.15, function()
         win:focus()
-        warpToWindow(win)
     end)
 end
 
