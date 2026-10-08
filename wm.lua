@@ -73,7 +73,7 @@ local running = {}
 local function deepMerge(base, override)
     local out = {}
     for k, v in pairs(base) do
-        if type(v) == "table" and type(override[k]) == "table" and v[1] == nil then
+        if type(v) == "table" and next(v) ~= nil and v[1] == nil and type(override[k]) == "table" then
             out[k] = deepMerge(v, override[k])
         elseif override[k] ~= nil then
             out[k] = override[k]
@@ -170,6 +170,8 @@ local bspSettleUntil = 0 -- see onWindowMoved
 
 local REASSERT_WINDOW = 0.4
 local bspIntent = nil -- { id =, time = } for our most recent focus request
+local bspRequestedFocus = nil -- id of our latest win:focus(), until macOS confirms
+local bspFocusCheck = nil
 
 local function bspNoteFocus(win)
     local id = win:id()
@@ -195,7 +197,20 @@ local function bspFocus(win)
         bspIntent = { id = win:id(), time = hs.timer.secondsSinceEpoch() }
     end
     bspNoteFocus(win)
+    bspRequestedFocus = win:id()
     win:focus()
+    -- If macOS never reports the focus (an unresponsive app), our record would
+    -- stay wrong and focus-follows-mouse would skip that window. Check once.
+    if not bspFocusCheck then
+        bspFocusCheck = hs.timer.delayed.new(0.5, function()
+            if bspRequestedFocus then
+                local actual = focusedWindow()
+                ffmFocusedID = actual and actual:id() or nil
+                bspRequestedFocus = nil
+            end
+        end)
+    end
+    bspFocusCheck:start()
 end
 
 -- The window actions apply to: our own record of focus, falling back to
@@ -298,7 +313,19 @@ end
 -- Trees persist across config reloads (window IDs survive a reload; stale
 -- ones are pruned when the tree is reconciled).
 local TREES_KEY = "bspTrees"
-local bspTrees = hs.settings.get(TREES_KEY) or {}
+local TREES_BOOT_KEY = "bspTreesBoot"
+local bootTime = tonumber(
+    (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
+
+-- Window IDs are only meaningful within one boot; after a restart they can be
+-- reused by unrelated windows, so saved trees are discarded.
+local bspTrees = {}
+do
+    local savedBoot = hs.settings.get(TREES_BOOT_KEY)
+    if type(savedBoot) == "number" and math.abs(savedBoot - bootTime) < 120 then
+        bspTrees = hs.settings.get(TREES_KEY) or {}
+    end
+end
 
 local function bspStripTree(node)
     if not node then return nil end
@@ -325,6 +352,7 @@ local function bspSaveTreesNow()
     if encoded == bspSavedTrees then return end
     bspSavedTrees = encoded
     hs.settings.set(TREES_KEY, out)
+    hs.settings.set(TREES_BOOT_KEY, bootTime)
 end
 
 local function bspSaveTrees()
@@ -639,8 +667,6 @@ bspAutoFloat = {}
 -- Window IDs can be reused after a reboot, so entries also record the app and
 -- are discarded if the machine has restarted since.
 local FLOATS_KEY = "bspAutoFloat"
-local bootTime = tonumber(
-    (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 local bspSavedFloats = {}
 do
     local saved = hs.settings.get(FLOATS_KEY)
@@ -715,8 +741,15 @@ local function bspShouldFloat(win)
         local f = win:frame()
         win:setFrame({ x = f.x, y = f.y, w = f.w - 40, h = f.h - 40 }, 0)
         local g = win:frame()
-        win:setFrame(f, 0)
         float = math.abs(g.w - f.w) < 1 or math.abs(g.h - f.h) < 1
+        if float then
+            -- A slow app may not have applied the resize when we read it
+            -- back; look once more before deciding the window can't resize.
+            hs.timer.usleep(50000)
+            g = win:frame()
+            float = math.abs(g.w - f.w) < 1 or math.abs(g.h - f.h) < 1
+        end
+        win:setFrame(f, 0)
         -- The probe's own moves echo back as windowMoved events.
         bspSettleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
     end
@@ -1677,6 +1710,10 @@ local function bspFinishDrag(win, point)
 
     local id = win:id()
     local target, side = bspDropTarget(state.targets, point)
+    -- The tile may have closed mid-drag.
+    if target and not bspTreeContains(bspTrees[target.key], target.win:id()) then
+        target = nil
+    end
     bspKeyIndex = {}
     bspApplied = {}
 
@@ -2346,6 +2383,7 @@ function M.stop()
     if running.ffmTimer then running.ffmTimer:stop() end
     if moveWaitTimer then moveWaitTimer:stop() end
     if ffmPrebuild then ffmPrebuild:stop() end
+    if bspFocusCheck then bspFocusCheck:stop() end
     bspRetileTimer, bspRetilePending, bspRetileForce = nil, false, false
     moveWaitTimer, moveWaitWin, ffmPending = nil, nil, nil
     if bspFloatsTimer then
@@ -2406,6 +2444,7 @@ function M.setup(opts)
     filter:subscribe(hs.window.filter.windowFocused, function(win)
         if win then
             local id = win:id()
+            if id == bspRequestedFocus then bspRequestedFocus = nil end
             local intent = bspIntent
             if intent and id == intent.id then
                 bspIntent = nil
@@ -2498,6 +2537,9 @@ function M.setup(opts)
     end)
 
     running.spaceWatcher = hs.spaces.watcher.new(function()
+        -- Space changes we didn't start (trackpad swipes) need the same focus
+        -- fix-up as keyboard ones.
+        spaceFocusPending = true
         settleSpaceFocus()
         invalidateWindowCache()
         scheduleBSPRetile(true)
