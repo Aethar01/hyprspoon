@@ -733,15 +733,32 @@ end
 -- Manageable windows grouped by screen UUID, in a single pass (each window's
 -- screen and state are accessibility calls, so don't repeat them per screen).
 -- With `onlyUUID`, windows on other screens skip the remaining checks.
+-- Each window's screen and fullscreen state, cached per window id: both are
+-- accessibility calls and change only when the window moves or goes
+-- fullscreen (events drop the entry), or on a forced retile (Space/display
+-- changes drop everything).
+local bspWindowInfo = {}
+
+local function bspWindowInfoFor(win)
+    local id = win:id()
+    local info = bspWindowInfo[id]
+    if info then return info end
+    local screen = win:screen()
+    info = { uuid = screen and screen:getUUID(), full = win:isFullScreen() }
+    -- A window with no screen yet (still being created) isn't cached.
+    if info.uuid then bspWindowInfo[id] = info end
+    return info
+end
+
 local function bspWindowsByScreen(onlyUUID)
     local byScreen = {}
 
     for _, win in ipairs(running.windowFilter:getWindows() or {}) do
-        local winScreen = win:screen()
-        local uuid = winScreen and winScreen:getUUID()
+        local info = bspWindowInfoFor(win)
+        local uuid = info.uuid
         -- The filter only passes visible, standard windows.
         if uuid and (not onlyUUID or uuid == onlyUUID)
-           and not win:isFullScreen() and not bspShouldFloat(win) then
+           and not info.full and not bspShouldFloat(win) then
             byScreen[uuid] = byScreen[uuid] or {}
             table.insert(byScreen[uuid], win)
         end
@@ -999,8 +1016,8 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
     bspPendingRefocus = nil
     if pick then
         local function refocus()
-            local win = hs.window.get(pick)
-            if not win then return end
+            local win = bspWinByID[pick]
+            if not win or win:id() ~= pick then return end
             local cur = focusedWindow()
             if not cur or cur:id() ~= pick then bspFocus(win) else bspNoteFocus(win) end
             warpToWindow(win)
@@ -1032,7 +1049,10 @@ end
 local function scheduleBSPRetile(force, immediate)
     if not bspTilingEnabled then return end
 
-    if force then bspSignatures = {} end
+    if force then
+        bspSignatures = {}
+        bspWindowInfo = {}
+    end
 
     if immediate and not force and not bspRetileTimer then
         bspTileNow(true)
@@ -2095,6 +2115,11 @@ function M.setup(opts)
     end)
 
     filter:subscribe(hs.window.filter.windowMoved, function(win)
+        -- Our own layout moves echo back here; only other moves (e.g. to
+        -- another display) can change which screen a window is on.
+        if win and hs.timer.secondsSinceEpoch() > bspSettleUntil then
+            bspWindowInfo[win:id()] = nil
+        end
         invalidateWindowCache()
         bspRaiseFloating()
         onWindowMoved(win)
@@ -2107,6 +2132,15 @@ function M.setup(opts)
             bspForgetFloat(id)
             bspFloatingFrames[id] = nil
             bspWinByID[id] = nil
+            bspWindowInfo[id] = nil
+            -- Kept briefly: the retile that notices the close still needs it
+            -- to tell whether this was the focused window.
+            hs.timer.doAfter(1, function()
+                for i = #bspFocusHistory, 1, -1 do
+                    if bspFocusHistory[i] == id then table.remove(bspFocusHistory, i) end
+                end
+                bspFocusTimes[id] = nil
+            end)
         end
     end)
 
@@ -2117,7 +2151,8 @@ function M.setup(opts)
         hs.window.filter.windowUnminimized,
         hs.window.filter.windowUnfullscreened,
         hs.window.filter.windowInCurrentSpace,
-    }, function()
+    }, function(win)
+        if win then bspWindowInfo[win:id()] = nil end
         invalidateWindowCache()
         scheduleBSPRetile()
     end)
@@ -2129,7 +2164,8 @@ function M.setup(opts)
         hs.window.filter.windowMinimized,
         hs.window.filter.windowFullscreened,
         hs.window.filter.windowNotInCurrentSpace,
-    }, function()
+    }, function(win)
+        if win then bspWindowInfo[win:id()] = nil end
         invalidateWindowCache()
         scheduleBSPRetile(false, true)
     end)
