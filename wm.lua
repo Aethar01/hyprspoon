@@ -1430,19 +1430,18 @@ local windowListMethods = {
     down = "windowsToSouth",
 }
 
--- The nearest window strictly in a direction that overlaps the focused
--- window along the other axis. Hammerspoon's focusWindowWest etc. weigh
+-- The nearest candidate strictly in a direction that overlaps the focused
+-- frame `f` along the other axis. Hammerspoon's focusWindowWest etc. weigh
 -- diagonal neighbours too, so "left" can land on a window above.
-local function neighbourInDirection(win, direction)
-    local f = win:frame()
+-- `candidates` are { win =, id =, frame = }.
+local function nearestInDirection(f, selfID, candidates, direction)
     local horizontal = direction == "left" or direction == "right"
     local tol = 4
     local cx, cy = f.x + f.w / 2, f.y + f.h / 2
 
     local best, bestKey = nil, nil
-    for _, entry in ipairs(windowSnapshot()) do
-        local other = entry.win
-        if entry.id ~= win:id() then
+    for _, entry in ipairs(candidates) do
+        if entry.id ~= selfID then
             local o = entry.frame
             local gap, overlap, offset
             if horizontal then
@@ -1458,11 +1457,40 @@ local function neighbourInDirection(win, direction)
             if gap >= -tol and overlap > tol then
                 -- Closest first, then the one lined up best with the centre.
                 local key = math.floor(math.max(gap, 0) / 8) * 1e6 + offset
-                if not bestKey or key < bestKey then best, bestKey = other, key end
+                if not bestKey or key < bestKey then best, bestKey = entry.win, key end
             end
         end
     end
     return best
+end
+
+-- Every tile in a tree: { win =, id =, frame = }.
+local function bspTiles(node, out)
+    out = out or {}
+    if not node then return out end
+    if bspIsLeaf(node) then
+        local win = bspWinByID[node.windowID]
+        if node.rect and win then
+            out[#out + 1] = { win = win, id = node.windowID, frame = node.rect }
+        end
+        return out
+    end
+    bspTiles(node.a, out)
+    bspTiles(node.b, out)
+    return out
+end
+
+-- For a tiled window the neighbour comes from the tree's own tile rects (no
+-- accessibility calls). Otherwise (floats, other displays) it falls back to
+-- the live window snapshot.
+local function neighbourInDirection(win, direction)
+    local id = win:id()
+    local _, leaf, key = bspFindByID(bspTilingEnabled and id or nil)
+    if leaf and leaf.rect then
+        local found = nearestInDirection(leaf.rect, id, bspTiles(bspTrees[key]), direction)
+        if found then return found end
+    end
+    return nearestInDirection(win:frame(), id, windowSnapshot(), direction)
 end
 
 -- Focus the nearest window in a direction ("left"/"right"/"up"/"down") and
@@ -1472,17 +1500,12 @@ function M.focus(direction)
     if not win then return end
 
     local target = neighbourInDirection(win, direction)
-    local changed = false
     if target then
         bspFocus(target)
-        changed = true
-    else
-        -- Nothing directly beside it (e.g. another display): let Hammerspoon
-        -- pick.
-        changed = win[focusMethods[direction]](win, nil, true, false)
-    end
-    if changed then
-        -- Focus change can finish one event-loop tick after the call.
+        warpToWindow(target)
+    elseif win[focusMethods[direction]](win, nil, true, false) then
+        -- Nothing directly beside it (e.g. another display): Hammerspoon
+        -- picked. Focus change can finish one event-loop tick after the call.
         warpToFocusedWindow(0.01)
     end
 end
