@@ -332,6 +332,7 @@ end
 local bspFloatingFrames = {}
 local bspRetileTimer = nil
 local bspPendingRefocus = nil -- window id to focus once the next retile is done
+local bspPendingWarp = nil -- new focused window id to warp to once the next retile is done
 local bspApplyingLayout = false
 
 local function bspLeaf(windowID)
@@ -1033,6 +1034,7 @@ local function bspReconcileTree(key, windows)
         local id = win:id()
 
         if not present[id] then
+            if ffmFocusedID == id then bspPendingWarp = id end
             if not tree then
                 tree = bspLeaf(id)
             else
@@ -1206,6 +1208,19 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
     -- A closed window hands focus back to its tree sibling. This runs last,
     -- after the layout, so the cursor warps to the sibling's final frame.
     -- Re-checked shortly after in case macOS focuses its own pick late.
+    local warpID = bspPendingWarp
+    bspPendingWarp = nil
+    if warpID then
+        -- A new window that took focus: warp once its tile is laid out, and
+        -- again in case it is still being placed. Skip if focus has moved on.
+        local function warpNew()
+            local win = bspWinByID[warpID]
+            if win and ffmFocusedID == warpID then warpToWindow(win) end
+        end
+        warpNew()
+        hs.timer.doAfter(0.1, warpNew)
+    end
+
     local pick = bspPendingRefocus
     bspPendingRefocus = nil
     if pick then
