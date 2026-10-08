@@ -158,6 +158,7 @@ local ffmFocusedID = nil    -- tracked from windowFocused, avoids an AX query
 local FFM_SNAPSHOT_TTL = 1.0
 local FFM_HOVER_DELAY = 0.03
 local bspSettleUntil = 0 -- see onWindowMoved
+local bspLastMouseTime = 0 -- last click/drag/release, to tell user resizes from app ones
 
 -- ---------------------------------------------------------------------------
 -- Internal focus
@@ -1462,6 +1463,8 @@ local function bspAdoptFrame(win)
     leaf.lastSeenFrame = seen
     bspApplied[win:id()] = nil
 
+    print(string.format("wm: adopting frame of %s: %s (tile %.0f,%.0f,%.0f,%.0f)",
+        tostring(win:id()), seen, r.x, r.y, r.w, r.h))
     if differs(f.w, r.w) or differs(f.h, r.h) then
         local edges = {
             { edge = "left",   split = "vertical",   branch = "b", now = f.x,       was = r.x },
@@ -2223,6 +2226,7 @@ end
 
 local function onMouseEvent(event)
     local eventType = event:getType()
+    bspLastMouseTime = hs.timer.secondsSinceEpoch()
 
     -- A click is the user choosing focus; drop any request of ours.
     bspIntent = nil
@@ -2352,7 +2356,16 @@ local function onWindowMoved(win)
     -- Echoes of our own layout: nobody is holding the mouse, so it isn't a
     -- native edge drag.
     local held = hs.mouse.getButtons().left
-    if not held and hs.timer.secondsSinceEpoch() < bspSettleUntil then return end
+    local now = hs.timer.secondsSinceEpoch()
+    if not held and now < bspSettleUntil then return end
+
+    -- Resizing a tile moves its splits, so only the user should do it. An app
+    -- resizing itself (closing a sibling, animating, enforcing a minimum
+    -- size) with no mouse activity must not drag the whole layout with it.
+    if not held and now - bspLastMouseTime > 1.5 then
+        dlog("ignored move of %s: no recent mouse activity", tostring(win and win:id()))
+        return
+    end
 
     if held then
         moveWaitWin = win
