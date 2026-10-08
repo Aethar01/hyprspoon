@@ -533,24 +533,37 @@ end
 -- active Space wins.
 local bspKeyForScreen -- defined with the layout code below
 
+-- window id -> tree key, so lookups walk one tree instead of all of them. A
+-- hit is verified against its tree, and the cache is cleared whenever trees
+-- are rebuilt or moved between.
+local bspKeyIndex = {}
+
 local function bspFindByID(windowID)
     if not windowID then return nil end
+    local cachedKey = bspKeyIndex[windowID]
+    if cachedKey and bspTrees[cachedKey] then
+        local path, leaf = bspAncestors(bspTrees[cachedKey], windowID)
+        if path then return path, leaf, cachedKey end
+    end
     local found = {}
     for key, tree in pairs(bspTrees) do
         local path, leaf = bspAncestors(tree, windowID)
         if path then found[#found + 1] = { path = path, leaf = leaf, key = key } end
     end
+    local f = found[1]
     if #found > 1 then
         local active = {}
         for _, screen in ipairs(hs.screen.allScreens()) do
             active[bspKeyForScreen(screen)] = true
         end
-        for _, f in ipairs(found) do
-            if active[f.key] then return f.path, f.leaf, f.key end
+        for _, candidate in ipairs(found) do
+            if active[candidate.key] then f = candidate break end
         end
     end
-    local f = found[1]
-    if f then return f.path, f.leaf, f.key end
+    if f then
+        bspKeyIndex[windowID] = f.key
+        return f.path, f.leaf, f.key
+    end
     return nil
 end
 
@@ -1076,6 +1089,7 @@ local function bspReconcileTree(key, windows)
     end
 
     bspTrees[key] = tree
+    bspKeyIndex = {}
     return tree, byID
 end
 
@@ -1614,6 +1628,7 @@ local function bspFinishDrag(win, point)
 
     local id = win:id()
     local target, side = bspDropTarget(state.targets, point)
+    bspKeyIndex = {}
 
     if target then
         bspTrees[state.key] = bspRemoveID(bspTrees[state.key], id)
