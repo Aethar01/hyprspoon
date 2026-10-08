@@ -769,6 +769,12 @@ end
 -- changes drop everything).
 local bspWindowInfo = {}
 
+-- The rect each window was last laid out to ("x,y,w,h"). A window known to be
+-- in place isn't asked for its frame again; entries are dropped when the
+-- window moves on its own (windowMoved outside our settle period), when the
+-- user adjusts it, and on forced retiles.
+local bspApplied = {}
+
 -- Apps that recently had windows come or go. The window filter can miss a
 -- window that comes back without an event of its own (the surviving native
 -- tab after the selected one closes), so for these apps the app's own window
@@ -840,7 +846,14 @@ local function bspBackgroundTabs(windows)
 
     local background = {}
     for pid, wins in pairs(perPid) do
-        if #wins >= 2 then
+        -- Tiles never share a frame, so if every window of the app already
+        -- holds its own tile there are no background tabs to find (and no
+        -- reason to ask the app for frames).
+        local allTiled = #wins >= 2
+        for _, win in ipairs(wins) do
+            if not bspRectFor(win:id()) then allTiled = false break end
+        end
+        if #wins >= 2 and not allTiled then
             local groups = {}
             for _, win in ipairs(wins) do
                 local f = win:frame()
@@ -1111,6 +1124,9 @@ local function bspApplyTree(node, rect, byID)
     if bspIsLeaf(node) then
         local win = byID[node.windowID]
         if win then
+            local id = node.windowID
+            local rectKey = string.format("%.0f,%.0f,%.0f,%.0f", rect.x, rect.y, rect.w, rect.h)
+            if bspApplied[id] == rectKey then return end
             -- setFrame is several accessibility calls and fires windowMoved,
             -- so leave windows that are already in place alone.
             local f = win:frame()
@@ -1125,6 +1141,7 @@ local function bspApplyTree(node, rect, byID)
             elseif resized then
                 win:setSize(rect)
             end
+            bspApplied[id] = rectKey
         end
         return
     end
@@ -1282,6 +1299,7 @@ local function scheduleBSPRetile(force, immediate, delay)
     if force then
         bspSignatures = {}
         bspWindowInfo = {}
+        bspApplied = {}
     end
 
     local now = hs.timer.secondsSinceEpoch()
@@ -1332,6 +1350,7 @@ local function bspRestoreFloatingFrames()
     end
 
     bspFloatingFrames = {}
+    bspApplied = {}
 end
 
 -- The tree path and leaf for a tiled window, or nil if it isn't tiled.
@@ -1380,6 +1399,7 @@ local function bspAdoptFrame(win)
     local seen = string.format("%.0f,%.0f,%.0f,%.0f", f.x, f.y, f.w, f.h)
     if leaf.lastSeenFrame == seen then return end
     leaf.lastSeenFrame = seen
+    bspApplied[win:id()] = nil
 
     if differs(f.w, r.w) or differs(f.h, r.h) then
         local edges = {
@@ -1506,6 +1526,7 @@ local function bspFinishResize()
     bspResizeState = nil
     if not state or state.floating then return false end
 
+    bspApplied[state.win:id()] = nil
     bspAdoptFrame(state.win)
     return true
 end
@@ -1629,6 +1650,7 @@ local function bspFinishDrag(win, point)
     local id = win:id()
     local target, side = bspDropTarget(state.targets, point)
     bspKeyIndex = {}
+    bspApplied = {}
 
     if target then
         bspTrees[state.key] = bspRemoveID(bspTrees[state.key], id)
@@ -2379,6 +2401,7 @@ function M.setup(opts)
         -- another display) can change which screen a window is on.
         if win and hs.timer.secondsSinceEpoch() > bspSettleUntil then
             bspWindowInfo[win:id()] = nil
+            bspApplied[win:id()] = nil
         end
         invalidateWindowCache()
         bspRaiseFloating()
@@ -2393,6 +2416,7 @@ function M.setup(opts)
             bspFloatingFrames[id] = nil
             bspWinByID[id] = nil
             bspWindowInfo[id] = nil
+            bspApplied[id] = nil
             -- Kept briefly: the retile that notices the close still needs it
             -- to tell whether this was the focused window.
             hs.timer.doAfter(1, function()
