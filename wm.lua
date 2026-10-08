@@ -755,6 +755,48 @@ end
 -- changes drop everything).
 local bspWindowInfo = {}
 
+-- Apps that recently had windows come or go. The window filter can miss a
+-- window that comes back without an event of its own (the surviving native
+-- tab after the selected one closes), so for these apps the app's own window
+-- list is consulted as well.
+local bspDirtyPids = {}
+local BSP_DIRTY_FOR = 3
+
+local function bspMarkDirty(win)
+    local pid = win and win:pid()
+    if pid then bspDirtyPids[pid] = hs.timer.secondsSinceEpoch() + BSP_DIRTY_FOR end
+end
+
+local function bspWithRecentlyChangedApps(windows)
+    local now = hs.timer.secondsSinceEpoch()
+    local seen = {}
+    for _, win in ipairs(windows) do seen[win:id()] = true end
+
+    local ignored = {}
+    for _, name in ipairs(cfg.ignoreApps or {}) do ignored[name] = true end
+
+    local out = {}
+    for _, win in ipairs(windows) do out[#out + 1] = win end
+    for pid, expires in pairs(bspDirtyPids) do
+        if expires < now then
+            bspDirtyPids[pid] = nil
+        else
+            local app = hs.application.applicationForPID(pid)
+            if app and not ignored[app:name()] then
+                for _, win in ipairs(app:allWindows()) do
+                    local id = win:id()
+                    if id and not seen[id] and win:isStandard() and win:isVisible() then
+                        seen[id] = true
+                        out[#out + 1] = win
+                        dlog("added from app list: %s", tostring(id))
+                    end
+                end
+            end
+        end
+    end
+    return out
+end
+
 local function bspWindowInfoFor(win)
     local id = win:id()
     local info = bspWindowInfo[id]
@@ -832,7 +874,7 @@ local function bspWindowsByScreen(onlyUUID)
     local byScreen = {}
     bspGhosts = {}
 
-    local allWindows = running.windowFilter:getWindows() or {}
+    local allWindows = bspWithRecentlyChangedApps(running.windowFilter:getWindows() or {})
     local isBackgroundTab = bspBackgroundTabs(allWindows)
 
     for _, win in ipairs(allWindows) do
@@ -1168,6 +1210,7 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
 end
 
 local BSP_RETILE_DELAY = 0.06
+local BSP_TAB_SETTLE = 0.15
 
 local bspRetilePending = false
 local bspRetileForce = false
@@ -1187,7 +1230,12 @@ end
 -- focused just after it appears, and placing it needs that focus. With
 -- `immediate` (windows going away, which need no placement decision) the
 -- first event retiles straight away and any burst after it is coalesced.
-local function scheduleBSPRetile(force, immediate)
+local bspRetileDue = 0
+
+-- `delay` holds the retile back for events whose follow-ups arrive a moment
+-- later (a tab swap announces the old tab leaving before the new one
+-- appears). A pending retile is never brought forward by a later request.
+local function scheduleBSPRetile(force, immediate, delay)
     if not bspTilingEnabled then return end
 
     if force then
@@ -1195,15 +1243,22 @@ local function scheduleBSPRetile(force, immediate)
         bspWindowInfo = {}
     end
 
+    local now = hs.timer.secondsSinceEpoch()
+    local due = now + (delay or BSP_RETILE_DELAY)
+
     if immediate and not force and not bspRetileTimer then
         bspTileNow(true)
     else
         bspRetilePending = true
         bspRetileForce = bspRetileForce or force or false
-        if bspRetileTimer then bspRetileTimer:stop() end
+        if bspRetileTimer then
+            bspRetileTimer:stop()
+            if bspRetileDue > due then due = bspRetileDue end
+        end
     end
 
-    bspRetileTimer = hs.timer.doAfter(BSP_RETILE_DELAY, bspRetileFlush)
+    bspRetileDue = due
+    bspRetileTimer = hs.timer.doAfter(math.max(0, due - now), bspRetileFlush)
 end
 
 -- Apps update their window lists a little after the events that announce a
@@ -2317,6 +2372,7 @@ function M.setup(opts)
     }, function(win, appName, event)
         dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
         if win then bspWindowInfo[win:id()] = nil end
+        bspMarkDirty(win)
         invalidateWindowCache()
         scheduleBSPRetile()
         bspScheduleRecheck()
@@ -2332,8 +2388,15 @@ function M.setup(opts)
     }, function(win, appName, event)
         dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
         if win then bspWindowInfo[win:id()] = nil end
+        bspMarkDirty(win)
         invalidateWindowCache()
-        scheduleBSPRetile(false, true)
+        if event == hs.window.filter.windowNotInCurrentSpace then
+            -- Also how a tab swap looks, with the new tab arriving a moment
+            -- later: wait for it instead of treating this as a close.
+            scheduleBSPRetile(false, false, BSP_TAB_SETTLE)
+        else
+            scheduleBSPRetile(false, true)
+        end
         bspScheduleRecheck()
     end)
 
