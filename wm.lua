@@ -211,8 +211,14 @@ local function windowSnapshot(fresh)
     if fresh or not ffmSnapshot or now - ffmSnapshot.time > FFM_SNAPSHOT_TTL then
         local entries = {}
         for _, win in ipairs(hs.window.orderedWindows()) do
-            if win:isStandard() and win:isVisible() then
-                table.insert(entries, { win = win, id = win:id(), frame = win:frame() })
+            local id = win:id()
+            -- A tiled window is already known to be standard and visible, and
+            -- its tile is where it is: no need to ask the app.
+            local tile = bspRectFor(id)
+            if tile then
+                table.insert(entries, { win = win, id = id, frame = tile })
+            elseif win:isStandard() and win:isVisible() then
+                table.insert(entries, { win = win, id = id, frame = win:frame() })
             end
         end
         -- orderedWindows() omits windows of accessory apps (e.g. LinearMouse
