@@ -1701,16 +1701,33 @@ local spaceFocusPending = false
 local spaceRetryTimer, spaceSettleTimer, spaceFallbackTimer
 
 local function focusCurrentSpaceWindow(attempt)
-    -- Fresh each attempt: the Space has just changed, and a snapshot taken
-    -- mid-switch would otherwise be reused by the retries.
-    local win = windowUnderPoint(hs.mouse.absolutePosition(), true)
+    -- The window we last used in this Space, from our own tree and focus
+    -- record; only when there's none do we ask what is under the pointer.
+    local win = nil
+    local screen = hs.mouse.getCurrentScreen()
+    local tree = bspTilingEnabled and screen and bspTrees[bspKeyForScreen(screen)]
+    if tree then
+        local ids = bspCollectIDs(tree)
+        for _, fid in ipairs(bspFocusHistory) do
+            if ids[fid] and bspWinByID[fid] and bspWinByID[fid]:id() == fid then
+                win = bspWinByID[fid]
+                break
+            end
+        end
+    end
+
+    if not win then
+        -- Fresh each attempt: the Space has just changed, and a snapshot
+        -- taken mid-switch would otherwise be reused by the retries.
+        win = windowUnderPoint(hs.mouse.absolutePosition(), true)
+    end
     if not win then
         local entry = windowSnapshot()[1]
         win = entry and entry.win
     end
 
     if win then
-        win:focus()
+        bspFocus(win)
         warpToWindow(win)
     elseif attempt < 6 then
         spaceRetryTimer = hs.timer.doAfter(0.15, function() focusCurrentSpaceWindow(attempt + 1) end)
