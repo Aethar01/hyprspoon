@@ -118,15 +118,23 @@ end
 -- Assigned in the tree section: the tile rectangle of a tiled window, or nil.
 local bspRectFor
 
+local WARP_MOUSE_EVENT = 0x425350
+
 local function warpToWindow(win)
     if not win then return end
     -- Tiled windows warp to where their tile is, not where the app currently
     -- reports the window (which lags while it resizes).
     local f = bspRectFor and bspRectFor(win:id()) or win:frame()
-    hs.mouse.absolutePosition({
+    local point = {
         x = f.x + f.w / 2,
         y = f.y + f.h / 2,
-    })
+    }
+    hs.mouse.absolutePosition(point)
+    -- Warping alone doesn't send mouse movement to apps, which can leave
+    -- hover UI (e.g. Zen's expanding toolbar) stuck after a focus change.
+    hs.eventtap.event.newMouseEvent(hs.eventtap.event.types.mouseMoved, point)
+        :setProperty(hs.eventtap.event.properties.eventSourceUserData, WARP_MOUSE_EVENT)
+        :post()
 end
 
 local function warpToFocusedWindow(delay)
@@ -243,25 +251,50 @@ local function windowSnapshot(fresh)
     local now = hs.timer.secondsSinceEpoch()
     if fresh or not ffmSnapshot or now - ffmSnapshot.time > FFM_SNAPSHOT_TTL then
         local entries = {}
-        for _, win in ipairs(hs.window.orderedWindows()) do
-            local id = win:id()
-            -- A tiled window is already known to be standard and visible, and
-            -- its tile is where it is: no need to ask the app.
-            local tile = bspRectFor(id)
-            if tile then
-                table.insert(entries, { win = win, id = id, frame = tile })
-            elseif win:isStandard() and win:isVisible() then
-                table.insert(entries, { win = win, id = id, frame = win:frame() })
-            end
-        end
-        -- orderedWindows() omits windows of accessory apps (e.g. LinearMouse
-        -- settings), so add any floats the window filter knows about.
+        -- orderedWindows() enumerates every app over AX, even though the
+        -- filter already tracks our visible, standard windows. WindowServer
+        -- supplies live stacking order and floating geometry in one call.
         if running.windowFilter then
-            local seen = {}
-            for _, e in ipairs(entries) do seen[e.id] = true end
+            local byID, seen = {}, {}
+            local disjointTiles = true
             for _, win in ipairs(running.windowFilter:getWindows() or {}) do
                 local id = win:id()
-                if id and bspAutoFloat[id] and not seen[id] then
+                if id then
+                    byID[id] = win
+                    local tile = bspRectFor(id)
+                    if tile and not bspAutoFloat[id] then
+                        for _, entry in ipairs(entries) do
+                            local f = entry.frame
+                            if tile.x < f.x + f.w and f.x < tile.x + tile.w
+                               and tile.y < f.y + f.h and f.y < tile.y + tile.h then
+                                disjointTiles = false
+                            end
+                        end
+                        entries[#entries + 1] = { win = win, id = id, frame = tile }
+                    else
+                        disjointTiles = false
+                    end
+                end
+            end
+            -- Non-overlapping tiles need no stacking-order query at all.
+            if disjointTiles then
+                ffmSnapshot = { time = now, entries = entries }
+                return entries
+            end
+            entries = {}
+            for _, info in ipairs(hs.window.list(true)) do
+                local id = info.kCGWindowNumber
+                local win = byID[id]
+                if win then
+                    local b = info.kCGWindowBounds
+                    local frame = bspRectFor(id) or hs.geometry.rect(b.X, b.Y, b.Width, b.Height)
+                    entries[#entries + 1] = { win = win, id = id, frame = frame }
+                    seen[id] = true
+                end
+            end
+            -- Some accessory windows don't appear in WindowServer's list.
+            for id, win in pairs(byID) do
+                if bspAutoFloat[id] and not seen[id] then
                     table.insert(entries, { win = win, id = id, frame = win:frame() })
                 end
             end
@@ -658,13 +691,14 @@ end
 -- Moves we caused ourselves fire windowMoved shortly after; see onWindowMoved.
 local BSP_SETTLE = 0.35
 
--- Windows that can't be resized (popups, settings panes) float, centred on
--- their screen, instead of being tiled. Decided once per window and cached;
--- entries are dropped when the window is destroyed.
+-- Explicitly non-resizable windows float. Missing zoom buttons and delayed
+-- geometry updates aren't evidence of a fixed-size window.
 bspAutoFloat = {}
+local bspFloatChecks = {}
+local scheduleBSPRetile -- used by asynchronous classification below
 
--- The decisions persist across reloads (the probe below visibly shrinks and
--- restores a window, so it shouldn't rerun on every save of the config).
+-- Decisions persist across reloads; versioning expires the old resize-probe
+-- results, which could mistake slow or minimum-sized windows for floats.
 -- Window IDs can be reused after a reboot, so entries also record the app and
 -- are discarded if the machine has restarted since.
 local FLOATS_KEY = "bspAutoFloat"
@@ -696,13 +730,17 @@ local function bspAppName(win)
     return app and app:name() or ""
 end
 
-local function bspRememberFloat(win)
+local function bspRememberFloat(win, manual)
     local id = win:id()
-    bspSavedFloats[tostring(id)] = { float = bspAutoFloat[id] and true or false, app = bspAppName(win) }
+    bspSavedFloats[tostring(id)] = {
+        float = bspAutoFloat[id] and true or false, app = bspAppName(win),
+        version = 2, manual = manual or false,
+    }
     bspSaveFloats()
 end
 
 local function bspForgetFloat(id)
+    if bspFloatChecks[id] then bspFloatChecks[id]:stop() bspFloatChecks[id] = nil end
     bspAutoFloat[id] = nil
     if bspSavedFloats[tostring(id)] ~= nil then
         bspSavedFloats[tostring(id)] = nil
@@ -722,52 +760,46 @@ local function bspShouldFloat(win)
     if bspAutoFloat[id] ~= nil then return bspAutoFloat[id] end
 
     local saved = bspSavedFloats[tostring(id)]
-    if saved and saved.app == bspAppName(win) then
+    if saved and saved.app == bspAppName(win) and (saved.version == 2 or saved.manual) then
         bspAutoFloat[id] = saved.float
         return saved.float
     end
 
-    local float = false
-    local ax = hs.axuielement.windowElement(win)
-    if ax then
-        local okSize, sizeSettable = pcall(ax.isAttributeSettable, ax, "AXSize")
-        local zoom = ax:attributeValue("AXZoomButton")
-        local zoomEnabled = zoom and zoom:attributeValue("AXEnabled")
-        float = (okSize and sizeSettable == false) or not zoomEnabled
-    end
+    if bspFloatChecks[id] then return false end
 
-    -- Attributes can lie (System Settings claims to be resizable but has a
-    -- fixed width), so probe: try shrinking and see whether each axis moves.
-    if not float then
-        local f = win:frame()
-        win:setFrame({ x = f.x, y = f.y, w = f.w - 40, h = f.h - 40 }, 0)
-        local g = win:frame()
-        float = math.abs(g.w - f.w) < 1 or math.abs(g.h - f.h) < 1
-        if float then
-            -- A slow app may not have applied the resize when we read it
-            -- back; look once more before deciding the window can't resize.
-            hs.timer.usleep(50000)
-            g = win:frame()
-            float = math.abs(g.w - f.w) < 1 or math.abs(g.h - f.h) < 1
-        end
-        win:setFrame(f, 0)
-        -- The probe's own moves echo back as windowMoved events.
-        bspSettleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
+    -- Let newly-created accessibility elements settle. Require consistent
+    -- negative answers; unknown attributes default to tiling. No resize
+    -- probe or sleep: neither minimum sizes nor a busy app imply floating.
+    local delays = { 0.2, 0.4, 0.8 }
+    local fixedCount = 0
+    local function check(step)
+        bspFloatChecks[id] = hs.timer.doAfter(delays[step], function()
+            bspFloatChecks[id] = nil
+            if win:id() ~= id or not running.windowFilter or not bspTilingEnabled then return end
+            local ok, settable = pcall(function()
+                local ax = hs.axuielement.windowElement(win)
+                return ax and ax:isAttributeSettable("AXSize")
+            end)
+            fixedCount = (ok and settable == false) and (fixedCount + 1) or 0
+            if not (ok and settable == true) and step < #delays then
+                check(step + 1)
+                return
+            end
+            bspAutoFloat[id] = fixedCount == #delays
+            bspRememberFloat(win)
+            if bspAutoFloat[id] then
+                local screen = win:screen()
+                if screen then
+                    local sf, f = screen:frame(), win:frame()
+                    win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2,
+                        y = sf.y + (sf.h - f.h) / 2 })
+                end
+                scheduleBSPRetile(true)
+            end
+        end)
     end
-
-    bspAutoFloat[id] = float
-    bspRememberFloat(win)
-    if float then
-        local screen = win:screen()
-        if screen then
-            local sf, f = screen:frame(), win:frame()
-            win:setTopLeft({
-                x = sf.x + (sf.w - f.w) / 2,
-                y = sf.y + (sf.h - f.h) / 2,
-            })
-        end
-    end
-    return float
+    check(1)
+    return false
 end
 
 -- Floating windows stay above the tiles. Hammerspoon can't set a window
@@ -813,6 +845,12 @@ local bspWindowInfo = {}
 -- window moves on its own (windowMoved outside our settle period), when the
 -- user adjusts it, and on forced retiles.
 local bspApplied = {}
+local bspLayoutChecks = {} -- window id -> pending frame verification
+
+local function bspCancelLayoutCheck(id)
+    local pending = bspLayoutChecks[id]
+    if pending then pending.timer:stop() bspLayoutChecks[id] = nil end
+end
 
 -- Apps that recently had windows come or go. The window filter can miss a
 -- window that comes back without an event of its own (the surviving native
@@ -886,11 +924,11 @@ local function bspWindowInfoFor(win)
 end
 
 -- Native tabs: the filter reports every tab of a tabbed window as a window,
--- all "visible" and at the same frame, but only one is the live tab. Tiles
--- never share a frame, so windows of one app stacked at an identical frame
--- are tabs of one group, and all but one are background tabs that must not
--- get a tile. The live one is the tab the app itself lists, else the one
--- already tiled, else the oldest. A window alone at its frame is always
+-- all "visible" and at the same frame, but only one is the live tab. Separate
+-- windows can also open at identical frames (e.g. Ghostty), so keep every
+-- window the app itself lists and only suppress unlisted duplicates. If none
+-- are listed yet, prefer the one already tiled, else the oldest.
+-- A window alone at its frame is always
 -- live: the app's own list can lag behind events (e.g. right after the
 -- selected tab closes), so it's only used to choose within a group.
 local function bspBackgroundTabs(windows)
@@ -941,7 +979,10 @@ local function bspBackgroundTabs(windows)
                         if ra ~= rb then return ra < rb end
                         return ia < ib
                     end)
-                    for i = 2, #group do background[group[i]:id()] = true end
+                    for i = 2, #group do
+                        local id = group[i]:id()
+                        if not listed[id] then background[id] = true end
+                    end
                 end
             end
         end
@@ -987,11 +1028,11 @@ local function bspWindowsByScreen(onlyUUID)
     return byScreen
 end
 
--- Where a new window goes relative to a tile: wide tiles split left/right,
--- tall ones top/bottom. The pointer's position along that axis picks the
+-- Where a new window goes relative to a tile: split top/bottom unless the
+-- width exceeds 1.5 times the height. The pointer's position along that axis picks the
 -- side; in the middle third (or outside the tile) it's right/bottom.
 local function bspSplitSide(rect, point)
-    local horizontal = rect.w >= rect.h
+    local horizontal = rect.w > 1.5 * rect.h
     local t = horizontal and (point.x - rect.x) / rect.w
                          or (point.y - rect.y) / rect.h
     if pointInFrame(point, rect) then
@@ -1172,6 +1213,56 @@ local function bspInset(rect, amount)
     )
 end
 
+local function bspFramesMatch(a, b)
+    return math.abs(a.x - b.x) <= 1 and math.abs(a.y - b.y) <= 1
+        and math.abs(a.w - b.w) <= 1 and math.abs(a.h - b.h) <= 1
+end
+
+-- Accessibility setters can return before an app applies the frame, or be
+-- ignored during startup. Cache only observed success and retry a bounded
+-- number of times; minimum-size constraints must not create a retry loop.
+local function bspVerifyLayout(win, rect, rectKey)
+    local id = win:id()
+    bspCancelLayoutCheck(id)
+    local pending = { key = rectKey, started = hs.timer.secondsSinceEpoch() }
+    bspLayoutChecks[id] = pending
+    local delays = { 0.15, 0.35, 0.7 }
+    local function check(step)
+        pending.timer = hs.timer.doAfter(delays[step], function()
+            if bspLayoutChecks[id] ~= pending then return end
+            local _, leaf, key = bspFindByID(id)
+            if not bspTilingEnabled or not running.windowFilter or win:id() ~= id
+               or bspAutoFloat[id] or dragState or hs.mouse.getButtons().left
+               or bspLastMouseTime > pending.started
+               or not leaf or not leaf.rect or not bspFramesMatch(leaf.rect, rect) then
+                bspLayoutChecks[id] = nil
+                return
+            end
+            if bspFramesMatch(win:frame(), rect) then
+                bspApplied[id] = rectKey
+                bspLayoutChecks[id] = nil
+            elseif step < #delays then
+                -- Only query screen/visibility/fullscreen when a correction
+                -- is needed. Matching frames require no further AX calls.
+                local screen = win:screen()
+                if not screen or key ~= bspKeyForScreen(screen)
+                   or not win:isVisible() or win:isFullScreen() then
+                    bspLayoutChecks[id] = nil
+                    return
+                end
+                bspSettleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
+                win:setFrame(rect, 0)
+                invalidateWindowCache()
+                check(step + 1)
+            else
+                bspLayoutChecks[id] = nil
+                dlog("frame did not settle for %s after retries", tostring(id))
+            end
+        end)
+    end
+    check(1)
+end
+
 local function bspApplyTree(node, rect, byID)
     if not node then return end
 
@@ -1184,6 +1275,9 @@ local function bspApplyTree(node, rect, byID)
             local id = node.windowID
             local rectKey = string.format("%.0f,%.0f,%.0f,%.0f", rect.x, rect.y, rect.w, rect.h)
             if bspApplied[id] == rectKey then return end
+            local pending = bspLayoutChecks[id]
+            if pending and pending.key == rectKey then return end
+            bspCancelLayoutCheck(id)
             -- setFrame is several accessibility calls and fires windowMoved,
             -- so leave windows that are already in place alone.
             local f = win:frame()
@@ -1198,7 +1292,12 @@ local function bspApplyTree(node, rect, byID)
             elseif resized then
                 win:setSize(rect)
             end
-            bspApplied[id] = rectKey
+            if moved or resized then
+                bspApplied[id] = nil
+                bspVerifyLayout(win, hs.geometry.copy(rect), rectKey)
+            else
+                bspApplied[id] = rectKey
+            end
         end
         return
     end
@@ -1242,7 +1341,6 @@ end
 -- What each screen last laid out (window IDs + screen frame). Retiles caused
 -- by window set changes are skipped for screens whose signature is unchanged.
 local bspSignatures = {}
-local bspLayoutGen = 0 -- bumped whenever a pass re-lays-out a screen
 
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
 -- flips only ever affect the layout of the window's own screen).
@@ -1253,6 +1351,7 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
 
     bspApplyingLayout = true
     bspKeyCache = {}
+    local changed = false
 
     -- An error mid-pass must not leave bspApplyingLayout set, or every later
     -- retile would be skipped. Run guarded, report, and force the next pass.
@@ -1273,8 +1372,8 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
                     usableFrame.x, usableFrame.y, usableFrame.w, usableFrame.h)
 
             if not (onlyIfChanged and bspSignatures[key] == signature) then
+                changed = true
                 bspSignatures[key] = signature
-                bspLayoutGen = bspLayoutGen + 1
                 local tree, byID = bspReconcileTree(key, windows)
                 bspApplyTree(tree, usableFrame, byID)
             end
@@ -1290,10 +1389,12 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
 
     bspKeyCache = nil
     bspApplyingLayout = false
-    bspSaveTrees()
-    bspRaiseFloating()
-    bspSettleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
-    invalidateWindowCache()
+    if changed or not ok then
+        bspSaveTrees()
+        bspRaiseFloating()
+        bspSettleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
+        invalidateWindowCache()
+    end
 
     -- A closed window hands focus back to its tree sibling. This runs last,
     -- after the layout, so the cursor warps to the sibling's final frame.
@@ -1352,10 +1453,11 @@ local bspRetileDue = 0
 -- `delay` holds the retile back for events whose follow-ups arrive a moment
 -- later (a tab swap announces the old tab leaving before the new one
 -- appears). A pending retile is never brought forward by a later request.
-local function scheduleBSPRetile(force, immediate, delay)
+scheduleBSPRetile = function(force, immediate, delay)
     if not bspTilingEnabled then return end
 
     if force then
+        for id in pairs(bspLayoutChecks) do bspCancelLayoutCheck(id) end
         bspSignatures = {}
         bspWindowInfo = {}
         bspApplied = {}
@@ -1386,14 +1488,13 @@ end
 local bspRecheckTimer = nil
 local function bspScheduleRecheck(step)
     step = step or 1
-    local delays = { 0.2, 0.4 }
+    local delays = { 0.2, 0.4, 0.8 }
     if bspRecheckTimer then bspRecheckTimer:stop() end
     bspRecheckTimer = hs.timer.doAfter(delays[step], function()
         bspRecheckTimer = nil
-        local gen = bspLayoutGen
         bspTileNow(true)
-        -- Only look a second time if the first look found something new.
-        if bspLayoutGen ~= gen and step < #delays then bspScheduleRecheck(step + 1) end
+        -- A slow app can still be absent at the first check.
+        if step < #delays then bspScheduleRecheck(step + 1) end
     end)
 end
 
@@ -1920,9 +2021,10 @@ function M.toggleFloat()
     if not win or not bspTilingEnabled then return end
 
     local id = win:id()
-    bspShouldFloat(win) -- make sure it's classified (may centre it)
+    bspShouldFloat(win) -- load any saved decision before overriding it
+    if bspFloatChecks[id] then bspFloatChecks[id]:stop() bspFloatChecks[id] = nil end
     bspAutoFloat[id] = not bspAutoFloat[id]
-    bspRememberFloat(win)
+    bspRememberFloat(win, true)
 
     if bspAutoFloat[id] then
         local screen, f = win:screen(), win:frame()
@@ -2309,6 +2411,11 @@ local function ffmFocusPending()
 end
 
 local function onMouseMoved(event)
+    -- Keyboard warps already chose their target; the hover notification must
+    -- not start a competing focus-follows-mouse request.
+    if event:getProperty(hs.eventtap.event.properties.eventSourceUserData) == WARP_MOUSE_EVENT then
+        return false
+    end
     if not cfg.focusFollowsMouse or dragState then
         return false
     end
@@ -2386,6 +2493,9 @@ end
 local shutdownHooked = false
 
 function M.stop()
+    for id in pairs(bspLayoutChecks) do bspCancelLayoutCheck(id) end
+    for _, timer in pairs(bspFloatChecks) do timer:stop() end
+    bspFloatChecks = {}
     if running.mouseTap then running.mouseTap:stop() end
     if running.moveTap then running.moveTap:stop() end
     if running.windowFilter then running.windowFilter:unsubscribeAll() end
@@ -2495,6 +2605,7 @@ function M.setup(opts)
     filter:subscribe(hs.window.filter.windowDestroyed, function(win)
         local id = win and win:id()
         if id then
+            bspCancelLayoutCheck(id)
             bspForgetFloat(id)
             bspFloatingFrames[id] = nil
             bspWinByID[id] = nil
