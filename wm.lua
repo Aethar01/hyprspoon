@@ -23,6 +23,7 @@ local M = {}
 local defaults = {
     -- Focus the window under the pointer as it moves.
     focusFollowsMouse = true,
+    debug = true, -- log tab/tile decisions to the Hammerspoon console
     reassertFocus = true, -- undo macOS moving focus right after we set it
 
     -- Seconds to wait on an unresponsive app's accessibility API before
@@ -98,6 +99,18 @@ local bspPidByID = {}      -- window id -> owning process, for telling tab swaps
 
 -- macOS's view of focus (an accessibility query). Use currentWindow() for
 -- actions; this is for checking what macOS actually did.
+local function dlog(fmt, ...)
+    if cfg.debug then
+        print(string.format("[wm %.3f] " .. fmt, hs.timer.secondsSinceEpoch() % 1000, ...))
+    end
+end
+
+local function idList(list, f)
+    local out = {}
+    for _, x in ipairs(list) do out[#out + 1] = tostring(f and f(x) or x) end
+    return "[" .. table.concat(out, ",") .. "]"
+end
+
 local function focusedWindow()
     return hs.window.focusedWindow()
 end
@@ -916,6 +929,17 @@ local function bspReconcileTree(key, windows)
     -- the same app now centred inside its tile are the same tile: hand it
     -- over (and its focus) instead of splitting a new one in.
     local before = bspCollectIDs(previous)
+    if cfg.debug then
+        local removed, added = {}, {}
+        for id in pairs(before) do if not valid[id] then removed[#removed + 1] = id end end
+        for id in pairs(valid) do if not before[id] then added[#added + 1] = id end end
+        if #removed > 0 or #added > 0 or #bspGhosts > 0 then
+            dlog("reconcile %s removed=%s added=%s ghosts=%s focus=%s",
+                key:sub(-6), idList(removed), idList(added),
+                idList(bspGhosts, function(w) return w:id() end),
+                idList(bspFocusHistory):sub(1, 40))
+        end
+    end
     for oldID in pairs(before) do
         if not valid[oldID] then
             local _, leaf = bspAncestors(previous, oldID)
@@ -927,7 +951,11 @@ local function bspReconcileTree(key, windows)
                 if not before[newID] and win:pid() == bspPidByID[oldID]
                    and leaf and leaf.rect then
                     local f = win:frame()
+                    dlog("candidate %s for %s: frame=%d,%d,%d,%d rect=%d,%d,%d,%d", tostring(newID),
+                        tostring(oldID), f.x, f.y, f.w, f.h,
+                        leaf.rect.x, leaf.rect.y, leaf.rect.w, leaf.rect.h)
                     if pointInFrame({ x = f.x + f.w / 2, y = f.y + f.h / 2 }, leaf.rect) then
+                        dlog("handoff %s -> %s", tostring(oldID), tostring(newID))
                         leaf.windowID = newID
                         valid[newID] = true
                         byID[newID] = win
@@ -949,6 +977,7 @@ local function bspReconcileTree(key, windows)
     for id in pairs(before) do
         if not valid[id] and bspWasFocused(id) then
             bspPendingRefocus = bspSiblingToFocus(previous, id, valid) or bspPendingRefocus
+            dlog("closed focused %s -> refocus %s", tostring(id), tostring(bspPendingRefocus))
             break
         end
     end
@@ -2285,7 +2314,8 @@ function M.setup(opts)
         hs.window.filter.windowUnminimized,
         hs.window.filter.windowUnfullscreened,
         hs.window.filter.windowInCurrentSpace,
-    }, function(win)
+    }, function(win, appName, event)
+        dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
         if win then bspWindowInfo[win:id()] = nil end
         invalidateWindowCache()
         scheduleBSPRetile()
@@ -2299,7 +2329,8 @@ function M.setup(opts)
         hs.window.filter.windowMinimized,
         hs.window.filter.windowFullscreened,
         hs.window.filter.windowNotInCurrentSpace,
-    }, function(win)
+    }, function(win, appName, event)
+        dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
         if win then bspWindowInfo[win:id()] = nil end
         invalidateWindowCache()
         scheduleBSPRetile(false, true)
