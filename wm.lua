@@ -721,14 +721,15 @@ end
 -- Moves we caused ourselves fire windowMoved shortly after; see onWindowMoved.
 local BSP_SETTLE = 0.35
 
--- Explicitly non-resizable windows float. Missing zoom buttons and delayed
--- geometry updates aren't evidence of a fixed-size window.
+-- Non-resizable windows, and resizable ones that can't go full screen, float.
+-- Missing zoom buttons and delayed geometry updates aren't evidence of a
+-- fixed-size window.
 bspAutoFloat = {}
 local bspFloatChecks = {}
 local scheduleBSPRetile -- used by asynchronous classification below
 
--- Decisions persist across reloads; versioning expires the old resize-probe
--- results, which could mistake slow or minimum-sized windows for floats.
+-- Decisions persist across reloads; versioning expires results from older
+-- rules (resize probes mistook slow or minimum-sized windows for floats).
 -- Window IDs can be reused after a reboot, so entries also record the app and
 -- are discarded if the machine has restarted since.
 local FLOATS_KEY = "bspAutoFloat"
@@ -764,7 +765,7 @@ local function bspRememberFloat(win, manual)
     local id = win:id()
     bspSavedFloats[tostring(id)] = {
         float = bspAutoFloat[id] and true or false, app = bspAppName(win),
-        version = 2, manual = manual or false,
+        version = 3, manual = manual or false,
     }
     bspSaveFloats()
 end
@@ -785,12 +786,29 @@ local function bspHasFloating()
     return false
 end
 
+-- Whether a window has a fixed layout, from its attributes alone; nil when
+-- they can't be read. macOS doesn't expose minimum or maximum sizes, so a
+-- window fixed along one axis (System Settings has a fixed width) still
+-- reports AXSize settable. Such windows also opt out of full screen.
+local function bspIsFixedSize(win)
+    local ok, fixed = pcall(function()
+        local ax = hs.axuielement.windowElement(win)
+        if not ax then return nil end
+        local sizable = ax:isAttributeSettable("AXSize")
+        if sizable ~= true then return sizable == false or nil end
+        if ax:attributeValue("AXFullScreen") == nil then return false end
+        return not ax:isAttributeSettable("AXFullScreen")
+    end)
+    if ok then return fixed end
+    return nil
+end
+
 local function bspShouldFloat(win)
     local id = win:id()
     if bspAutoFloat[id] ~= nil then return bspAutoFloat[id] end
 
     local saved = bspSavedFloats[tostring(id)]
-    if saved and saved.app == bspAppName(win) and (saved.version == 2 or saved.manual) then
+    if saved and saved.app == bspAppName(win) and (saved.version == 3 or saved.manual) then
         bspAutoFloat[id] = saved.float
         return saved.float
     end
@@ -798,8 +816,8 @@ local function bspShouldFloat(win)
     if bspFloatChecks[id] then return false end
 
     -- Let newly-created accessibility elements settle. Require consistent
-    -- negative answers; unknown attributes default to tiling. No resize
-    -- probe or sleep: neither minimum sizes nor a busy app imply floating.
+    -- answers; unknown attributes default to tiling. No resize probe or
+    -- sleep: neither minimum sizes nor a busy app imply floating.
     local delays = { 0.2, 0.4, 0.8 }
     local fixedCount = 0
     local function check(step)
@@ -807,12 +825,9 @@ local function bspShouldFloat(win)
             bspFloatChecks[id] = nil
             if win:id() ~= id or not running.windowFilter or not bspTilingEnabled
                or isPictureInPicture(win) then return end
-            local ok, settable = pcall(function()
-                local ax = hs.axuielement.windowElement(win)
-                return ax and ax:isAttributeSettable("AXSize")
-            end)
-            fixedCount = (ok and settable == false) and (fixedCount + 1) or 0
-            if not (ok and settable == true) and step < #delays then
+            local fixed = bspIsFixedSize(win)
+            fixedCount = fixed and (fixedCount + 1) or 0
+            if fixed ~= false and step < #delays then
                 check(step + 1)
                 return
             end
@@ -1176,8 +1191,9 @@ local function bspReconcileTree(key, windows)
         end
     end
 
+    -- Windows that left the tree to float are still open and keep focus.
     for id in pairs(before) do
-        if not valid[id] and bspWasFocused(id) then
+        if not valid[id] and not bspAutoFloat[id] and bspWasFocused(id) then
             bspPendingRefocus = bspSiblingToFocus(previous, id, valid) or bspPendingRefocus
             dlog("closed focused %s -> refocus %s", tostring(id), tostring(bspPendingRefocus))
             break

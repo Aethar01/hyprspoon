@@ -50,17 +50,23 @@ local env = setmetatable({
     scheduleBSPRetile = function() end,
     hs = { timer = { doAfter = after, secondsSinceEpoch = function() return now end } },
 }, { __index = _G })
-local answers, answer = {}, 0
+local answers, answer, fullScreen = {}, 0, nil
 env.hs.axuielement = { windowElement = function()
-    return { isAttributeSettable = function()
-        answer = answer + 1
-        return answers[answer]
-    end }
+    return {
+        isAttributeSettable = function(_, name)
+            if name == "AXFullScreen" then return fullScreen end
+            answer = answer + 1
+            return answers[answer]
+        end,
+        attributeValue = function(_, name)
+            if name == "AXFullScreen" and fullScreen ~= nil then return false end
+        end,
+    }
 end }
 local win = { id = function() return 1 end, screen = function() return nil end,
     title = function() return "test" end }
-local shouldFloat = assert(load(extract("local function bspShouldFloat(win)",
-    "-- Floating windows stay above" ) .. "return bspShouldFloat", "float", "t", env))()
+local shouldFloat = assert(load(extract("local function bspIsFixedSize(win)",
+    "-- Floating windows stay above") .. "return bspShouldFloat", "float", "t", env))()
 local function classify(values)
     queue, answers, answer = {}, values, 0
     env.bspAutoFloat, env.bspFloatChecks = {}, {}
@@ -72,9 +78,14 @@ assert(classify({true}) == false, "resizable windows need no zoom button")
 assert(classify({false, true}) == false, "startup false must not persist")
 assert(classify({false, false, false}) == true, "confirmed fixed-size windows float")
 assert(classify({}) == false, "unknown accessibility attributes must not float")
+fullScreen = false
+assert(classify({true, true, true}) == true, "resizable windows that can't go full screen float")
+fullScreen = true
+assert(classify({true}) == false, "resizable windows that can go full screen tile")
+fullScreen = nil
 env.bspSavedFloats["1"] = { app = "test", float = true }
 assert(classify({true}) == false, "old probe results must expire")
-env.bspSavedFloats["1"] = { app = "test", float = true, version = 2, manual = true }
+env.bspSavedFloats["1"] = { app = "test", float = true, version = 3, manual = true }
 env.bspAutoFloat = {}
 assert(shouldFloat(win) == true and #queue == 0, "manual override survives reload")
 
