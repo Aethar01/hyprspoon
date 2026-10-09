@@ -721,18 +721,16 @@ end
 -- Moves we caused ourselves fire windowMoved shortly after; see onWindowMoved.
 local BSP_SETTLE = 0.35
 
--- Non-resizable windows, and resizable ones that can't go full screen, float.
--- Missing zoom buttons and delayed geometry updates aren't evidence of a
--- fixed-size window.
+-- Windows that can't go full screen float. Fixed-layout windows (dialogs,
+-- non-resizable windows, System Settings with its fixed width) opt out of
+-- it, and unlike their minimum and maximum sizes, macOS exposes it. The
+-- attribute is final as soon as the window exists, so one read decides.
 bspAutoFloat = {}
-local bspFloatChecks = {}
-local scheduleBSPRetile -- used by asynchronous classification below
 
--- Decisions persist across reloads; versioning expires results from older
--- rules (resize probes mistook slow or minimum-sized windows for floats).
--- Window IDs can be reused after a reboot, so entries also record the app and
--- are discarded if the machine has restarted since.
-local FLOATS_KEY = "bspAutoFloat"
+-- Manual overrides persist across reloads. Window IDs can be reused after a
+-- reboot, so entries also record the app and are discarded if the machine
+-- has restarted since.
+local FLOATS_KEY = "bspManualFloats"
 local bspSavedFloats = {}
 do
     local saved = hs.settings.get(FLOATS_KEY)
@@ -742,18 +740,8 @@ do
     end
 end
 
-local bspFloatsTimer = nil
-
-local function bspSaveFloatsNow()
-    hs.settings.set(FLOATS_KEY, { boot = bootTime, entries = bspSavedFloats })
-end
-
 local function bspSaveFloats()
-    if bspFloatsTimer then bspFloatsTimer:stop() end
-    bspFloatsTimer = hs.timer.doAfter(1, function()
-        bspFloatsTimer = nil
-        bspSaveFloatsNow()
-    end)
+    hs.settings.set(FLOATS_KEY, { boot = bootTime, entries = bspSavedFloats })
 end
 
 local function bspAppName(win)
@@ -761,17 +749,13 @@ local function bspAppName(win)
     return app and app:name() or ""
 end
 
-local function bspRememberFloat(win, manual)
+local function bspRememberFloat(win)
     local id = win:id()
-    bspSavedFloats[tostring(id)] = {
-        float = bspAutoFloat[id] and true or false, app = bspAppName(win),
-        version = 3, manual = manual or false,
-    }
+    bspSavedFloats[tostring(id)] = { float = bspAutoFloat[id] and true or false, app = bspAppName(win) }
     bspSaveFloats()
 end
 
 local function bspForgetFloat(id)
-    if bspFloatChecks[id] then bspFloatChecks[id]:stop() bspFloatChecks[id] = nil end
     bspAutoFloat[id] = nil
     if bspSavedFloats[tostring(id)] ~= nil then
         bspSavedFloats[tostring(id)] = nil
@@ -786,66 +770,34 @@ local function bspHasFloating()
     return false
 end
 
--- Whether a window has a fixed layout, from its attributes alone; nil when
--- they can't be read. macOS doesn't expose minimum or maximum sizes, so a
--- window fixed along one axis (System Settings has a fixed width) still
--- reports AXSize settable. Such windows also opt out of full screen.
-local function bspIsFixedSize(win)
-    local ok, fixed = pcall(function()
-        local ax = hs.axuielement.windowElement(win)
-        if not ax then return nil end
-        local sizable = ax:isAttributeSettable("AXSize")
-        if sizable ~= true then return sizable == false or nil end
-        if ax:attributeValue("AXFullScreen") == nil then return false end
-        return not ax:isAttributeSettable("AXFullScreen")
-    end)
-    if ok then return fixed end
-    return nil
-end
-
 local function bspShouldFloat(win)
     local id = win:id()
     if bspAutoFloat[id] ~= nil then return bspAutoFloat[id] end
 
     local saved = bspSavedFloats[tostring(id)]
-    if saved and saved.app == bspAppName(win) and (saved.version == 3 or saved.manual) then
+    if saved and saved.app == bspAppName(win) then
         bspAutoFloat[id] = saved.float
         return saved.float
     end
 
-    if bspFloatChecks[id] then return false end
+    if isPictureInPicture(win) then return false end
+    local ok, canFullScreen = pcall(function()
+        local ax = hs.axuielement.windowElement(win)
+        return ax and ax:isAttributeSettable("AXFullScreen")
+    end)
+    -- Unreadable (a busy app, or no such attribute): tile, ask next pass.
+    if not ok or canFullScreen == nil then return false end
 
-    -- Let newly-created accessibility elements settle. Require consistent
-    -- answers; unknown attributes default to tiling. No resize probe or
-    -- sleep: neither minimum sizes nor a busy app imply floating.
-    local delays = { 0.2, 0.4, 0.8 }
-    local fixedCount = 0
-    local function check(step)
-        bspFloatChecks[id] = hs.timer.doAfter(delays[step], function()
-            bspFloatChecks[id] = nil
-            if win:id() ~= id or not running.windowFilter or not bspTilingEnabled
-               or isPictureInPicture(win) then return end
-            local fixed = bspIsFixedSize(win)
-            fixedCount = fixed and (fixedCount + 1) or 0
-            if fixed ~= false and step < #delays then
-                check(step + 1)
-                return
-            end
-            bspAutoFloat[id] = fixedCount == #delays
-            bspRememberFloat(win)
-            if bspAutoFloat[id] then
-                local screen = win:screen()
-                if screen then
-                    local sf, f = screen:frame(), win:frame()
-                    win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2,
-                        y = sf.y + (sf.h - f.h) / 2 })
-                end
-                scheduleBSPRetile(true)
-            end
-        end)
+    bspAutoFloat[id] = not canFullScreen
+    if bspAutoFloat[id] then
+        local screen = win:screen()
+        if screen then
+            local sf, f = screen:frame(), win:frame()
+            win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2,
+                y = sf.y + (sf.h - f.h) / 2 })
+        end
     end
-    check(1)
-    return false
+    return bspAutoFloat[id]
 end
 
 -- Floating windows stay above the tiles. Hammerspoon can't set a window
@@ -1486,7 +1438,7 @@ local bspRetileDue = 0
 -- `delay` holds the retile back for events whose follow-ups arrive a moment
 -- later (a tab swap announces the old tab leaving before the new one
 -- appears). A pending retile is never brought forward by a later request.
-scheduleBSPRetile = function(force, immediate, delay)
+local function scheduleBSPRetile(force, immediate, delay)
     if not bspTilingEnabled then return end
 
     if force then
@@ -2079,9 +2031,8 @@ function M.toggleFloat()
 
     local id = win:id()
     bspShouldFloat(win) -- load any saved decision before overriding it
-    if bspFloatChecks[id] then bspFloatChecks[id]:stop() bspFloatChecks[id] = nil end
     bspAutoFloat[id] = not bspAutoFloat[id]
-    bspRememberFloat(win, true)
+    bspRememberFloat(win)
 
     if bspAutoFloat[id] then
         local screen, f = win:screen(), win:frame()
@@ -2548,8 +2499,6 @@ local shutdownHooked = false
 
 function M.stop()
     for id in pairs(bspLayoutChecks) do bspCancelLayoutCheck(id) end
-    for _, timer in pairs(bspFloatChecks) do timer:stop() end
-    bspFloatChecks = {}
     if running.mouseTap then running.mouseTap:stop() end
     if running.moveTap then running.moveTap:stop() end
     if running.windowFilter then running.windowFilter:unsubscribeAll() end
@@ -2564,11 +2513,6 @@ function M.stop()
     if bspFocusCheck then bspFocusCheck:stop() end
     bspRetileTimer, bspRetilePending, bspRetileForce = nil, false, false
     moveWaitTimer, moveWaitWin, ffmPending = nil, nil, nil
-    if bspFloatsTimer then
-        bspFloatsTimer:stop()
-        bspFloatsTimer = nil
-        bspSaveFloatsNow()
-    end
     if bspSaveTimer then
         bspSaveTimer:stop()
         bspSaveTimer = nil

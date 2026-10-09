@@ -42,52 +42,42 @@ local function drain()
 end
 
 local env = setmetatable({
-    bspAutoFloat = {}, bspSavedFloats = {}, bspFloatChecks = {},
+    bspAutoFloat = {}, bspSavedFloats = {},
     bspTilingEnabled = true, running = { windowFilter = {} },
     bspAppName = function() return "test" end,
     isPictureInPicture = isPiP,
-    bspRememberFloat = function() end,
-    scheduleBSPRetile = function() end,
     hs = { timer = { doAfter = after, secondsSinceEpoch = function() return now end } },
 }, { __index = _G })
-local answers, answer, fullScreen = {}, 0, nil
+local fullScreen, axReads = nil, 0
 env.hs.axuielement = { windowElement = function()
-    return {
-        isAttributeSettable = function(_, name)
-            if name == "AXFullScreen" then return fullScreen end
-            answer = answer + 1
-            return answers[answer]
-        end,
-        attributeValue = function(_, name)
-            if name == "AXFullScreen" and fullScreen ~= nil then return false end
-        end,
-    }
+    axReads = axReads + 1
+    return { isAttributeSettable = function(_, name)
+        assert(name == "AXFullScreen", "only full-screen support decides floating")
+        return fullScreen
+    end }
 end }
+local title = "test"
 local win = { id = function() return 1 end, screen = function() return nil end,
-    title = function() return "test" end }
-local shouldFloat = assert(load(extract("local function bspIsFixedSize(win)",
+    title = function() return title end }
+local shouldFloat = assert(load(extract("local function bspShouldFloat(win)",
     "-- Floating windows stay above") .. "return bspShouldFloat", "float", "t", env))()
-local function classify(values)
-    queue, answers, answer = {}, values, 0
-    env.bspAutoFloat, env.bspFloatChecks = {}, {}
-    assert(shouldFloat(win) == false)
-    drain()
-    return env.bspAutoFloat[1]
+local function classify(value)
+    fullScreen, axReads = value, 0
+    env.bspAutoFloat, env.bspSavedFloats = {}, {}
+    return shouldFloat(win)
 end
-assert(classify({true}) == false, "resizable windows need no zoom button")
-assert(classify({false, true}) == false, "startup false must not persist")
-assert(classify({false, false, false}) == true, "confirmed fixed-size windows float")
-assert(classify({}) == false, "unknown accessibility attributes must not float")
-fullScreen = false
-assert(classify({true, true, true}) == true, "resizable windows that can't go full screen float")
-fullScreen = true
-assert(classify({true}) == false, "resizable windows that can go full screen tile")
-fullScreen = nil
-env.bspSavedFloats["1"] = { app = "test", float = true }
-assert(classify({true}) == false, "old probe results must expire")
-env.bspSavedFloats["1"] = { app = "test", float = true, version = 3, manual = true }
-env.bspAutoFloat = {}
-assert(shouldFloat(win) == true and #queue == 0, "manual override survives reload")
+assert(classify(false) == true and env.bspAutoFloat[1] == true, "windows that can't go full screen float")
+assert(classify(true) == false and env.bspAutoFloat[1] == false, "windows that can go full screen tile")
+assert(classify(nil) == false and env.bspAutoFloat[1] == nil, "unreadable windows tile and are asked again")
+classify(false)
+shouldFloat(win)
+assert(axReads == 1, "one read decides")
+title = "Picture-in-Picture"
+assert(classify(false) == false and axReads == 0, "PiP is never classified")
+title = "test"
+classify(false)
+env.bspAutoFloat, env.bspSavedFloats["1"], axReads = {}, { app = "test", float = false }, 0
+assert(shouldFloat(win) == false and axReads == 0, "manual override survives reload")
 
 local appEnv = setmetatable({
     hs = env.hs, isPictureInPicture = isPiP,
