@@ -2373,11 +2373,16 @@ local function beginMouseDrag(mode, point)
     if not win then return false end
 
     win:focus()
+    -- Resizes are paced to the display's refresh rate (see onMouseEvent).
+    local screen = win:screen()
+    local display = screen and screen:currentMode()
+    local hz = display and display.freq or 0
     dragState = {
         mode = mode,
         win = win,
         mouse = point,
         frame = win:frame(),
+        interval = 1 / (hz > 0 and hz or 60),
     }
 
     if mode == "move" then
@@ -2387,8 +2392,6 @@ local function beginMouseDrag(mode, point)
     end
     return true
 end
-
-local DRAG_INTERVAL = 1 / 60
 
 local function applyDrag(point)
     local dx = point.x - dragState.mouse.x
@@ -2439,9 +2442,26 @@ local function onMouseEvent(event)
     elseif dragState
        and (eventType == mouseTypes.leftMouseDragged
             or eventType == mouseTypes.rightMouseDragged) then
-        -- Window updates are several accessibility calls; cap them at ~60/s.
+        -- A move is one cheap position call, so it follows every event.
+        if dragState.mode == "move" then
+            applyDrag(point)
+            return true
+        end
+        -- A resize makes the app lay itself out again: at most one per
+        -- display frame, with a trailing update so a pause mid-drag never
+        -- leaves the window a step behind the pointer.
+        dragState.point = point
         local now = hs.timer.secondsSinceEpoch()
-        if now - (dragState.lastApply or 0) < DRAG_INTERVAL then
+        local wait = dragState.interval - (now - (dragState.lastApply or 0))
+        if wait > 0 then
+            if not dragState.trailing then
+                dragState.trailing = hs.timer.doAfter(wait, function()
+                    if not dragState then return end
+                    dragState.trailing = nil
+                    dragState.lastApply = hs.timer.secondsSinceEpoch()
+                    applyDrag(dragState.point)
+                end)
+            end
             return true
         end
         dragState.lastApply = now
@@ -2452,7 +2472,8 @@ local function onMouseEvent(event)
             or eventType == mouseTypes.rightMouseUp) then
         local win = dragState.win
         local mode = dragState.mode
-        applyDrag(point)  -- the throttle may have skipped the last movement
+        if dragState.trailing then dragState.trailing:stop() end
+        applyDrag(point)  -- the pacing may have held back the last movement
         dragState = nil
         if mode == "move" and win and bspFinishDrag(win, point) then
             return true
