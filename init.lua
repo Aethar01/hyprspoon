@@ -48,6 +48,7 @@ local border = {
 	style = "round",              -- "round" or "square"
 	hidpi = true,
 	axFocus = false,              -- resolve focus through Accessibility (WM compatibility)
+	order = "below",
 }
 
 -- Hammerspoon owns the process; restart on reload so disabling it also stops
@@ -68,6 +69,7 @@ if hs.fs.attributes(bordersPath) then
 			"style=" .. border.style,
 			"hidpi=" .. (border.hidpi and "on" or "off"),
 			"ax_focus=" .. (border.axFocus and "on" or "off"),
+			"order=" .. border.order,
 		})
 		if not bordersTask:start() then print("Could not start borders") end
 	end, { "-x", "borders" }):start()
