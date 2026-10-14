@@ -156,12 +156,25 @@ local function windowKind(win)
     return kind
 end
 
--- The filter's windows minus the helper windows above.
+-- The filter's windows minus the helper windows above. getWindows() asks
+-- macOS whether each window's app is still running and re-sorts on every
+-- call, so the list is kept until the filter reports a change (callers must
+-- not modify it). A window that couldn't be classified yet keeps the list
+-- uncached, so it is asked about again.
+local managedCache = nil
+
+local function forgetManagedWindows()
+    managedCache = nil
+end
+
 local function managedWindows()
-    local out = {}
+    if managedCache then return managedCache end
+    local out, complete = {}, true
     for _, win in ipairs(running.windowFilter and running.windowFilter:getWindows() or {}) do
         if windowKind(win) ~= "ignored" then out[#out + 1] = win end
+        if not windowKinds[win:id()] then complete = false end
     end
+    if complete and running.windowFilter then managedCache = out end
     return out
 end
 
@@ -747,16 +760,22 @@ end
 -- BSP tiling: layout
 -- ---------------------------------------------------------------------------
 
--- Space lookups are cached for the duration of one layout pass.
-local bspKeyCache = nil
+-- Each screen's active Space, kept until a Space or display change: the
+-- Space watcher, the filter's Space events and the screen watcher all drop
+-- it, whichever arrives first.
+local bspKeyCache = {}
+
+local function forgetActiveSpaces()
+    bspKeyCache = {}
+end
 
 bspKeyForScreen = function(screen)
     local uuid = screen:getUUID()
-    if bspKeyCache and bspKeyCache[uuid] then return bspKeyCache[uuid] end
+    if bspKeyCache[uuid] then return bspKeyCache[uuid] end
 
     local spaceID = hs.spaces.activeSpaceOnScreen(screen)
     local key = uuid .. ":" .. tostring(spaceID or "unknown")
-    if bspKeyCache then bspKeyCache[uuid] = key end
+    if spaceID then bspKeyCache[uuid] = key end
     return key
 end
 
@@ -1422,7 +1441,6 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
     end
 
     bspApplyingLayout = true
-    bspKeyCache = {}
     local changed = false
 
     -- An error mid-pass must not leave bspApplyingLayout set, or every later
@@ -1459,7 +1477,6 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
         bspSignatures = {}
     end
 
-    bspKeyCache = nil
     bspApplyingLayout = false
     if changed or not ok then
         bspSaveTrees()
@@ -2640,6 +2657,8 @@ end
 
 function M.setup(opts)
     M.stop()
+    forgetManagedWindows()
+    forgetActiveSpaces()
     cfg = deepMerge(defaults, opts or {})
 
     hs.window.animationDuration = 0
@@ -2733,6 +2752,7 @@ function M.setup(opts)
 
     -- Forget per-window state once a window is gone.
     filter:subscribe(hs.window.filter.windowDestroyed, function(win)
+        forgetManagedWindows()
         local id = win and win:id()
         if id then
             bspCancelLayoutCheck(id)
@@ -2763,6 +2783,8 @@ function M.setup(opts)
         hs.window.filter.windowInCurrentSpace,
     }, function(win, appName, event)
         dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
+        forgetManagedWindows()
+        if event == hs.window.filter.windowInCurrentSpace then forgetActiveSpaces() end
         if win then bspWindowInfo[win:id()] = nil end
         bspMarkDirty(win)
         invalidateWindowCache()
@@ -2782,6 +2804,8 @@ function M.setup(opts)
         hs.window.filter.windowNotInCurrentSpace,
     }, function(win, appName, event)
         dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
+        forgetManagedWindows()
+        if event == hs.window.filter.windowNotInCurrentSpace then forgetActiveSpaces() end
         if win then bspWindowInfo[win:id()] = nil end
         bspMarkDirty(win)
         invalidateWindowCache()
@@ -2795,7 +2819,13 @@ function M.setup(opts)
         bspScheduleRecheck()
     end)
 
+    -- Any other change to the allowed set (the handlers above clear the list
+    -- themselves, since this pseudo-event arrives after them).
+    filter:subscribe(hs.window.filter.windowsChanged, forgetManagedWindows)
+
     running.spaceWatcher = hs.spaces.watcher.new(function()
+        forgetActiveSpaces()
+        forgetManagedWindows()
         -- Space changes we didn't start (trackpad swipes) need the same focus
         -- fix-up as keyboard ones.
         spaceFocusPending = true
@@ -2807,12 +2837,14 @@ function M.setup(opts)
     -- macOS moves windows off a removed display (and back onto a returning
     -- one) a while after announcing the change, so look again once it has.
     running.screenWatcher = hs.screen.watcher.new(function()
+        forgetActiveSpaces()
         invalidateWindowCache()
         scheduleBSPRetile(true)
         for _, t in ipairs(running.screenTimers or {}) do t:stop() end
         running.screenTimers = {}
         for i, delay in ipairs({ 0.5, 1.5, 3 }) do
             running.screenTimers[i] = hs.timer.doAfter(delay, function()
+                forgetActiveSpaces()
                 invalidateWindowCache()
                 scheduleBSPRetile(true)
             end)
