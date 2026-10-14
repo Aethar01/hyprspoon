@@ -1485,6 +1485,21 @@ local function bspTileNow(onlyIfChanged, onlyScreenUUID)
 end
 
 local BSP_RETILE_DELAY = 0.06
+
+-- A window that opens exactly over another of its app's windows may be a new
+-- native tab, which the app's window list only settles on a moment later.
+-- Anything else can be placed the moment it appears.
+local function bspMayBeTab(win)
+    local id, pid = win:id(), win:pid()
+    local f = win:frame()
+    for _, other in ipairs(managedWindows()) do
+        if other:pid() == pid and other:id() ~= id and bspFramesMatch(other:frame(), f) then
+            return true
+        end
+    end
+    return false
+end
+
 local BSP_TAB_SETTLE = 0.15
 
 local bspRetilePending = false
@@ -1501,10 +1516,9 @@ end
 -- `force` drops the unchanged-screen shortcut (Space/display changes, where
 -- the same windows may need re-laying out).
 --
--- Events are normally coalesced behind a short delay: a new window is usually
--- focused just after it appears, and placing it needs that focus. With
--- `immediate` (windows going away, which need no placement decision) the
--- first event retiles straight away and any burst after it is coalesced.
+-- Events are normally coalesced behind a short delay. With `immediate`
+-- (windows going away, and new windows that can't be native tabs) the first
+-- event retiles straight away and any burst after it is coalesced.
 local bspRetileDue = 0
 
 -- `delay` holds the retile back for events whose follow-ups arrive a moment
@@ -2752,7 +2766,9 @@ function M.setup(opts)
         if win then bspWindowInfo[win:id()] = nil end
         bspMarkDirty(win)
         invalidateWindowCache()
-        scheduleBSPRetile()
+        -- Placed straight away so it doesn't sit where the app opened it;
+        -- the follow-up events for the same window coalesce behind this.
+        scheduleBSPRetile(false, win and not bspMayBeTab(win))
         bspScheduleRecheck()
     end)
 
