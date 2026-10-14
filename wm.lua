@@ -1051,9 +1051,15 @@ end
 -- list lags), so the tile handoff considers these too.
 local bspGhosts = {}
 
+-- Every window seen in the latest pass, on any screen. A window that leaves
+-- a tree but is still open (moved to another display, gone fullscreen) keeps
+-- its focus.
+local bspOpenIDs = {}
+
 local function bspWindowsByScreen(onlyUUID)
     local byScreen = {}
     bspGhosts = {}
+    bspOpenIDs = {}
 
     local allWindows = bspWithRecentlyChangedApps(managedWindows())
     local isBackgroundTab = bspBackgroundTabs(allWindows)
@@ -1063,6 +1069,7 @@ local function bspWindowsByScreen(onlyUUID)
             bspGhosts[#bspGhosts + 1] = win
             goto continue
         end
+        bspOpenIDs[win:id()] = true
         local info = bspWindowInfoFor(win)
         local uuid = info.uuid
         -- The filter only passes visible, manageable windows.
@@ -1126,6 +1133,10 @@ local function bspWasFocused(windowID)
     return bspFocusHistory[2] == windowID and stolen ~= nil
         and hs.timer.secondsSinceEpoch() - (bspFocusTimes[stolen] or 0) < BSP_STEAL_WINDOW
 end
+
+-- What each screen last laid out (window IDs + screen frame). Retiles caused
+-- by window set changes are skipped for screens whose signature is unchanged.
+local bspSignatures = {}
 
 local function bspReconcileTree(key, windows)
     local valid = {}
@@ -1199,9 +1210,10 @@ local function bspReconcileTree(key, windows)
         end
     end
 
-    -- Windows that left the tree to float are still open and keep focus.
+    -- Windows that left the tree but are still open keep focus.
     for id in pairs(before) do
-        if not valid[id] and not bspAutoFloat[id] and bspWasFocused(id) then
+        if not valid[id] and not bspAutoFloat[id] and not bspOpenIDs[id]
+           and bspWasFocused(id) then
             bspPendingRefocus = bspSiblingToFocus(previous, id, valid) or bspPendingRefocus
             dlog("closed focused %s -> refocus %s", tostring(id), tostring(bspPendingRefocus))
             break
@@ -1215,6 +1227,14 @@ local function bspReconcileTree(key, windows)
         local id = win:id()
 
         if not present[id] then
+            -- A window arriving from another display leaves that tree.
+            for otherKey, other in pairs(bspTrees) do
+                if otherKey ~= key and bspTreeContains(other, id) then
+                    bspTrees[otherKey] = bspRemoveID(other, id)
+                    bspSignatures[otherKey] = nil
+                end
+            end
+
             if not tree then
                 tree = bspLeaf(id)
             else
@@ -1393,10 +1413,6 @@ local function bspApplyTree(node, rect, byID)
         bspApplyTree(node.b, bRect, byID)
     end
 end
-
--- What each screen last laid out (window IDs + screen frame). Retiles caused
--- by window set changes are skipped for screens whose signature is unchanged.
-local bspSignatures = {}
 
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
 -- flips only ever affect the layout of the window's own screen).
@@ -1587,6 +1603,15 @@ local BSP_EDGE_TOLERANCE = 4
 local function bspAdoptFrame(win)
     local path, leaf, key = bspLocate(win)
     if not path or not leaf.rect then return end
+
+    -- Moved to another display: it joins that display's layout.
+    local screen = win:screen()
+    if screen and screen:getUUID() ~= bspKeyUUID(key) then
+        bspWindowInfo[win:id()] = nil
+        bspApplied[win:id()] = nil
+        bspTileNow()
+        return
+    end
 
     local f = win:frame()
     local r = leaf.rect
@@ -2561,6 +2586,7 @@ function M.stop()
     if running.pipFilter then running.pipFilter:unsubscribeAll() end
     if running.spaceWatcher then running.spaceWatcher:stop() end
     if running.screenWatcher then running.screenWatcher:stop() end
+    for _, t in ipairs(running.screenTimers or {}) do t:stop() end
     if bspRetileTimer then bspRetileTimer:stop() end
     if bspRecheckTimer then bspRecheckTimer:stop() bspRecheckTimer = nil end
     if running.ffmTimer then running.ffmTimer:stop() end
@@ -2741,9 +2767,19 @@ function M.setup(opts)
         scheduleBSPRetile(true)
     end):start()
 
+    -- macOS moves windows off a removed display (and back onto a returning
+    -- one) a while after announcing the change, so look again once it has.
     running.screenWatcher = hs.screen.watcher.new(function()
         invalidateWindowCache()
         scheduleBSPRetile(true)
+        for _, t in ipairs(running.screenTimers or {}) do t:stop() end
+        running.screenTimers = {}
+        for i, delay in ipairs({ 0.5, 1.5, 3 }) do
+            running.screenTimers[i] = hs.timer.doAfter(delay, function()
+                invalidateWindowCache()
+                scheduleBSPRetile(true)
+            end)
+        end
     end):start()
 
     scheduleBSPRetile(true)
