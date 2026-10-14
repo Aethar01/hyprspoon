@@ -46,6 +46,7 @@ local env = setmetatable({
     bspTilingEnabled = true, running = { windowFilter = {} },
     bspAppName = function() return "test" end,
     isPictureInPicture = isPiP,
+    windowKind = function() return "standard" end,
     hs = { timer = { doAfter = after, secondsSinceEpoch = function() return now end } },
 }, { __index = _G })
 local fullScreen, axReads = nil, 0
@@ -78,6 +79,30 @@ title = "test"
 classify(false)
 env.bspAutoFloat, env.bspSavedFloats["1"], axReads = {}, { app = "test", float = false }, 0
 assert(shouldFloat(win) == false and axReads == 0, "manual override survives reload")
+env.bspSavedFloats = {}
+env.windowKind = function() return "subwindow" end
+assert(classify(true) == true and axReads == 0, "dialogs and panels always float")
+env.windowKind = function() return "standard" end
+
+-- Dialog/panel roles are managed only when they have a close button.
+local kindEnv = setmetatable({ hs = {} }, { __index = _G })
+local hasClose = true
+kindEnv.hs.axuielement = { windowElement = function()
+    return { attributeValue = function(_, name)
+        assert(name == "AXCloseButton")
+        return hasClose and {} or nil
+    end }
+end }
+local windowKind = assert(load(extract("local MANAGED_ROLES =",
+    "-- The filter's windows minus") .. "return windowKind", "kind", "t", kindEnv))()
+local function kindOf(id, subrole, close)
+    hasClose = close
+    return windowKind({ id = function() return id end, subrole = function() return subrole end })
+end
+assert(kindOf(1, "AXStandardWindow", false) == "standard")
+assert(kindOf(2, "AXDialog", true) == "subwindow", "titled dialogs are managed")
+assert(kindOf(3, "AXDialog", false) == "ignored", "helper overlays are ignored")
+assert(kindOf(2, "AXDialog", false) == "subwindow", "classified once")
 
 local appEnv = setmetatable({
     hs = env.hs, isPictureInPicture = isPiP,
@@ -157,6 +182,7 @@ local tiles = { [1] = target, [2] = { x = 820, y = 10, w = 800, h = 600 } }
 local listCalls = 0
 env.ffmSnapshot, env.FFM_SNAPSHOT_TTL = nil, 1
 env.running.windowFilter = { getWindows = function() return { win, second } end }
+env.managedWindows = function() return env.running.windowFilter:getWindows() end
 env.bspRectFor = function(id) return tiles[id] end
 env.hs.geometry = { rect = function(x, y, w, h) return { x = x, y = y, w = w, h = h } end }
 env.hs.window = { list = function()
@@ -188,6 +214,21 @@ local entryAt = assert(load(extract("local function snapshotEntryAt(point, fresh
     "local function windowUnderPoint") .. "return snapshotEntryAt", "occlusion", "t", env))()
 assert(entryAt({ x = 60, y = 60 }, true) == nil, "PiP must block hover focus of underlying windows")
 assert(entryAt({ x = 25, y = 35 }) ~= nil, "hover outside PiP must still work")
+env.running.pipFilter = nil
+
+-- A float buried under another app's tile still wins hover; one buried under
+-- its own app's window (its parent, focused) does not.
+local pids = { [1] = 10, [2] = 20 }
+win.pid, second.pid = function() return pids[1] end, function() return pids[2] end
+env.hs.window.list = function()
+    return {
+        { kCGWindowNumber = 1, kCGWindowBounds = { X = 10, Y = 10, Width = 800, Height = 600 } },
+        { kCGWindowNumber = 2, kCGWindowBounds = { X = 20, Y = 30, Width = 400, Height = 300 } },
+    }
+end
+assert(entryAt({ x = 25, y = 35 }, true).id == 2, "buried floats stay reachable")
+pids[2] = 10
+assert(entryAt({ x = 25, y = 35 }, true).id == 1, "own app's window above a float wins")
 
 -- BSP navigation returns to the last-used leaf in the adjacent subtree.
 local nav = setmetatable({}, { __index = _G })

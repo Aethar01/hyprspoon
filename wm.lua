@@ -130,6 +130,41 @@ local function isPictureInPicture(win)
     return false
 end
 
+-- Besides standard windows, dialogs and panels (preferences, inspectors,
+-- tool palettes) are managed, always as floats. Apps also keep invisible
+-- helper windows with those roles (menu bar and notification overlays);
+-- unlike real subwindows they have no close button. Neither changes over a
+-- window's lifetime, so each window is classified once.
+local MANAGED_ROLES = { "AXStandardWindow", "AXDialog", "AXFloatingWindow", "AXSystemDialog" }
+local windowKinds = {} -- window id -> "standard" | "subwindow" | "ignored"
+
+local function windowKind(win)
+    local id = win:id()
+    if not id then return "ignored" end
+    if windowKinds[id] then return windowKinds[id] end
+    local kind = "standard"
+    if win:subrole() ~= "AXStandardWindow" then
+        local ok, close = pcall(function()
+            local ax = hs.axuielement.windowElement(win)
+            return ax and ax:attributeValue("AXCloseButton")
+        end)
+        -- Unreadable (a busy app): leave it alone and ask again next time.
+        if not ok then return "ignored" end
+        kind = close and "subwindow" or "ignored"
+    end
+    windowKinds[id] = kind
+    return kind
+end
+
+-- The filter's windows minus the helper windows above.
+local function managedWindows()
+    local out = {}
+    for _, win in ipairs(running.windowFilter and running.windowFilter:getWindows() or {}) do
+        if windowKind(win) ~= "ignored" then out[#out + 1] = win end
+    end
+    return out
+end
+
 -- Assigned in the tree section: the tile rectangle of a tiled window, or nil.
 local bspRectFor
 
@@ -285,7 +320,7 @@ local function windowSnapshot(fresh)
         if running.windowFilter then
             local byID, seen = {}, {}
             local disjointTiles = true
-            for _, win in ipairs(running.windowFilter:getWindows() or {}) do
+            for _, win in ipairs(managedWindows()) do
                 local id = win:id()
                 if id then
                     byID[id] = win
@@ -343,21 +378,26 @@ ffmPrebuild = hs.timer.delayed.new(0.15, function()
 end)
 
 -- Floats are meant to sit on top, so they win over whatever tile is actually
--- stacked above them (a buried float is still reachable).
+-- stacked above them (a buried float is still reachable). The exception is
+-- a float under a window of its own app: the app ordered them (floats of the
+-- focused app aren't re-raised), and the window the user sees wins.
 local function snapshotEntryAt(point, fresh)
     local entries = windowSnapshot(fresh)
     for _, frame in ipairs(ffmSnapshot.unmanaged or {}) do
         if pointInFrame(point, frame) then return nil end
     end
+    local top = nil
     for _, entry in ipairs(entries) do
-        if bspAutoFloat[entry.id] and pointInFrame(point, entry.frame) then
+        if pointInFrame(point, entry.frame) then top = entry break end
+    end
+    if not top or bspAutoFloat[top.id] then return top end
+    for _, entry in ipairs(entries) do
+        if bspAutoFloat[entry.id] and pointInFrame(point, entry.frame)
+           and entry.win:pid() ~= top.win:pid() then
             return entry
         end
     end
-    for _, entry in ipairs(entries) do
-        if pointInFrame(point, entry.frame) then return entry end
-    end
-    return nil
+    return top
 end
 
 local function windowUnderPoint(point, fresh)
@@ -665,8 +705,10 @@ local function bspFindByID(windowID)
     return nil
 end
 
+-- Floats are never tiles, even while a tree that hasn't been reconciled
+-- since they started floating still holds them.
 bspRectFor = function(windowID)
-    if not bspTilingEnabled then return nil end
+    if not bspTilingEnabled or bspAutoFloat[windowID] then return nil end
     local _, leaf = bspFindByID(windowID)
     return leaf and leaf.rect
 end
@@ -781,6 +823,11 @@ local function bspShouldFloat(win)
     end
 
     if isPictureInPicture(win) then return false end
+    -- Dialogs and panels: the app placed them, so they aren't re-centred.
+    if windowKind(win) == "subwindow" then
+        bspAutoFloat[id] = true
+        return true
+    end
     local ok, canFullScreen = pcall(function()
         local ax = hs.axuielement.windowElement(win)
         return ax and ax:isAttributeSettable("AXFullScreen")
@@ -802,15 +849,24 @@ end
 
 -- Floating windows stay above the tiles. Hammerspoon can't set a window
 -- level, so we re-raise them after layout/focus changes instead.
+-- Raising a window of the active app also makes it key, so floats of the
+-- focused window's own app are left where the app ordered them; otherwise
+-- they would take focus straight back from their parent.
 local function bspRaiseFloatingNow()
     if not running.windowFilter or not bspHasFloating() then return end
     local focusedID = ffmFocusedID
+    local focused = focusedID and bspWinByID[focusedID]
+    local focusedPid = focused and focused:id() == focusedID and focused:pid()
     local focusedFloat = nil
-    for _, win in ipairs(running.windowFilter:getWindows() or {}) do
+    for _, win in ipairs(managedWindows()) do
         local id = win:id()
         if bspAutoFloat[id] then
             -- The focused float goes last so it stays on top of the others.
-            if id == focusedID then focusedFloat = win else win:raise() end
+            if id == focusedID then
+                focusedFloat = win
+            elseif win:pid() ~= focusedPid then
+                win:raise()
+            end
         end
     end
     if focusedFloat then focusedFloat:raise() end
@@ -999,7 +1055,7 @@ local function bspWindowsByScreen(onlyUUID)
     local byScreen = {}
     bspGhosts = {}
 
-    local allWindows = bspWithRecentlyChangedApps(running.windowFilter:getWindows() or {})
+    local allWindows = bspWithRecentlyChangedApps(managedWindows())
     local isBackgroundTab = bspBackgroundTabs(allWindows)
 
     for _, win in ipairs(allWindows) do
@@ -1009,7 +1065,7 @@ local function bspWindowsByScreen(onlyUUID)
         end
         local info = bspWindowInfoFor(win)
         local uuid = info.uuid
-        -- The filter only passes visible, standard windows.
+        -- The filter only passes visible, manageable windows.
         if uuid and (not onlyUUID or uuid == onlyUUID)
            and not info.full and not bspShouldFloat(win) then
             byScreen[uuid] = byScreen[uuid] or {}
@@ -1503,7 +1559,7 @@ end
 
 -- The tree path and leaf for a tiled window, or nil if it isn't tiled.
 local function bspLocate(win)
-    if not bspTilingEnabled or not win then return nil end
+    if not bspTilingEnabled or not win or bspAutoFloat[win:id()] then return nil end
     local path, leaf, key = bspFindByID(win:id())
     if not path then return nil end
     return path, leaf, key
@@ -2051,7 +2107,7 @@ end
 function M.focusFloat()
     if not running.windowFilter then return end
     local floats = {}
-    for _, win in ipairs(running.windowFilter:getWindows() or {}) do
+    for _, win in ipairs(managedWindows()) do
         if bspAutoFloat[win:id()] then floats[#floats + 1] = win end
     end
     if #floats == 0 then return end
@@ -2555,7 +2611,7 @@ function M.setup(opts)
     running.moveTap = hs.eventtap.new({ mouseTypes.mouseMoved }, onMouseMoved):start()
 
     local filter = hs.window.filter.new()
-    filter:setDefaultFilter({ allowRoles = "AXStandardWindow", visible = true })
+    filter:setDefaultFilter({ allowRoles = MANAGED_ROLES, visible = true })
     filter:setOverrideFilter({ rejectTitles = PIP_TITLES })
     for _, app in ipairs(cfg.ignoreApps or {}) do
         filter:rejectApp(app)
@@ -2577,6 +2633,7 @@ function M.setup(opts)
 
     -- Track the last focused leaf so a newly-created window splits next to it.
     filter:subscribe(hs.window.filter.windowFocused, function(win)
+        if win and windowKind(win) == "ignored" then return end
         if win then
             local id = win:id()
             if id == bspRequestedFocus then bspRequestedFocus = nil end
@@ -2619,6 +2676,7 @@ function M.setup(opts)
         if id then
             bspCancelLayoutCheck(id)
             bspForgetFloat(id)
+            windowKinds[id] = nil
             bspFloatingFrames[id] = nil
             bspWinByID[id] = nil
             bspWindowInfo[id] = nil
