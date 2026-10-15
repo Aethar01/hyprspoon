@@ -684,6 +684,11 @@ end
 -- active Space wins.
 local bspKeyForScreen -- defined with the layout code below
 
+-- The screen UUID part of a tree key ("<uuid>:<space>").
+local function bspKeyUUID(key)
+    return key and key:match("^(.-):")
+end
+
 -- window id -> tree key, so lookups walk one tree instead of all of them. A
 -- hit is verified against its tree, and the cache is cleared whenever trees
 -- are rebuilt or moved between.
@@ -1247,8 +1252,13 @@ local function bspReconcileTree(key, windows)
 
         if not present[id] then
             -- A window arriving from another display leaves that tree.
+            -- Other Spaces on this display keep theirs: a window can't move
+            -- Space without leaving this one's list, and a pass that read
+            -- the Space mid-switch must not strip the new Space's tree.
+            local uuid = bspKeyUUID(key)
             for otherKey, other in pairs(bspTrees) do
-                if otherKey ~= key and bspTreeContains(other, id) then
+                if otherKey ~= key and bspKeyUUID(otherKey) ~= uuid
+                   and bspTreeContains(other, id) then
                     bspTrees[otherKey] = bspRemoveID(other, id)
                     bspSignatures[otherKey] = nil
                 end
@@ -1610,11 +1620,6 @@ local function bspLocate(win)
     local path, leaf, key = bspFindByID(win:id())
     if not path then return nil end
     return path, leaf, key
-end
-
--- The screen UUID part of a tree key ("<uuid>:<space>").
-local function bspKeyUUID(key)
-    return key and key:match("^(.-):")
 end
 
 
@@ -2790,7 +2795,12 @@ function M.setup(opts)
         invalidateWindowCache()
         -- Placed straight away so it doesn't sit where the app opened it;
         -- the follow-up events for the same window coalesce behind this.
-        scheduleBSPRetile(false, win and not bspMayBeTab(win))
+        -- Only for windows that were just created: on a Space switch the new
+        -- Space's windows arrive (windowAllowed, windowInCurrentSpace) before
+        -- the filter's list has dropped the old Space's, and a pass then
+        -- would lay the old windows out in the new Space's tree.
+        local created = event == hs.window.filter.windowCreated
+        scheduleBSPRetile(false, win and created and not bspMayBeTab(win))
         bspScheduleRecheck()
     end)
 
