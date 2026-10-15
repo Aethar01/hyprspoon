@@ -151,7 +151,9 @@ local function neighbourInDirection(win, direction, preferHistory)
         local found = nearestInDirection(leaf.rect, id, tiles(S.trees[key]), direction)
         if found then return found end
     end
-    return nearestInDirection(win:frame(), id, Focus.windowSnapshot(), direction)
+    -- A tile at the edge of its tree already knows its frame.
+    local frame = leaf and leaf.rect or win:frame()
+    return nearestInDirection(frame, id, Focus.windowSnapshot(), direction)
 end
 
 local function directionalCandidates()

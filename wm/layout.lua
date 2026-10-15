@@ -506,16 +506,12 @@ local function scheduleRecheck(step)
     end)
 end
 
+-- Every window with a remembered frame was tiled, so winByID holds it; that
+-- avoids hs.window.allWindows(), which asks every running app over AX.
 local function restoreFloatingFrames()
-    local current = {}
-
-    for _, win in ipairs(hs.window.allWindows()) do
-        current[win:id()] = win
-    end
-
     for id, frame in pairs(S.floatingFrames) do
-        local win = current[id]
-        if win and win:isStandard() and not Util.isPictureInPicture(win) then
+        local win = Util.winByID[id]
+        if win and win:id() == id and win:isStandard() and not Util.isPictureInPicture(win) then
             win:setFrame(frame, 0)
         end
     end

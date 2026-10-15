@@ -117,22 +117,24 @@ local function raiseFloatingNow()
 end
 
 -- Debounced, with a second pass: the first can run before a tile that has
--- just been focused or moved has finished coming to the front.
-local raiseTimers = {}
+-- just been focused or moved has finished coming to the front. Every focus,
+-- move echo and retile lands here, so the two timers are reused.
+local raiseSoon = hs.timer.delayed.new(0.03, raiseFloatingNow)
+local raiseLater = hs.timer.delayed.new(0.25, raiseFloatingNow)
 local function raiseFloating()
-    for _, t in ipairs(raiseTimers) do t:stop() end
-    raiseTimers = {}
-    if not hasFloating() then return end
-    raiseTimers = {
-        hs.timer.doAfter(0.03, raiseFloatingNow),
-        hs.timer.doAfter(0.25, raiseFloatingNow),
-    }
+    if not hasFloating() then
+        raiseSoon:stop()
+        raiseLater:stop()
+        return
+    end
+    raiseSoon:start()
+    raiseLater:start()
 end
 
 -- Cancels the pending raises (reload, shutdown).
 local function stop()
-    for _, t in ipairs(raiseTimers) do t:stop() end
-    raiseTimers = {}
+    raiseSoon:stop()
+    raiseLater:stop()
 end
 
 M.stop = stop

@@ -278,6 +278,10 @@ assert(neighbour(windows[11], "right", true) == windows[12], "left-bottom to rig
 assert(neighbour(windows[11], "up", true) == windows[10], "nearest ancestor chooses upper sibling")
 nav.Util.focusHistory = {}
 assert(neighbour(windows[12], "left", true) ~= nil, "missing history falls back to geometry")
+local frameCalls = 0
+windows[10].frame = function() frameCalls = frameCalls + 1 return top.rect end
+assert(neighbour(windows[10], "up", true) == nil and frameCalls == 0,
+    "a tile at its tree's edge searches from its tile rect, not an AX frame")
 
 local checks = 0
 env.tileNow = function() checks = checks + 1 end -- file-local in layout.lua
