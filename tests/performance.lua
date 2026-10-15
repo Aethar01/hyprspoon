@@ -1,6 +1,8 @@
 -- Live, non-focus-changing benchmark. Run through Hammerspoon's hs CLI:
--- wmPerf = dofile(hs.configdir .. '/tests/performance.lua'); wmPerf.run()
--- Then inspect wmPerf.result once wmPerf.done is true.
+-- wmPerf = dofile(hs.configdir .. '/tests/performance.lua'); wmPerf.run(20, '/path/out.json')
+-- The result is written to the given path as JSON once wmPerf.done is true
+-- (and kept in wmPerf.result). Returning it through `hs -c` can hang.
+-- Each case runs once untimed first, so samples measure warm calls.
 local M = {}
 
 -- Find internal helpers without adding profiling overhead to production.
@@ -34,22 +36,35 @@ local function internals()
     return { upvalues = upvalues, modules = modules }
 end
 
-function M.run(rounds)
+function M.run(rounds, outPath)
     assert(not M.timer, 'benchmark already running')
     rounds = rounds or 20
     local wm = require('wm')
     assert(wm.isTiling(), 'enable tiling before benchmarking')
     local found = internals()
     local m, up = found.modules, found.upvalues
-    assert(m.Layout and m.Discover and m.Focus, 'wm modules are not loaded')
+    assert(m.Layout and m.Discover and m.Focus and m.Ffm and m.State and m.Util,
+        'wm modules are not loaded')
+    local S, Util = m.State, m.Util
     assert(up.neighbourInDirection, 'neighbourInDirection not reachable from exports')
     local cases = {}
-    local function add(name, fn) cases[#cases + 1] = { name = name, fn = fn, samples = {} } end
+    -- `setup` runs untimed before each sample.
+    local function add(name, fn, setup)
+        cases[#cases + 1] = { name = name, fn = fn, setup = setup, samples = {} }
+    end
     add('layout.unchanged', function() m.Layout.tileNow(true) end)
+    -- A full pass: reconcile every tree, but every tile is already applied.
+    add('layout.forced', function() m.Layout.tileNow(false) end)
+    -- As after a reload: read each window's frame to confirm it's in place.
+    add('layout.verify', function() m.Layout.tileNow(false) end, function() S.applied = {} end)
     add('discovery.group', function() m.Discover.windowsByScreen() end)
+    -- As after the filter's window list changes or windows move displays.
+    add('discovery.cold', function() m.Discover.windowsByScreen() end, function()
+        S.windowInfo = {}
+        Util.forgetManagedWindows()
+    end)
     add('snapshot.fresh', function() m.Focus.windowSnapshot(true) end)
     add('snapshot.cached', function() m.Focus.windowSnapshot() end)
-    add('windows.ordered', function() hs.window.orderedWindows() end)
     add('spaces.active', function() hs.spaces.activeSpaceOnScreen(hs.screen.mainScreen()) end)
     local windows = hs.window.orderedWindows()
     local apps = {}
@@ -67,25 +82,58 @@ function M.run(rounds)
     local win = hs.window.focusedWindow()
     if win then
         add('focus.current', function() m.Focus.currentWindow() end)
-        add('focus.neighbour', function() up.neighbourInDirection(win, 'up', true) end)
+        for _, direction in ipairs({'left', 'right', 'up', 'down'}) do
+            add('focus.neighbour.' .. direction, function()
+                up.neighbourInDirection(win, direction, true)
+            end)
+        end
     end
-    local index, round = 1, 1
+    -- Hover over the focused window, so focus-follows-mouse has nothing to do.
+    -- Focus is only recorded on a focus event, which a reload doesn't send.
+    if win and not S.ffmFocusedID and Util.windowKind(win) ~= 'ignored' then
+        m.Focus.noteFocus(win)
+    end
+    local focusedID = S.ffmFocusedID
+    local hovered = nil
+    for _, entry in ipairs(m.Focus.windowSnapshot(true)) do
+        if entry.id == focusedID then hovered = entry end
+    end
+    local point = hovered and { x = hovered.frame.x + hovered.frame.w / 2,
+        y = hovered.frame.y + hovered.frame.h / 2 }
+    if S.cfg.focusFollowsMouse and point and m.Focus.snapshotEntryAt(point) == hovered then
+        local event = hs.eventtap.event.newMouseEvent(hs.eventtap.event.types.mouseMoved, point)
+        local function hover()
+            -- Focus moved meanwhile: the hover would start focusing a window.
+            if S.ffmFocusedID == focusedID then m.Ffm.onMouseMoved(event) end
+        end
+        add('ffm.sameWindow', hover, function() S.ffmLastWindow = hovered end)
+        add('ffm.crossing', hover, function() S.ffmLastWindow = nil end)
+    end
+    local index, round = 1, 0
     M.done, M.result = false, nil
+    local function finish(result)
+        M.timer:stop(); M.timer = nil
+        M.result, M.done = result, true
+        if outPath then
+            local file = assert(io.open(outPath, 'w'))
+            file:write(hs.json.encode(result, true))
+            file:close()
+        end
+    end
     M.timer = hs.timer.doEvery(0.02, function()
         local case = cases[index]
+        if case.setup then case.setup() end
         local start = hs.timer.absoluteTime()
         local ok, err = pcall(case.fn)
         local ms = (hs.timer.absoluteTime() - start) / 1e6
         if not ok then
-            M.timer:stop(); M.timer = nil
-            M.result, M.done = { error = tostring(err), case = case.name }, true
+            finish({ error = tostring(err), case = case.name })
             return
         end
-        case.samples[#case.samples + 1] = ms
+        if round > 0 then case.samples[#case.samples + 1] = ms end
         index = index + 1
         if index > #cases then index, round = 1, round + 1 end
         if round <= rounds then return end
-        M.timer:stop(); M.timer = nil
         local result = { windows = #windows, rounds = rounds, timings = {} }
         for _, c in ipairs(cases) do
             table.sort(c.samples)
@@ -97,7 +145,7 @@ function M.run(rounds)
                 max_ms = c.samples[#c.samples], mean_ms = total / #c.samples,
             }
         end
-        M.result, M.done = result, true
+        finish(result)
         print('WM performance benchmark complete')
     end)
 end
