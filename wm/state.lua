@@ -1,0 +1,52 @@
+-- wm/state.lua: Configuration and state shared between the window manager modules.
+
+local S = {}
+package.loaded["wm.state"] = S
+
+S.defaults = {
+    -- Focus the window under the pointer as it moves.
+    focusFollowsMouse = true,
+    debug = false, -- log tab/tile decisions to the Hammerspoon console
+    reassertFocus = true, -- undo macOS moving focus right after we set it
+
+    -- Seconds to wait on an unresponsive app's accessibility API before
+    -- giving up on a call.
+    axTimeout = 1,
+
+    -- Smallest size the mouse/keyboard resizes will shrink a window to.
+    minWidth = 240,
+    minHeight = 140,
+
+    -- Modifiers held while dragging anywhere on a window. Set any to false
+    -- to disable that binding.
+    mouse = {
+        move = {"alt"},          -- + left-drag: move (drops into tiling layout)
+        resize = {"alt", "cmd"}, -- + left-drag: resize
+        rightResize = {"alt"},   -- + right-drag: resize
+    },
+
+    -- App names whose windows are never watched or tiled (palettes, overlays,
+    -- anything noisy). Fewer watched windows means fewer events to process.
+    ignoreApps = {},
+
+    tiling = {
+        outerGap = 10,  -- gap between tiles and the screen edge
+        innerGap = 5,   -- gap between tiles
+        minRatio = 0.20, -- how far a split can be dragged towards either side
+        maxRatio = 0.80,
+        -- Drag-and-drop landing highlight.
+        dropColor = { red = 0.35, green = 0.6, blue = 1 },
+    },
+}
+
+S.cfg = nil
+
+-- Tiling on/off persists across reloads.
+S.SETTINGS_KEY = "bspTilingEnabled"
+S.tilingEnabled = hs.settings.get(S.SETTINGS_KEY) == true
+
+-- Long-lived objects (taps, watchers, filters). Kept here so they're
+-- reachable from the module and never garbage collected.
+S.running = {}
+
+return S

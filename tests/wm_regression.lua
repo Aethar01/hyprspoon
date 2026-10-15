@@ -1,17 +1,25 @@
 -- Run with: lua tests/wm_regression.lua
 -- Exercise the production helpers with deterministic accessibility/timer mocks.
-local file = assert(io.open("wm.lua"))
-local source = file:read("*a")
-file:close()
-assert(load(source))
+local sources = {}
+local function read(name)
+    if not sources[name] then
+        local file = assert(io.open("wm/" .. name .. ".lua"))
+        sources[name] = file:read("*a")
+        file:close()
+        assert(load(sources[name]))
+    end
+    return sources[name]
+end
 
-local function extract(first, last)
+-- Snippet of wm/<name>.lua from the line starting `first` up to `last`.
+local function extract(name, first, last)
+    local source = read(name)
     local start = assert(source:find(first, 1, true))
     local finish = assert(source:find(last, start, true))
     return source:sub(start, finish - 1)
 end
 
-local isPiP = assert(load(extract("local PIP_TITLES =", "-- Assigned in the tree section")
+local isPiP = assert(load(extract("util", "local PIP_TITLES =", "local MANAGED_ROLES =")
     .. "return isPictureInPicture"))()
 for _, title in ipairs({"Picture-in-Picture", "Picture in Picture", "picture-in-picture", "PiP"}) do
     assert(isPiP({ title = function() return title end }), "dedicated PiP title must be excluded")
@@ -41,12 +49,16 @@ local function drain()
     end
 end
 
+-- Stand-ins for the wm modules the snippets refer to (S, Util, Tree, ...).
+local S = { autoFloat = {}, tilingEnabled = true, running = { windowFilter = {} },
+    applied = {}, settleUntil = 0, lastMouseTime = 0 }
+local Util = { isPictureInPicture = isPiP, windowKind = function() return "standard" end,
+    dlog = function() end }
+local Tree = {}
+local Focus = { invalidateWindowCache = function() end }
+local Discover = { layoutChecks = {} }
 local env = setmetatable({
-    bspAutoFloat = {}, bspSavedFloats = {},
-    bspTilingEnabled = true, running = { windowFilter = {} },
-    bspAppName = function() return "test" end,
-    isPictureInPicture = isPiP,
-    windowKind = function() return "standard" end,
+    S = S, Util = Util, Tree = Tree, Focus = Focus, Discover = Discover,
     hs = { timer = { doAfter = after, secondsSinceEpoch = function() return now end } },
 }, { __index = _G })
 local fullScreen, axReads = nil, 0
@@ -59,17 +71,22 @@ env.hs.axuielement = { windowElement = function()
 end }
 local title = "test"
 local win = { id = function() return 1 end, screen = function() return nil end,
-    title = function() return title end }
-local shouldFloat = assert(load(extract("local function bspShouldFloat(win)",
-    "-- Floating windows stay above") .. "return bspShouldFloat", "float", "t", env))()
+    title = function() return title end,
+    application = function() return { name = function() return "test" end } end }
+-- savedFloats is a file-local in wm/float.lua; provide it with a setter.
+local shouldFloat, setSavedFloats = assert(load("local savedFloats = {}\n"
+    .. extract("float", "local function appName(win)", "local function rememberFloat(win)")
+    .. extract("float", "local function shouldFloat(win)", "local function raiseFloatingNow()")
+    .. "return shouldFloat, function(t) savedFloats = t end", "float", "t", env))()
 local function classify(value)
     fullScreen, axReads = value, 0
-    env.bspAutoFloat, env.bspSavedFloats = {}, {}
+    S.autoFloat = {}
+    setSavedFloats({})
     return shouldFloat(win)
 end
-assert(classify(false) == true and env.bspAutoFloat[1] == true, "windows that can't go full screen float")
-assert(classify(true) == false and env.bspAutoFloat[1] == false, "windows that can go full screen tile")
-assert(classify(nil) == false and env.bspAutoFloat[1] == nil, "unreadable windows tile and are asked again")
+assert(classify(false) == true and S.autoFloat[1] == true, "windows that can't go full screen float")
+assert(classify(true) == false and S.autoFloat[1] == false, "windows that can go full screen tile")
+assert(classify(nil) == false and S.autoFloat[1] == nil, "unreadable windows tile and are asked again")
 classify(false)
 shouldFloat(win)
 assert(axReads == 1, "one read decides")
@@ -77,12 +94,13 @@ title = "Picture-in-Picture"
 assert(classify(false) == false and axReads == 0, "PiP is never classified")
 title = "test"
 classify(false)
-env.bspAutoFloat, env.bspSavedFloats["1"], axReads = {}, { app = "test", float = false }, 0
+S.autoFloat, axReads = {}, 0
+setSavedFloats({ ["1"] = { app = "test", float = false } })
 assert(shouldFloat(win) == false and axReads == 0, "manual override survives reload")
-env.bspSavedFloats = {}
-env.windowKind = function() return "subwindow" end
+setSavedFloats({})
+Util.windowKind = function() return "subwindow" end
 assert(classify(true) == true and axReads == 0, "dialogs and panels always float")
-env.windowKind = function() return "standard" end
+Util.windowKind = function() return "standard" end
 
 -- Dialog/panel roles are managed only when they have a close button.
 local kindEnv = setmetatable({ hs = {} }, { __index = _G })
@@ -93,8 +111,8 @@ kindEnv.hs.axuielement = { windowElement = function()
         return hasClose and {} or nil
     end }
 end }
-local windowKind = assert(load(extract("local MANAGED_ROLES =",
-    "-- The filter's windows minus") .. "return windowKind", "kind", "t", kindEnv))()
+local windowKind = assert(load(extract("util", "local MANAGED_ROLES =",
+    "local managedCache = nil") .. "return windowKind", "kind", "t", kindEnv))()
 local function kindOf(id, subrole, close)
     hasClose = close
     return windowKind({ id = function() return id end, subrole = function() return subrole end })
@@ -105,10 +123,10 @@ assert(kindOf(3, "AXDialog", false) == "ignored", "helper overlays are ignored")
 assert(kindOf(2, "AXDialog", false) == "subwindow", "classified once")
 
 local appEnv = setmetatable({
-    hs = env.hs, isPictureInPicture = isPiP,
+    hs = env.hs, Util = Util,
 }, { __index = _G })
-local appWindows = assert(load(extract("local bspAppWindowCache = {}",
-    "local function bspWithRecentlyChangedApps") .. "return bspAppWindows", "app windows", "t", appEnv))()
+local appWindows = assert(load(extract("discover", "local appWindowCache = {}",
+    "local function withRecentlyChangedApps") .. "return appWindows", "app windows", "t", appEnv))()
 local pip = { id = function() return 99 end, title = function() return "Picture-in-Picture" end,
     isStandard = function() return true end, isVisible = function() return true end }
 win.isStandard, win.isVisible = function() return true end, function() return true end
@@ -126,53 +144,52 @@ win.setFrame = function(_, rect)
     writes = writes + 1
     if accept then actual = rect end
 end
-env.bspAutoFloat, env.bspApplied, env.bspLayoutChecks = {}, {}, {}
-env.bspLastMouseTime, env.BSP_SETTLE = 0, 0.35
-env.bspFindByID = function() return {}, { rect = target }, "screen:1" end
-env.bspKeyForScreen = function() return "screen:1" end
+S.autoFloat, S.applied, Discover.layoutChecks = {}, {}, {}
+S.lastMouseTime, env.BSP_SETTLE = 0, 0.35 -- BSP_SETTLE is a file-local in layout.lua
+Tree.findByID = function() return {}, { rect = target }, "screen:1" end
+Tree.keyForScreen = function() return "screen:1" end
 env.hs.mouse = { getButtons = function() return {} end }
-env.invalidateWindowCache, env.dlog = function() end, function() end
-env.bspCancelLayoutCheck = function(id)
-    local pending = env.bspLayoutChecks[id]
-    if pending then pending.timer:stop() env.bspLayoutChecks[id] = nil end
+Discover.cancelLayoutCheck = function(id)
+    local pending = Discover.layoutChecks[id]
+    if pending then pending.timer:stop() Discover.layoutChecks[id] = nil end
 end
-local verify = assert(load(extract("local function bspFramesMatch(a, b)",
-    "local function bspApplyTree(node") .. "return bspVerifyLayout", "layout", "t", env))()
+local verify = assert(load(extract("layout", "local function framesMatch(a, b)",
+    "local function applyTree(node") .. "return verifyLayout", "layout", "t", env))()
 local function reset()
     queue, writes, accept = {}, 0, false
     actual = { x = 0, y = 0, w = 100, h = 100 }
-    env.bspApplied, env.bspLayoutChecks = {}, {}
-    env.bspLastMouseTime = 0
+    S.applied, Discover.layoutChecks = {}, {}
+    S.lastMouseTime = 0
 end
 reset()
 verify(win, target, "target")
 tick()
-assert(writes == 1 and env.bspApplied[1] == nil, "unobserved resize must not be cached")
+assert(writes == 1 and S.applied[1] == nil, "unobserved resize must not be cached")
 accept = true
 drain()
-assert(writes == 2 and env.bspApplied[1] == "target", "late resize should be verified")
+assert(writes == 2 and S.applied[1] == "target", "late resize should be verified")
 reset()
 verify(win, target, "target")
 drain()
-assert(writes == 2 and env.bspApplied[1] == nil, "ignored resizes have bounded retries")
+assert(writes == 2 and S.applied[1] == nil, "ignored resizes have bounded retries")
 reset()
 verify(win, target, "target")
-env.bspLastMouseTime = now + 0.01
+S.lastMouseTime = now + 0.01
 drain()
 assert(writes == 0, "mouse interaction cancels retries")
 reset()
 verify(win, target, "target")
-env.bspFindByID = function() return nil end
+Tree.findByID = function() return nil end
 drain()
 assert(writes == 0, "removed tiles must not be resized")
 reset()
-env.bspFindByID = function() return {}, { rect = target }, "screen:1" end
+Tree.findByID = function() return {}, { rect = target }, "screen:1" end
 actual = target
 local oldScreen = win.screen
 win.screen = function() error("matching frames must not query the screen") end
 verify(win, target, "target")
 drain()
-assert(env.bspApplied[1] == "target")
+assert(S.applied[1] == "target")
 win.screen = oldScreen
 
 -- Snapshot fast path avoids querying WindowServer for disjoint tiles;
@@ -180,10 +197,10 @@ win.screen = oldScreen
 local second = { id = function() return 2 end }
 local tiles = { [1] = target, [2] = { x = 820, y = 10, w = 800, h = 600 } }
 local listCalls = 0
-env.ffmSnapshot, env.FFM_SNAPSHOT_TTL = nil, 1
-env.running.windowFilter = { getWindows = function() return { win, second } end }
-env.managedWindows = function() return env.running.windowFilter:getWindows() end
-env.bspRectFor = function(id) return tiles[id] end
+S.ffmSnapshot, Util.FFM_SNAPSHOT_TTL = nil, 1
+S.running.windowFilter = { getWindows = function() return { win, second } end }
+Util.managedWindows = function() return S.running.windowFilter:getWindows() end
+Tree.rectFor = function(id) return tiles[id] end
 env.hs.geometry = { rect = function(x, y, w, h) return { x = x, y = y, w = w, h = h } end }
 env.hs.window = { list = function()
     listCalls = listCalls + 1
@@ -192,29 +209,29 @@ env.hs.window = { list = function()
         { kCGWindowNumber = 1, kCGWindowBounds = { X = 10, Y = 10, Width = 800, Height = 600 } },
     }
 end }
-local snapshot = assert(load(extract("local function windowSnapshot(fresh)",
-    "ffmPrebuild = hs.timer.delayed.new") .. "return windowSnapshot", "snapshot", "t", env))()
+local snapshot = assert(load(extract("focus", "local function windowSnapshot(fresh)",
+    "S.ffmPrebuild = hs.timer.delayed.new") .. "return windowSnapshot", "snapshot", "t", env))()
 assert(#snapshot(true) == 2 and listCalls == 0, "disjoint tiles need no WindowServer query")
 tiles[2] = target
 local entries = snapshot(true)
 assert(entries[1].id == 2 and listCalls == 1, "overlapping tiles need stacking order")
-tiles[2], env.bspAutoFloat[2] = nil, true
+tiles[2], S.autoFloat[2] = nil, true
 entries = snapshot(true)
 assert(entries[1].id == 2 and entries[1].frame.x == 20, "floats use live geometry")
 snapshot()
 assert(listCalls == 2, "cached snapshots need no WindowServer query")
-env.running.pipFilter = { getWindows = function()
+S.running.pipFilter = { getWindows = function()
     return {{ frame = function() return { x = 50, y = 50, w = 100, h = 100 } end }}
 end }
-env.windowSnapshot = snapshot
-env.pointInFrame = function(p, f)
+env.windowSnapshot = snapshot -- file-local in wm/focus.lua
+Util.pointInFrame = function(p, f)
     return p.x >= f.x and p.x < f.x + f.w and p.y >= f.y and p.y < f.y + f.h
 end
-local entryAt = assert(load(extract("local function snapshotEntryAt(point, fresh)",
+local entryAt = assert(load(extract("focus", "local function snapshotEntryAt(point, fresh)",
     "local function windowUnderPoint") .. "return snapshotEntryAt", "occlusion", "t", env))()
 assert(entryAt({ x = 60, y = 60 }, true) == nil, "PiP must block hover focus of underlying windows")
 assert(entryAt({ x = 25, y = 35 }) ~= nil, "hover outside PiP must still work")
-env.running.pipFilter = nil
+S.running.pipFilter = nil
 
 -- A float buried under another app's tile still wins hover; one buried under
 -- its own app's window (its parent, focused) does not.
@@ -231,9 +248,8 @@ pids[2] = 10
 assert(entryAt({ x = 25, y = 35 }, true).id == 1, "own app's window above a float wins")
 
 -- BSP navigation returns to the last-used leaf in the adjacent subtree.
-local nav = setmetatable({}, { __index = _G })
-nav.nearestInDirection = assert(load(extract("local function nearestInDirection(f, selfID",
-    "-- Every tile in a tree") .. "return nearestInDirection", "nearest", "t", nav))()
+local nav = setmetatable({ S = { trees = {}, tilingEnabled = true },
+    Util = { winByID = {}, focusHistory = {} }, Tree = {}, Focus = {} }, { __index = _G })
 local top = { windowID = 10, rect = { x = 0, y = 0, w = 400, h = 300 } }
 local bottom = { windowID = 11, rect = { x = 0, y = 310, w = 400, h = 300 } }
 local right = { windowID = 12, rect = { x = 410, y = 0, w = 400, h = 610 } }
@@ -244,31 +260,29 @@ for _, leaf in ipairs({top, bottom, right}) do
     windows[leaf.windowID] = { id = function() return leaf.windowID end,
         frame = function() return leaf.rect end }
 end
-nav.bspIsLeaf = function(node) return node.windowID ~= nil end
-nav.bspWinByID, nav.bspTrees, nav.bspTilingEnabled = windows, { main = root }, true
-nav.bspTiles = assert(load(extract("local function bspTiles(node, out)",
-    "-- For a tiled window") .. "return bspTiles", "tiles", "t", nav))()
-nav.bspFindByID = function(id)
+nav.Tree.isLeaf = function(node) return node.windowID ~= nil end
+nav.Util.winByID, nav.S.trees = windows, { main = root }
+nav.Tree.findByID = function(id)
     if id == 12 then return {{ node = root, branch = "b" }}, right, "main" end
     return {{ node = left, branch = id == 10 and "a" or "b" }, { node = root, branch = "a" }},
         id == 10 and top or bottom, "main"
 end
-nav.windowSnapshot = function() return {} end
-local neighbour = assert(load(extract("local function neighbourInDirection(win, direction",
+nav.Focus.windowSnapshot = function() return {} end
+local neighbour = assert(load(extract("actions", "local function nearestInDirection(f, selfID",
     "local function directionalCandidates") .. "return neighbourInDirection", "navigation", "t", nav))()
-nav.bspFocusHistory = {12, 11, 10}
+nav.Util.focusHistory = {12, 11, 10}
 assert(neighbour(windows[12], "left", true) == windows[11], "return to bottom-left")
-nav.bspFocusHistory = {12, 10, 11}
+nav.Util.focusHistory = {12, 10, 11}
 assert(neighbour(windows[12], "left", true) == windows[10], "return to top-left when it was last used")
 assert(neighbour(windows[11], "right", true) == windows[12], "left-bottom to right")
 assert(neighbour(windows[11], "up", true) == windows[10], "nearest ancestor chooses upper sibling")
-nav.bspFocusHistory = {}
+nav.Util.focusHistory = {}
 assert(neighbour(windows[12], "left", true) ~= nil, "missing history falls back to geometry")
 
 local checks = 0
-env.bspTileNow = function() checks = checks + 1 end
-local recheck = assert(load(extract("local bspRecheckTimer = nil",
-    "local function bspRestoreFloatingFrames") .. "return bspScheduleRecheck", "discovery", "t", env))()
+env.tileNow = function() checks = checks + 1 end -- file-local in layout.lua
+local recheck = assert(load(extract("layout", "local function scheduleRecheck(step)",
+    "local function restoreFloatingFrames") .. "return scheduleRecheck", "discovery", "t", env))()
 recheck()
 drain()
 assert(checks == 3, "discovery retries must continue without a layout change")

@@ -16,7 +16,7 @@ local SUPER_SHIFT = { "alt", "shift" }
 local SUPER_CMD   = { "alt", "cmd" } -- replacement for Hyprland SUPER+ALT
 
 -- Window manager (tiling, mouse move/resize, focus follows mouse,
--- workspaces). See wm.lua for all options and their defaults.
+-- workspaces). See wm/state.lua for all options and their defaults.
 local wm          = require("wm")
 
 wm.setup({

@@ -4,8 +4,12 @@
 local M = {}
 
 -- Find internal helpers without adding profiling overhead to production.
-local function internals(root)
-    local found, seen = {}, {}
+-- Returns { upvalues = { name = fn }, modules = { Name = module table } }:
+-- module-local functions that no module exports (e.g. neighbourInDirection in
+-- wm/actions.lua) are reached by walking upvalues from the exported functions
+-- of every loaded wm.* module.
+local function internals()
+    local upvalues, modules, seen = {}, {}, {}
     local function visit(fn)
         if seen[fn] then return end
         seen[fn] = true
@@ -13,13 +17,21 @@ local function internals(root)
             local name, value = debug.getupvalue(fn, i)
             if not name then break end
             if type(value) == 'function' then
-                found[name] = value
+                upvalues[name] = value
                 visit(value)
             end
         end
     end
-    for _, fn in pairs(root) do if type(fn) == 'function' then visit(fn) end end
-    return found
+    for name, module in pairs(package.loaded) do
+        local short = type(name) == 'string' and name:match('^wm%.(.+)$')
+        if short and type(module) == 'table' then
+            modules[short:sub(1, 1):upper() .. short:sub(2)] = module
+            for _, fn in pairs(module) do
+                if type(fn) == 'function' then visit(fn) end
+            end
+        end
+    end
+    return { upvalues = upvalues, modules = modules }
 end
 
 function M.run(rounds)
@@ -27,13 +39,16 @@ function M.run(rounds)
     rounds = rounds or 20
     local wm = require('wm')
     assert(wm.isTiling(), 'enable tiling before benchmarking')
-    local f = internals(wm)
+    local found = internals()
+    local m, up = found.modules, found.upvalues
+    assert(m.Layout and m.Discover and m.Focus, 'wm modules are not loaded')
+    assert(up.neighbourInDirection, 'neighbourInDirection not reachable from exports')
     local cases = {}
     local function add(name, fn) cases[#cases + 1] = { name = name, fn = fn, samples = {} } end
-    add('layout.unchanged', function() f.bspTileNow(true) end)
-    add('discovery.group', function() f.bspWindowsByScreen() end)
-    add('snapshot.fresh', function() f.windowSnapshot(true) end)
-    add('snapshot.cached', function() f.windowSnapshot() end)
+    add('layout.unchanged', function() m.Layout.tileNow(true) end)
+    add('discovery.group', function() m.Discover.windowsByScreen() end)
+    add('snapshot.fresh', function() m.Focus.windowSnapshot(true) end)
+    add('snapshot.cached', function() m.Focus.windowSnapshot() end)
     add('windows.ordered', function() hs.window.orderedWindows() end)
     add('spaces.active', function() hs.spaces.activeSpaceOnScreen(hs.screen.mainScreen()) end)
     local windows = hs.window.orderedWindows()
@@ -51,8 +66,8 @@ function M.run(rounds)
     end
     local win = hs.window.focusedWindow()
     if win then
-        add('focus.current', function() f.currentWindow() end)
-        add('focus.neighbour', function() f.neighbourInDirection(win, 'up', true) end)
+        add('focus.current', function() m.Focus.currentWindow() end)
+        add('focus.neighbour', function() up.neighbourInDirection(win, 'up', true) end)
     end
     local index, round = 1, 1
     M.done, M.result = false, nil
