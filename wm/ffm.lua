@@ -19,10 +19,14 @@ local Focus = require("wm.focus")
 -- (restarted on each crossing) rather than a new timer per crossing.
 local ffmPending = nil
 
+-- Set while the screen is locked: the pointer still moves under the lock
+-- screen, and focusing windows behind it leaves our record of focus wrong.
+local locked = false
+
 local function ffmFocusPending()
     local entry = ffmPending
     ffmPending = nil
-    if not entry or S.dragState
+    if not entry or S.dragState or locked
        or not Util.pointInFrame(hs.mouse.absolutePosition(), entry.frame)
        or Focus.snapshotEntryAt(hs.mouse.absolutePosition()) ~= entry then
         return
@@ -40,7 +44,7 @@ local function onMouseMoved(event)
     if event:getProperty(hs.eventtap.event.properties.eventSourceUserData) == Util.WARP_MOUSE_EVENT then
         return false
     end
-    if not S.cfg.focusFollowsMouse or S.dragState then
+    if not S.cfg.focusFollowsMouse or S.dragState or locked then
         return false
     end
 
@@ -68,12 +72,37 @@ local function onMouseMoved(event)
     return false
 end
 
+-- macOS restores focus as it likes on unlock, often without a focus event
+-- for the window we last recorded. A stale record makes hover skip the
+-- window that really needs focus, so read the real one back once it settles.
+local resync = hs.timer.delayed.new(0.5, function()
+    local actual = Util.focusedWindow()
+    S.ffmFocusedID = actual and actual:id() or nil
+    S.ffmLastWindow = nil
+    Focus.invalidateWindowCache()
+end)
+
+local function onSessionEvent(event)
+    local w = hs.caffeinate.watcher
+    if event == w.screensDidLock or event == w.sessionDidResignActive then
+        locked = true
+        ffmPending = nil
+        resync:stop()
+    elseif event == w.screensDidUnlock or event == w.sessionDidBecomeActive then
+        locked = false
+        resync:start()
+    end
+end
+
 -- Forgets the window waiting for the hover timer (reload, shutdown).
 local function stop()
     ffmPending = nil
+    locked = false
+    resync:stop()
 end
 
 M.stop = stop
+M.onSessionEvent = onSessionEvent
 M.ffmFocusPending = ffmFocusPending
 M.onMouseMoved = onMouseMoved
 

@@ -86,6 +86,7 @@ function M.stop()
     if S.running.pipFilter then S.running.pipFilter:unsubscribeAll() end
     if S.running.spaceWatcher then S.running.spaceWatcher:stop() end
     if S.running.screenWatcher then S.running.screenWatcher:stop() end
+    if S.running.sessionWatcher then S.running.sessionWatcher:stop() end
     for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
     if S.running.ffmTimer then S.running.ffmTimer:stop() end
     Layout.stop()
@@ -131,6 +132,7 @@ function M.setup(opts)
     }, Mouse.onMouseEvent):start()
 
     S.running.moveTap = hs.eventtap.new({ Mouse.mouseTypes.mouseMoved }, Ffm.onMouseMoved):start()
+    S.running.sessionWatcher = hs.caffeinate.watcher.new(Ffm.onSessionEvent):start()
 
     local filter = hs.window.filter.new()
     filter:setDefaultFilter({ allowRoles = Util.MANAGED_ROLES, visible = true })
