@@ -102,25 +102,31 @@ Util.windowKind = function() return "subwindow" end
 assert(classify(true) == true and axReads == 0, "dialogs and panels always float")
 Util.windowKind = function() return "standard" end
 
--- Dialog/panel roles are managed only when they have a close button.
+-- Dialog/panel roles are managed only when they have a close button, are
+-- modal, or have a default or cancel button.
 local kindEnv = setmetatable({ hs = {} }, { __index = _G })
-local hasClose = true
+local attrs = {}
 kindEnv.hs.axuielement = { windowElement = function()
     return { attributeValue = function(_, name)
-        assert(name == "AXCloseButton")
-        return hasClose and {} or nil
+        assert(name == "AXCloseButton" or name == "AXModal"
+            or name == "AXDefaultButton" or name == "AXCancelButton")
+        return attrs[name]
     end }
 end }
 local windowKind = assert(load(extract("util", "local MANAGED_ROLES =",
     "local managedCache = nil") .. "return windowKind", "kind", "t", kindEnv))()
-local function kindOf(id, subrole, close)
-    hasClose = close
+local function kindOf(id, subrole, windowAttrs)
+    attrs = windowAttrs or {}
     return windowKind({ id = function() return id end, subrole = function() return subrole end })
 end
-assert(kindOf(1, "AXStandardWindow", false) == "standard")
-assert(kindOf(2, "AXDialog", true) == "subwindow", "titled dialogs are managed")
-assert(kindOf(3, "AXDialog", false) == "ignored", "helper overlays are ignored")
-assert(kindOf(2, "AXDialog", false) == "subwindow", "classified once")
+assert(kindOf(1, "AXStandardWindow") == "standard")
+assert(kindOf(2, "AXDialog", { AXCloseButton = {} }) == "subwindow", "titled dialogs are managed")
+assert(kindOf(3, "AXDialog", { AXModal = false }) == "ignored", "helper overlays are ignored")
+assert(kindOf(2, "AXDialog") == "subwindow", "classified once")
+assert(kindOf(4, "AXDialog", { AXModal = true, AXDefaultButton = {} }) == "subwindow",
+    "modal dialogs without a close button are managed")
+assert(kindOf(5, "AXFloatingWindow", { AXCancelButton = {} }) == "subwindow",
+    "dialogs with a cancel button are managed")
 
 local appEnv = setmetatable({
     hs = env.hs, Util = Util,

@@ -73,7 +73,9 @@ end
 -- Besides standard windows, dialogs and panels (preferences, inspectors,
 -- tool palettes) are managed, always as floats. Apps also keep invisible
 -- helper windows with those roles (menu bar and notification overlays);
--- unlike real subwindows they have no close button. Neither changes over a
+-- unlike real subwindows they have no close button. Some real dialogs lack
+-- one too (Tailscale's prompts), but those are modal or have a default or
+-- cancel button, which the helpers never do. Neither changes over a
 -- window's lifetime, so each window is classified once.
 local MANAGED_ROLES = { "AXStandardWindow", "AXDialog", "AXFloatingWindow", "AXSystemDialog" }
 local windowKinds = {} -- window id -> "standard" | "subwindow" | "ignored"
@@ -84,13 +86,17 @@ local function windowKind(win)
     if windowKinds[id] then return windowKinds[id] end
     local kind = "standard"
     if win:subrole() ~= "AXStandardWindow" then
-        local ok, close = pcall(function()
+        local ok, dialog = pcall(function()
             local ax = hs.axuielement.windowElement(win)
-            return ax and ax:attributeValue("AXCloseButton")
+            if not ax then return false end
+            return ax:attributeValue("AXCloseButton") ~= nil
+                or ax:attributeValue("AXModal") == true
+                or ax:attributeValue("AXDefaultButton") ~= nil
+                or ax:attributeValue("AXCancelButton") ~= nil
         end)
         -- Unreadable (a busy app): leave it alone and ask again next time.
         if not ok then return "ignored" end
-        kind = close and "subwindow" or "ignored"
+        kind = dialog and "subwindow" or "ignored"
     end
     windowKinds[id] = kind
     return kind
