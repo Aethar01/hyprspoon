@@ -23,6 +23,43 @@ local ffmPending = nil
 -- screen, and focusing windows behind it leaves our record of focus wrong.
 local locked = false
 
+-- True while the session is behind the lock screen (or another user's).
+-- Asked of the system rather than tracked from events: after sleeping while
+-- locked the unlock notification isn't reliably delivered, and a missed one
+-- would leave hover focus paused for good.
+local function sessionLocked()
+    local props = hs.caffeinate.sessionProperties()
+    if not props then return false end
+    return props.CGSSessionScreenIsLocked == true or props.kCGSSessionOnConsoleKey == false
+end
+
+-- macOS restores focus as it likes on unlock, often without a focus event
+-- for the window we last recorded. A stale record makes hover skip the
+-- window that really needs focus, so read the real one back. After a wake
+-- apps are reactivated and windows moved back onto displays for seconds
+-- afterwards, so look again a few times.
+local resyncTimers = {}
+
+local function stopResync()
+    for _, t in ipairs(resyncTimers) do t:stop() end
+    resyncTimers = {}
+end
+
+local function resyncFocus()
+    local actual = Util.focusedWindow()
+    S.ffmFocusedID = actual and actual:id() or nil
+    S.ffmLastWindow = nil
+    Focus.invalidateWindowCache()
+end
+
+local function unlock()
+    locked = false
+    stopResync()
+    for i, delay in ipairs({ 0.5, 1.5, 3 }) do
+        resyncTimers[i] = hs.timer.doAfter(delay, resyncFocus)
+    end
+end
+
 local function ffmFocusPending()
     local entry = ffmPending
     ffmPending = nil
@@ -44,8 +81,14 @@ local function onMouseMoved(event)
     if event:getProperty(hs.eventtap.event.properties.eventSourceUserData) == Util.WARP_MOUSE_EVENT then
         return false
     end
-    if not S.cfg.focusFollowsMouse or S.dragState or locked then
+    if not S.cfg.focusFollowsMouse or S.dragState then
         return false
+    end
+    -- The pointer moving is the surest sign the lock screen has gone, even
+    -- when no unlock notification came.
+    if locked then
+        if sessionLocked() then return false end
+        unlock()
     end
 
     local point = event:location()
@@ -72,25 +115,17 @@ local function onMouseMoved(event)
     return false
 end
 
--- macOS restores focus as it likes on unlock, often without a focus event
--- for the window we last recorded. A stale record makes hover skip the
--- window that really needs focus, so read the real one back once it settles.
-local resync = hs.timer.delayed.new(0.5, function()
-    local actual = Util.focusedWindow()
-    S.ffmFocusedID = actual and actual:id() or nil
-    S.ffmLastWindow = nil
-    Focus.invalidateWindowCache()
-end)
-
 local function onSessionEvent(event)
     local w = hs.caffeinate.watcher
-    if event == w.screensDidLock or event == w.sessionDidResignActive then
+    if event == w.screensDidLock or event == w.sessionDidResignActive
+       or event == w.systemWillSleep or event == w.screensDidSleep then
         locked = true
         ffmPending = nil
-        resync:stop()
-    elseif event == w.screensDidUnlock or event == w.sessionDidBecomeActive then
-        locked = false
-        resync:start()
+        stopResync()
+    elseif event == w.screensDidUnlock or event == w.sessionDidBecomeActive
+       or event == w.systemDidWake or event == w.screensDidWake then
+        -- Waking shows the lock screen first; stay paused until it's gone.
+        if not sessionLocked() then unlock() end
     end
 end
 
@@ -98,7 +133,7 @@ end
 local function stop()
     ffmPending = nil
     locked = false
-    resync:stop()
+    stopResync()
 end
 
 M.stop = stop
