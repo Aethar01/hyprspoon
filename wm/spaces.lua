@@ -69,6 +69,17 @@ local function spaceAt(index)
     return userSpaces()[index]
 end
 
+local function indexOf(list, value)
+    for i, v in ipairs(list) do
+        if v == value then return i end
+    end
+end
+
+local function screenForSpace(spaceID)
+    local uuid = hs.spaces.spaceDisplay(spaceID)
+    return uuid and hs.screen.find(uuid)
+end
+
 -- After a Space switch macOS often leaves no window focused until the mouse
 -- moves. Once the switch has settled, restore focus on the new Space while
 -- leaving the pointer in place. The
@@ -104,6 +115,15 @@ local function focusCurrentSpaceWindow(attempt)
         win = entry and entry.win
     end
 
+    -- A window just sent here by moveToWorkspace takes precedence, if it
+    -- really is here (focusing it elsewhere would switch Space again).
+    local sent = S.spaceFocusWin
+    S.spaceFocusWin = nil
+    if sent and screen and hs.fnutils.contains(hs.spaces.windowSpaces(sent) or {},
+            hs.spaces.activeSpaceOnScreen(screen)) then
+        win = sent
+    end
+
     if win then
         Focus.focus(win)
     elseif attempt < 6 then
@@ -117,11 +137,28 @@ local function settleSpaceFocus()
     spaceSettleTimer = hs.timer.doAfter(0.1, function() focusCurrentSpaceWindow(1) end)
 end
 
+-- Spaces are switched with macOS's own "Switch to Desktop N" shortcut (Ctrl+N,
+-- System Settings > Keyboard > Keyboard Shortcuts > Mission Control) rather
+-- than hs.spaces.gotoSpace, which opens Mission Control and presses its
+-- Desktop buttons. Desktop numbers count only the desktops on the display.
+-- Flags are set explicitly so the held Option doesn't leak into the shortcut.
+-- Returns true when a switch was started.
 local function switchToSpace(target)
-    local ok, err = hs.spaces.gotoSpace(target)
-    if not ok then
-        hs.alert.show("Could not switch Space: " .. tostring(err))
+    local screen = screenForSpace(target)
+    if not screen or hs.spaces.activeSpaceOnScreen(screen) == target then return false end
+
+    local desktop = indexOf(
+        hs.fnutils.filter(hs.spaces.spacesForScreen(screen) or {},
+            function(id) return hs.spaces.spaceType(id) == "user" end),
+        target)
+    if not desktop or desktop > 10 then
+        hs.alert.show("No Desktop shortcut for Space " .. tostring(target))
         return false
+    end
+
+    local key = tostring(desktop % 10)
+    for _, isDown in ipairs({ true, false }) do
+        hs.eventtap.event.newKeyEvent(key, isDown):setFlags({ ctrl = true }):post()
     end
 
     S.spaceFocusPending = true
@@ -177,11 +214,9 @@ function M.moveToWorkspace(index)
         return
     end
 
-    hs.spaces.gotoSpace(target)
-
-    hs.timer.doAfter((hs.spaces.MCwaitTime or 0.3) + 0.15, function()
-        win:focus()
-    end)
+    -- Focused once the switch settles, ahead of the Space's last-used window.
+    S.spaceFocusWin = win
+    if not switchToSpace(target) then S.spaceFocusWin = nil end
 end
 
 M.settleSpaceFocus = settleSpaceFocus
