@@ -89,44 +89,59 @@ S.spaceFocusPending = false
 -- Timers are kept in variables so they can't be garbage collected early.
 local spaceRetryTimer, spaceSettleTimer, spaceFallbackTimer
 
+-- Focusing a window on a Space that isn't showing makes macOS switch back
+-- to it, so every candidate must be on one of the active Spaces.
+local function onActiveSpace(win)
+    local active = {}
+    for _, id in pairs(hs.spaces.activeSpaces() or {}) do active[id] = true end
+    for _, id in ipairs(hs.spaces.windowSpaces(win) or {}) do
+        if active[id] then return true end
+    end
+    return false
+end
+
+local function stopSpaceTimers()
+    for _, t in ipairs({ spaceRetryTimer, spaceSettleTimer, spaceFallbackTimer }) do
+        if t then t:stop() end
+    end
+end
+
 local function focusCurrentSpaceWindow(attempt)
-    -- The window we last used in this Space, from our own tree and focus
-    -- record; only when there's none do we ask what is under the pointer.
-    local win = nil
-    local screen = hs.mouse.getCurrentScreen()
-    local tree = S.tilingEnabled and screen and S.trees[Tree.keyForScreen(screen)]
-    if tree then
-        local ids = Tree.collectIDs(tree)
-        for _, fid in ipairs(Util.focusHistory) do
-            if ids[fid] and Util.winByID[fid] and Util.winByID[fid]:id() == fid then
-                win = Util.winByID[fid]
-                break
-            end
-        end
-    end
-
-    if not win then
-        -- Fresh each attempt: the Space has just changed, and a snapshot
-        -- taken mid-switch would otherwise be reused by the retries.
-        win = Focus.windowUnderPoint(hs.mouse.absolutePosition(), true)
-    end
-    if not win then
-        local entry = Focus.windowSnapshot()[1]
-        win = entry and entry.win
-    end
-
-    -- A window just sent here by moveToWorkspace takes precedence, if it
-    -- really is here (focusing it elsewhere would switch Space again).
+    -- A window just sent here by moveToWorkspace takes precedence. Then the
+    -- window we last used in this Space, from our own tree and focus record;
+    -- only when there's none do we ask what is under the pointer.
     local sent = S.spaceFocusWin
     S.spaceFocusWin = nil
-    if sent and screen and hs.fnutils.contains(hs.spaces.windowSpaces(sent) or {},
-            hs.spaces.activeSpaceOnScreen(screen)) then
-        win = sent
-    end
+    local screen = hs.mouse.getCurrentScreen()
+    local candidates = {
+        function() return sent end,
+        function()
+            local tree = S.tilingEnabled and screen and S.trees[Tree.keyForScreen(screen)]
+            if not tree then return nil end
+            local ids = Tree.collectIDs(tree)
+            for _, fid in ipairs(Util.focusHistory) do
+                if ids[fid] and Util.winByID[fid] and Util.winByID[fid]:id() == fid then
+                    return Util.winByID[fid]
+                end
+            end
+        end,
+        -- Fresh each attempt: the Space has just changed, and a snapshot
+        -- taken mid-switch would otherwise be reused by the retries.
+        function() return Focus.windowUnderPoint(hs.mouse.absolutePosition(), true) end,
+        function()
+            local entry = Focus.windowSnapshot()[1]
+            return entry and entry.win
+        end,
+    }
 
-    if win then
-        Focus.focus(win)
-    elseif attempt < 6 then
+    for _, candidate in ipairs(candidates) do
+        local win = candidate()
+        if win and onActiveSpace(win) then
+            Focus.focus(win)
+            return
+        end
+    end
+    if attempt < 6 then
         spaceRetryTimer = hs.timer.doAfter(0.15, function() focusCurrentSpaceWindow(attempt + 1) end)
     end
 end
@@ -134,6 +149,10 @@ end
 local function settleSpaceFocus()
     if not S.spaceFocusPending then return end
     S.spaceFocusPending = false
+    -- A focus request from before the switch would otherwise be "defended"
+    -- against the new Space's focus, switching straight back.
+    S.intent = nil
+    stopSpaceTimers()
     spaceSettleTimer = hs.timer.doAfter(0.1, function() focusCurrentSpaceWindow(1) end)
 end
 
@@ -161,6 +180,11 @@ local function switchToSpace(target)
         hs.eventtap.event.newKeyEvent(key, isDown):setFlags({ ctrl = true }):post()
     end
 
+    -- Leaving this Space: nothing from it may be focused, or re-focused, until
+    -- the switch settles (focus follows mouse waits on spaceFocusPending).
+    S.intent = nil
+    stopSpaceTimers()
+    Focus.invalidateWindowCache()
     S.spaceFocusPending = true
     spaceFallbackTimer = hs.timer.doAfter(1.0, settleSpaceFocus)
     return true
