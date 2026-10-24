@@ -45,6 +45,22 @@ local function noteFocus(win)
     S.ffmFocusedID = id
 end
 
+-- The window focused last, if macOS focused `win` because that one is
+-- closing or minimizing: it reports the next window focused before the
+-- close or minimize itself, and by then a closed window has no role. Only
+-- asked of the same app's windows (its pick on a close) and parked ones,
+-- so focus follows mouse pays nothing for it.
+local function goneBefore(win)
+    local id = Util.focusHistory[1]
+    local last = Util.winByID[id]
+    if not last or last:id() ~= id or id == win:id() then return nil end
+    if (Util.pidByID[id] or last:pid()) ~= win:pid() and not Spaces.isHidden(win:id()) then
+        return nil
+    end
+    local role = last:role()
+    if role == nil or role == "" or last:isMinimized() then return id end
+end
+
 -- Focus a window on our own initiative.
 local function focus(win)
     if not win then return end
@@ -216,6 +232,7 @@ end
 M.stop = stop
 M.REASSERT_WINDOW = REASSERT_WINDOW
 M.noteFocus = noteFocus
+M.goneBefore = goneBefore
 M.focus = focus
 M.currentWindow = currentWindow
 M.invalidateWindowCache = invalidateWindowCache

@@ -320,21 +320,22 @@ end
 -- ---------------------------------------------------------------------------
 
 -- Focus a window of workspace `n`: one just sent there, else the one used
--- last, else any. An empty workspace leaves nothing of the old one focused
--- (keys would go to a parked window), so Hammerspoon takes focus.
-local function focusWorkspace(n, warp)
+-- last, else any, never `skip`. An empty workspace leaves nothing of the
+-- old one focused (keys would go to a parked window), so Hammerspoon takes
+-- focus.
+local function focusWorkspace(n, warp, skip)
     local sent = S.spaceFocusWin
     S.spaceFocusWin = nil
     local target = sent and sent:id() and of[sent:id()] == n and sent or nil
     if not target then
         for _, fid in ipairs(Util.focusHistory) do
             local win = Util.winByID[fid]
-            if of[fid] == n and win and win:id() == fid then target = win break end
+            if of[fid] == n and fid ~= skip and win and win:id() == fid then target = win break end
         end
     end
     if not target then
         for _, win in ipairs(Util.managedWindows()) do
-            if of[win:id()] == n then target = win break end
+            if of[win:id()] == n and win:id() ~= skip then target = win break end
         end
     end
 
@@ -455,9 +456,10 @@ end
 -- workspace showing.
 function M.focusedParked(win)
     local now = hs.timer.secondsSinceEpoch()
-    if now - lastSwitch < 0.5 or now - S.lastGoneTime < 1 then
+    local going = Focus.goneBefore(win)
+    if going or now - lastSwitch < 0.5 or now - S.lastGoneTime < 1 then
         local n = active[pointerUUID()]
-        if n then focusWorkspace(n, false) end
+        if n then focusWorkspace(n, false, going) end
         return
     end
     S.spaceFocusWin = win

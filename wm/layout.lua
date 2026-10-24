@@ -54,6 +54,30 @@ local function siblingToFocus(tree, windowID, valid)
     end
 end
 
+-- macOS focused `win` as the focused window `goneID` closed or minimized,
+-- before telling us it went: hand focus to its tree sibling now instead of
+-- after the retile (which holds back in case the close was a tab swap). Not
+-- when `win` is a native tab taking over the same tile. True if focus moved.
+local function handFocusBack(goneID, win)
+    local path, leaf, key = Tree.findByID(goneID)
+    if not path or S.autoFloat[goneID] then return false end
+    if leaf.rect and win:pid() == (Util.pidByID[goneID] or win:pid()) then
+        local f = win:frame()
+        if Util.pointInFrame({ x = f.x + f.w / 2, y = f.y + f.h / 2 }, leaf.rect) then return false end
+    end
+    local tree = S.trees[key]
+    local valid = {}
+    for id in pairs(Tree.collectIDs(tree)) do
+        local w = Util.winByID[id]
+        if id ~= goneID and w and w:id() == id then valid[id] = true end
+    end
+    local pick = siblingToFocus(tree, goneID, valid)
+    if not pick or pick == win:id() then return false end
+    Util.dlog("focused %s closing -> refocus %s", tostring(goneID), tostring(pick))
+    Focus.focus(Util.winByID[pick])
+    return true
+end
+
 -- Whether a window that has just vanished was the one we consider focused.
 -- Judged from our own focus record, not macOS's current focus: if macOS has
 -- already moved focus elsewhere in the last moment (stealing it on close),
@@ -538,6 +562,7 @@ end
 M.stop = stop
 M.tileNow = tileNow
 M.mayBeTab = mayBeTab
+M.handFocusBack = handFocusBack
 M.BSP_TAB_SETTLE = BSP_TAB_SETTLE
 M.BSP_SETTLE = BSP_SETTLE
 M.scheduleRetile = scheduleRetile

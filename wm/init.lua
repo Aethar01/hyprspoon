@@ -180,7 +180,14 @@ function M.setup(opts)
         if win and Util.windowKind(win) == "ignored" then return end
         if win then
             local id = win:id()
-            if id == S.requestedFocus then S.requestedFocus = nil end
+            local requested = id == S.requestedFocus
+            if requested then S.requestedFocus = nil end
+            -- macOS's pick as the focused window closes goes to its sibling.
+            local gone = not requested and Focus.goneBefore(win)
+            if gone and Layout.handFocusBack(gone, win) then
+                Focus.invalidateWindowCache()
+                return
+            end
             if Spaces.isHidden(id) then
                 Spaces.focusedParked(win)
                 return
