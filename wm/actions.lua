@@ -10,6 +10,7 @@ local Float = require("wm.float")
 local Focus = require("wm.focus")
 local Layout = require("wm.layout")
 local Resize = require("wm.resize")
+local Spaces = require("wm.spaces")
 
 -- ---------------------------------------------------------------------------
 -- Actions (bind these to hotkeys)
@@ -241,7 +242,8 @@ function M.focusFloat()
     if not S.running.windowFilter then return end
     local floats = {}
     for _, win in ipairs(Util.managedWindows()) do
-        if S.autoFloat[win:id()] then floats[#floats + 1] = win end
+        local id = win:id()
+        if S.autoFloat[id] and not Spaces.isHidden(id) then floats[#floats + 1] = win end
     end
     if #floats == 0 then return end
     table.sort(floats, function(a, b) return a:id() < b:id() end)

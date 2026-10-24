@@ -6,6 +6,7 @@ package.loaded["wm.float"] = M
 local S = require("wm.state")
 local Util = require("wm.util")
 local Tree = require("wm.tree")
+local Spaces = require("wm.spaces")
 
 -- Windows that can't go full screen float. Fixed-layout windows (dialogs,
 -- non-resizable windows, System Settings with its fixed width) opt out of
@@ -104,7 +105,7 @@ local function raiseFloatingNow()
     local focusedFloat = nil
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        if S.autoFloat[id] then
+        if S.autoFloat[id] and not Spaces.isHidden(id) then
             -- The focused float goes last so it stays on top of the others.
             if id == focusedID then
                 focusedFloat = win

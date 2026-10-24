@@ -7,6 +7,7 @@ local S = require("wm.state")
 local Util = require("wm.util")
 local Tree = require("wm.tree")
 local Float = require("wm.float")
+local Spaces = require("wm.spaces")
 
 -- Each window's screen and fullscreen state, cached per window id: both are
 -- accessibility calls and change only when the window moves or goes
@@ -172,19 +173,28 @@ end
 S.ghosts = {}
 
 -- Every window seen in the latest pass, on any screen. A window that leaves
--- a tree but is still open (moved to another display, gone fullscreen) keeps
--- its focus.
+-- a tree but is still open (moved to another display or workspace, gone
+-- fullscreen) keeps its focus.
 S.openIDs = {}
 
--- Manageable windows grouped by screen UUID, in a single pass (each window's
--- screen and state are accessibility calls, so don't repeat them per screen).
--- With `onlyUUID`, windows on other screens skip the remaining checks.
+-- Manageable windows of the showing workspaces grouped by screen UUID, in a
+-- single pass (each window's screen and state are accessibility calls, so
+-- don't repeat them per screen). Windows get their workspace here. With
+-- `onlyUUID`, windows on other screens skip the remaining checks.
 local function windowsByScreen(onlyUUID)
     local byScreen = {}
     S.ghosts = {}
     S.openIDs = {}
 
-    local allWindows = withRecentlyChangedApps(Util.managedWindows())
+    -- Parked windows are only counted as open.
+    local allWindows = {}
+    for _, win in ipairs(withRecentlyChangedApps(Util.managedWindows())) do
+        if Spaces.isHidden(win:id()) then
+            S.openIDs[win:id()] = true
+        else
+            allWindows[#allWindows + 1] = win
+        end
+    end
     local isBackgroundTab = backgroundTabs(allWindows)
 
     for _, win in ipairs(allWindows) do
@@ -194,10 +204,9 @@ local function windowsByScreen(onlyUUID)
         end
         S.openIDs[win:id()] = true
         local info = windowInfoFor(win)
-        local uuid = info.uuid
         -- The filter only passes visible, manageable windows.
-        if uuid and (not onlyUUID or uuid == onlyUUID)
-           and not info.full and not Float.shouldFloat(win) then
+        local uuid = info.uuid and not info.full and Spaces.claim(win, info.uuid)
+        if uuid and (not onlyUUID or uuid == onlyUUID) and not Float.shouldFloat(win) then
             byScreen[uuid] = byScreen[uuid] or {}
             table.insert(byScreen[uuid], win)
         end
@@ -223,6 +232,7 @@ M.stop = stop
 M.layoutChecks = layoutChecks
 M.cancelLayoutCheck = cancelLayoutCheck
 M.markDirty = markDirty
+M.windowInfoFor = windowInfoFor
 M.windowsByScreen = windowsByScreen
 
 return M

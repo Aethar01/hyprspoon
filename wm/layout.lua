@@ -9,6 +9,7 @@ local Tree = require("wm.tree")
 local Float = require("wm.float")
 local Focus = require("wm.focus")
 local Discover = require("wm.discover")
+local Spaces = require("wm.spaces")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -160,14 +161,10 @@ local function reconcileTree(key, windows)
         local id = win:id()
 
         if not present[id] then
-            -- A window arriving from another display leaves that tree.
-            -- Other Spaces on this display keep theirs: a window can't move
-            -- Space without leaving this one's list, and a pass that read
-            -- the Space mid-switch must not strip the new Space's tree.
-            local uuid = Tree.keyUUID(key)
+            -- A window arriving from another display or workspace leaves
+            -- that tree (only its own workspace's pass lists it).
             for otherKey, other in pairs(S.trees) do
-                if otherKey ~= key and Tree.keyUUID(otherKey) ~= uuid
-                   and Tree.treeContains(other, id) then
+                if otherKey ~= key and Tree.treeContains(other, id) then
                     S.trees[otherKey] = Tree.removeID(other, id)
                     signatures[otherKey] = nil
                 end
@@ -508,10 +505,13 @@ end
 
 -- Every window with a remembered frame was tiled, so winByID holds it; that
 -- avoids hs.window.allWindows(), which asks every running app over AX.
+-- Parked windows stay parked and get the frame once their workspace shows.
 local function restoreFloatingFrames()
     for id, frame in pairs(S.floatingFrames) do
         local win = Util.winByID[id]
-        if win and win:id() == id and win:isStandard() and not Util.isPictureInPicture(win) then
+        if Spaces.isHidden(id) then
+            Spaces.setParkedFrame(id, frame)
+        elseif win and win:id() == id and win:isStandard() and not Util.isPictureInPicture(win) then
             win:setFrame(frame, 0)
         end
     end
@@ -539,6 +539,7 @@ M.stop = stop
 M.tileNow = tileNow
 M.mayBeTab = mayBeTab
 M.BSP_TAB_SETTLE = BSP_TAB_SETTLE
+M.BSP_SETTLE = BSP_SETTLE
 M.scheduleRetile = scheduleRetile
 M.scheduleRecheck = scheduleRecheck
 M.restoreFloatingFrames = restoreFloatingFrames

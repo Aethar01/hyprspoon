@@ -57,8 +57,10 @@ local Util = { isPictureInPicture = isPiP, windowKind = function() return "stand
 local Tree = {}
 local Focus = { invalidateWindowCache = function() end }
 local Discover = { layoutChecks = {} }
+local hiddenIDs = {}
+local Spaces = { isHidden = function(id) return hiddenIDs[id] == true end }
 local env = setmetatable({
-    S = S, Util = Util, Tree = Tree, Focus = Focus, Discover = Discover,
+    S = S, Util = Util, Tree = Tree, Focus = Focus, Discover = Discover, Spaces = Spaces,
     hs = { timer = { doAfter = after, secondsSinceEpoch = function() return now end } },
 }, { __index = _G })
 local fullScreen, axReads = nil, 0
@@ -226,6 +228,10 @@ entries = snapshot(true)
 assert(entries[1].id == 2 and entries[1].frame.x == 20, "floats use live geometry")
 snapshot()
 assert(listCalls == 2, "cached snapshots need no WindowServer query")
+hiddenIDs[2] = true
+entries = snapshot(true)
+assert(#entries == 1 and entries[1].id == 1, "parked windows are not hover targets")
+hiddenIDs[2] = nil
 S.running.pipFilter = { getWindows = function()
     return {{ frame = function() return { x = 50, y = 50, w = 100, h = 100 } end }}
 end }

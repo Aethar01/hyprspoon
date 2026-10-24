@@ -5,12 +5,13 @@ package.loaded["wm.tree"] = M
 
 local S = require("wm.state")
 local Util = require("wm.util")
+local Spaces -- required last: it loads modules that read M.bootTime at load
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: tree
 -- ---------------------------------------------------------------------------
 --
--- The tree is kept per active Space + display. New windows are inserted by
+-- The tree is kept per workspace (see wm/spaces.lua). New windows are inserted by
 -- splitting the most recently focused leaf; split orientation alternates by
 -- tree depth. Closing/minimizing/moving windows prunes the tree automatically.
 --
@@ -24,12 +25,15 @@ local bootTime = tonumber(
     (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 
 -- Window IDs are only meaningful within one boot; after a restart they can be
--- reused by unrelated windows, so saved trees are discarded.
+-- reused by unrelated windows, so saved trees are discarded. So are trees
+-- from before workspaces were our own (keyed by display and macOS Space).
 S.trees = {}
 do
     local savedBoot = hs.settings.get(TREES_BOOT_KEY)
     if type(savedBoot) == "number" and math.abs(savedBoot - bootTime) < 120 then
-        S.trees = hs.settings.get(TREES_KEY) or {}
+        for key, tree in pairs(hs.settings.get(TREES_KEY) or {}) do
+            if key:match("^ws%d+$") then S.trees[key] = tree end
+        end
     end
 end
 
@@ -262,13 +266,14 @@ local function ancestors(node, windowID)
     return nil
 end
 
--- The tree key of a screen's active Space; defined below, with the cache of
--- active Spaces it reads.
-local keyForScreen
+-- The tree key of the workspace showing on a screen ("ws<number>").
+local function keyForScreen(screen)
+    return Spaces.keyForUUID(screen:getUUID())
+end
 
--- The screen UUID part of a tree key ("<uuid>:<space>").
+-- The UUID of the screen a tree's workspace is laid out on.
 local function keyUUID(key)
-    return key and key:match("^(.-):")
+    return Spaces.uuidForKey(key)
 end
 
 -- window id -> tree key, so lookups walk one tree instead of all of them. A
@@ -348,25 +353,6 @@ local function moveSplit(node, edge, pos)
 end
 
 
--- Each screen's active Space, kept until a Space or display change: the
--- Space watcher, the filter's Space events and the screen watcher all drop
--- it, whichever arrives first.
-local keyCache = {}
-
-local function forgetActiveSpaces()
-    keyCache = {}
-end
-
-keyForScreen = function(screen)
-    local uuid = screen:getUUID()
-    if keyCache[uuid] then return keyCache[uuid] end
-
-    local spaceID = hs.spaces.activeSpaceOnScreen(screen)
-    local key = uuid .. ":" .. tostring(spaceID or "unknown")
-    if spaceID then keyCache[uuid] = key end
-    return key
-end
-
 -- Flushes a pending debounced save (reload, shutdown).
 local function stop()
     if saveTimer then
@@ -398,6 +384,7 @@ M.keyUUID = keyUUID
 M.findByID = findByID
 M.boundingSplit = boundingSplit
 M.moveSplit = moveSplit
-M.forgetActiveSpaces = forgetActiveSpaces
+
+Spaces = require("wm.spaces")
 
 return M
