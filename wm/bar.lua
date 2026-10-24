@@ -23,8 +23,10 @@ local PILL = 18   -- height of the pill behind workspaces showing
 local PAD = 5     -- around a number inside its pill
 local GAP = 2     -- between numbers
 
--- Cells: { n =, x =, w = } from the last draw, for clicks.
+-- Cells: { n =, x =, w = } from the last draw, for clicks, and the width of
+-- the image they're in.
 local cells = {}
+local imageWidth = 0
 local item = nil
 
 local function draw()
@@ -49,7 +51,8 @@ local function draw()
         x = x + w + GAP
     end
 
-    local canvas = hs.canvas.new({ x = 0, y = 0, w = math.max(x - GAP, 1), h = HEIGHT })
+    imageWidth = math.max(x - GAP, 1)
+    local canvas = hs.canvas.new({ x = 0, y = 0, w = imageWidth, h = HEIGHT })
     for _, cell in ipairs(cells) do
         local ws = used[cell.n]
         local shown = ws and ws.shown
@@ -85,16 +88,20 @@ function M.update()
     if item then redraw:start() end
 end
 
+-- The item is wider than its image (macOS pads it on both sides and
+-- centres the image), so clicks are measured from the image. Every click
+-- goes to the nearest number: the gaps and the padding belong to the
+-- numbers beside them.
 local function onClick()
     local frame = item and item:frame()
-    if not frame then return end
-    local x = hs.mouse.absolutePosition().x - frame.x
+    if not frame or #cells == 0 then return end
+    local x = hs.mouse.absolutePosition().x - frame.x - (frame.w - imageWidth) / 2
+    local best, bestDistance = nil, nil
     for _, cell in ipairs(cells) do
-        if x >= cell.x and x < cell.x + cell.w then
-            Spaces.gotoWorkspace(cell.n)
-            return
-        end
+        local distance = math.max(cell.x - x, x - (cell.x + cell.w), 0)
+        if not bestDistance or distance < bestDistance then best, bestDistance = cell, distance end
     end
+    Spaces.gotoWorkspace(best.n)
 end
 
 function M.start()
