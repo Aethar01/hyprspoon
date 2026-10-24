@@ -33,7 +33,8 @@
 --   ffm       focus follows mouse
 --   spaces    numbered workspaces, parking the windows of hidden ones
 --   swipe     trackpad swipes between workspaces
---   bar       menu bar indicator of the workspaces
+--   bar       workspace numbers in the menu bar, and the row they're drawn as
+--   hud       workspace pop-up and corner badge on the displays
 --   actions   the hotkey actions
 --   init      (this file) the public API, setup and teardown
 --
@@ -55,6 +56,7 @@ local Ffm = require("wm.ffm")
 local Spaces = require("wm.spaces")
 local Swipe = require("wm.swipe")
 local Bar = require("wm.bar")
+local Hud = require("wm.hud")
 
 -- The public API.
 local M = {
@@ -93,6 +95,7 @@ function M.stop()
     if S.running.spaceWatcher then S.running.spaceWatcher:stop() end
     if S.running.screenWatcher then S.running.screenWatcher:stop() end
     if S.running.sessionWatcher then S.running.sessionWatcher:stop() end
+    if S.running.appearanceWatcher then S.running.appearanceWatcher:stop() end
     for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
     if S.running.ffmTimer then S.running.ffmTimer:stop() end
     Layout.stop()
@@ -103,6 +106,7 @@ function M.stop()
     Ffm.stop()
     Swipe.stop()
     Bar.stop()
+    Hud.stop()
     Tree.stop() -- last: flushes a pending save after the layout has stopped
     S.running = {}
 end
@@ -333,6 +337,7 @@ function M.setup(opts)
     end):start()
 
     Bar.start()
+    Hud.start()
     Spaces.start()
     Layout.scheduleRetile(true)
     return M

@@ -34,6 +34,14 @@ wm.setup({
 		minRatio = 0.20,
 		maxRatio = 0.80,
 	},
+	-- Which workspace is showing. The pop-up and badge are for displays
+	-- whose menu bar auto-hides; set `show = "always"` or false to change.
+	indicators = {
+		alwaysShow = 5,
+		menuBar = true,
+		popup = { show = "hiddenMenuBar", duration = 0.8 },
+		badge = { show = "hiddenMenuBar", corner = "bottomRight", all = false },
+	},
 })
 
 -- ---------------------------------------------------------------------------

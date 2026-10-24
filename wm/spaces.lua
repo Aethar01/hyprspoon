@@ -10,6 +10,7 @@ local Focus = require("wm.focus")
 local Discover = require("wm.discover")
 local Layout = require("wm.layout")
 local Bar = require("wm.bar")
+local Hud = require("wm.hud")
 
 -- ---------------------------------------------------------------------------
 -- Workspaces
@@ -82,11 +83,12 @@ local function saveNow()
 end
 
 -- Every change to the workspaces is saved, so this is also where the menu
--- bar hears about them.
+-- bar and badges hear about them.
 local function save()
     if saveTimer then saveTimer:stop() end
     saveTimer = hs.timer.doAfter(1, saveNow)
     Bar.update()
+    Hud.update()
 end
 
 local function loadState()
@@ -364,6 +366,7 @@ local function switchTo(n, uuid)
     -- windows as when it was last laid out, but they're all parked.
     Layout.tileNow()
     focusWorkspace(n, uuid ~= pointer)
+    Hud.switched(uuid)
 end
 
 -- Where workspace `n` would show: where it's showing, its own display, or
@@ -507,10 +510,11 @@ function M.unparkAll()
     saveNow()
 end
 
--- The workspaces in use, by number: { n =, shown = } for each.
+-- The workspaces in use, by number: { n =, display = UUID showing it or
+-- nil } for each.
 function M.workspaces()
     local list = {}
-    for n in pairs(home) do list[#list + 1] = { n = n, shown = shown[n] ~= nil } end
+    for n in pairs(home) do list[#list + 1] = { n = n, display = shown[n] } end
     table.sort(list, function(a, b) return a.n < b.n end)
     return list
 end

@@ -1,4 +1,4 @@
--- wm/bar.lua: Menu bar indicator of the workspaces.
+-- wm/bar.lua: Workspace numbers in the menu bar, and the row they're drawn as.
 
 local M = {}
 package.loaded["wm.bar"] = M
@@ -7,79 +7,109 @@ local S = require("wm.state")
 local Spaces = require("wm.spaces")
 
 -- ---------------------------------------------------------------------------
--- Menu bar
+-- The row of numbers
 -- ---------------------------------------------------------------------------
 --
--- Workspaces 1 to `alwaysShow` and any other in use, as numbers in the menu
--- bar's own font. Those showing sit in a rounded pill with the number cut
--- out, the way macOS draws an enabled menu bar control; empty ones are
--- dimmed. It's a template image, so macOS colours it like its own menu bar
--- items (light or dark, tinted, Reduce Transparency). Clicking a number
--- goes to that workspace. Drawn as one image, since one menu bar item per
--- number can't be kept in order.
+-- Workspaces 1 to `alwaysShow` and any other in use, in the system font.
+-- Current ones sit in a rounded pill, the way macOS draws an enabled menu
+-- bar control; empty ones are dimmed. Shared by the menu bar and wm/hud.lua.
 
-local HEIGHT = 22 -- the image; macOS centres it in the menu bar
-local PILL = 18   -- height of the pill behind workspaces showing
-local PAD = 5     -- around a number inside its pill
-local GAP = 2     -- between numbers
-
--- Cells: { n =, x =, w = } from the last draw, for clicks, and the width of
--- the image they're in.
-local cells = {}
-local imageWidth = 0
-local item = nil
-
-local function draw()
-    local font = hs.styledtext.defaultFonts.menuBar
-    local style = { font = font.name, size = font.size }
-    local used = {}
-    for _, ws in ipairs(Spaces.workspaces()) do used[ws.n] = ws end
-
+-- { n =, display = UUID showing it or nil, windows = bool } per number.
+local function entries()
+    local byNumber = {}
+    for _, ws in ipairs(Spaces.workspaces()) do byNumber[ws.n] = ws end
+    local always = S.cfg.indicators.alwaysShow
     local numbers = {}
-    for n = 1, S.cfg.menuBar.alwaysShow do numbers[#numbers + 1] = n end
-    for n in pairs(used) do
-        if n > S.cfg.menuBar.alwaysShow then numbers[#numbers + 1] = n end
+    for n = 1, always do numbers[#numbers + 1] = n end
+    for n in pairs(byNumber) do
+        if n > always then numbers[#numbers + 1] = n end
     end
     table.sort(numbers)
 
-    cells = {}
-    local x = 0
+    local out = {}
     for i, n in ipairs(numbers) do
-        local size = hs.drawing.getTextDrawingSize(tostring(n), style)
-        local w = math.max(PILL, math.ceil(size.w) + 2 * PAD)
-        cells[i] = { n = n, x = x, w = w, textH = math.ceil(size.h) }
-        x = x + w + GAP
+        local ws = byNumber[n]
+        out[i] = { n = n, display = ws and ws.display, windows = ws ~= nil and Spaces.hasWindows(n) }
     end
+    return out
+end
 
-    imageWidth = math.max(x - GAP, 1)
-    local canvas = hs.canvas.new({ x = 0, y = 0, w = imageWidth, h = HEIGHT })
-    for _, cell in ipairs(cells) do
-        local ws = used[cell.n]
-        local shown = ws and ws.shown
-        if shown then
+-- Lays `list` (from entries) out in a row in the system font at `size`,
+-- with pills `pill` high. Returns { cells = { entry, x, w, textH }, w, h, size }.
+local function layout(list, size, pill)
+    local font = hs.styledtext.defaultFonts.menuBar.name
+    local pad = math.floor(pill * 5 / 18 + 0.5) -- around a number in its pill
+    local gap = math.max(1, math.floor(pill / 9 + 0.5)) -- between numbers
+    local row = { cells = {}, h = pill, size = size, font = font }
+    local x = 0
+    for i, entry in ipairs(list) do
+        local text = hs.drawing.getTextDrawingSize(tostring(entry.n), { font = font, size = size })
+        local w = math.max(pill, math.ceil(text.w) + 2 * pad)
+        row.cells[i] = { entry = entry, x = x, w = w, textH = math.ceil(text.h) }
+        x = x + w + gap
+    end
+    row.w = math.max(x - gap, 1)
+    return row
+end
+
+-- Draws `row` onto `canvas` with its top-left at (x0, y0). `current(entry)`
+-- picks the numbers in a pill. `colors.text` is the numbers and pill;
+-- `colors.pillText` the numbers in a pill, or nil to cut them out of it.
+local function drawRow(canvas, row, x0, y0, colors, current)
+    for _, cell in ipairs(row.cells) do
+        local entry = cell.entry
+        local inPill = current(entry)
+        if inPill then
             canvas:appendElements({
                 type = "rectangle", action = "fill",
-                frame = { x = cell.x, y = (HEIGHT - PILL) / 2, w = cell.w, h = PILL },
-                roundedRectRadii = { xRadius = 5, yRadius = 5 },
-                fillColor = { white = 0, alpha = 1 },
+                frame = { x = x0 + cell.x, y = y0, w = cell.w, h = row.h },
+                roundedRectRadii = { xRadius = row.h * 5 / 18, yRadius = row.h * 5 / 18 },
+                fillColor = colors.text,
             })
         end
+        local color = inPill and colors.pillText or colors.text
         canvas:appendElements({
-            type = "text", text = tostring(cell.n),
-            textFont = font.name, textSize = font.size,
+            type = "text", text = tostring(entry.n),
+            textFont = row.font, textSize = row.size,
             textAlignment = "center",
-            textColor = { white = 0, alpha = (shown or Spaces.hasWindows(cell.n)) and 1 or 0.4 },
-            -- Cut out of the pill rather than drawn on it.
-            compositeRule = shown and "destinationOut" or "sourceOver",
-            frame = { x = cell.x, y = (HEIGHT - cell.textH) / 2, w = cell.w, h = cell.textH },
+            textColor = { white = color and color.white or 0,
+                alpha = (inPill or entry.windows) and 1 or 0.4 },
+            compositeRule = (inPill and not colors.pillText) and "destinationOut" or "sourceOver",
+            frame = { x = x0 + cell.x, y = y0 + (row.h - cell.textH) / 2, w = cell.w, h = cell.textH },
         })
     end
+end
+
+M.entries = entries
+M.layout = layout
+M.drawRow = drawRow
+
+-- ---------------------------------------------------------------------------
+-- Menu bar
+-- ---------------------------------------------------------------------------
+--
+-- The row as a template image, so macOS colours it like its own menu bar
+-- items (light or dark, tinted, Reduce Transparency). Every workspace
+-- showing on a display is in a pill. Clicking a number goes to that
+-- workspace. One image, since one menu bar item per number can't be kept
+-- in order.
+
+local HEIGHT = 22 -- the image; macOS centres it in the menu bar
+
+local row = nil -- from the last draw, for clicks
+local item = nil
+
+local function draw()
+    row = layout(entries(), hs.styledtext.defaultFonts.menuBar.size, 18)
+    local canvas = hs.canvas.new({ x = 0, y = 0, w = row.w, h = HEIGHT })
+    drawRow(canvas, row, 0, (HEIGHT - row.h) / 2, { text = { white = 0 } },
+        function(entry) return entry.display ~= nil end)
     item:setIcon(canvas:imageFromCanvas(), true)
     canvas:delete()
 end
 
 -- Workspace changes come in bursts (a switch parks and claims several
--- windows), so the strip is redrawn once they're done.
+-- windows), so the row is redrawn once they're done.
 local redraw = hs.timer.delayed.new(0.05, function()
     if item then draw() end
 end)
@@ -94,18 +124,18 @@ end
 -- numbers beside them.
 local function onClick()
     local frame = item and item:frame()
-    if not frame or #cells == 0 then return end
-    local x = hs.mouse.absolutePosition().x - frame.x - (frame.w - imageWidth) / 2
+    if not frame or not row or #row.cells == 0 then return end
+    local x = hs.mouse.absolutePosition().x - frame.x - (frame.w - row.w) / 2
     local best, bestDistance = nil, nil
-    for _, cell in ipairs(cells) do
+    for _, cell in ipairs(row.cells) do
         local distance = math.max(cell.x - x, x - (cell.x + cell.w), 0)
         if not bestDistance or distance < bestDistance then best, bestDistance = cell, distance end
     end
-    Spaces.gotoWorkspace(best.n)
+    Spaces.gotoWorkspace(best.entry.n)
 end
 
 function M.start()
-    if not S.cfg.menuBar then return end
+    if not S.cfg.indicators.menuBar then return end
     -- The autosave name keeps its place in the menu bar across reloads.
     item = hs.menubar.new(true, "wmWorkspaces")
     if not item then return end
@@ -117,7 +147,7 @@ end
 function M.stop()
     redraw:stop()
     if item then item:delete() end
-    item, cells = nil, {}
+    item, row = nil, nil
 end
 
 return M
