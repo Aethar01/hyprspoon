@@ -96,6 +96,7 @@ function M.stop()
     if S.running.screenWatcher then S.running.screenWatcher:stop() end
     if S.running.sessionWatcher then S.running.sessionWatcher:stop() end
     if S.running.appearanceWatcher then S.running.appearanceWatcher:stop() end
+    if S.running.menuBarWatcher then S.running.menuBarWatcher:stop() end
     for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
     if S.running.ffmTimer then S.running.ffmTimer:stop() end
     Layout.stop()

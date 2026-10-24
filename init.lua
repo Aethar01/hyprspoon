@@ -40,7 +40,7 @@ wm.setup({
 		alwaysShow = 5,
 		menuBar = true,
 		popup = { show = "hiddenMenuBar", duration = 0.8 },
-		badge = { show = "hiddenMenuBar", corner = "bottomRight", all = false },
+		badge = { show = false, corner = "bottomRight", all = false },
 	},
 })
 

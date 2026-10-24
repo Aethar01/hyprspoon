@@ -19,15 +19,26 @@ local Bar = require("wm.bar")
 -- clicks through.
 --
 -- `show` (S.cfg.indicators.popup/badge): "hiddenMenuBar" for displays whose
--- menu bar is hidden (auto-hide, where the usable area reaches the top of
--- the display), "always", or false.
+-- menu bar is hidden, "always", or false.
 
 local popups = {} -- screen UUID -> { canvas =, timer = }
 local badges = {} -- screen UUID -> canvas
 
+-- Whether the menu bar auto-hides on the desktop ("Always" or "On Desktop
+-- Only"). The usable area can't tell: on a display with a notch it stays
+-- below the menu bar's strip even when the menu bar is hidden.
+local menuBarHides = false
+
+local function readMenuBarHides()
+    local out = hs.execute("defaults read -g _HIHideMenuBar 2>/dev/null")
+    menuBarHides = tonumber(out) == 1
+end
+
 local function wanted(show, screen)
     if show == "always" then return true end
-    if show == "hiddenMenuBar" then return screen:frame().y <= screen:fullFrame().y end
+    if show == "hiddenMenuBar" then
+        return menuBarHides or screen:frame().y <= screen:fullFrame().y
+    end
     return false
 end
 
@@ -146,6 +157,12 @@ function M.start()
     -- The panels follow the system appearance.
     S.running.appearanceWatcher = hs.distributednotifications.new(M.update,
         "AppleInterfaceThemeChangedNotification"):start()
+    -- And the menu bar's auto-hide setting.
+    S.running.menuBarWatcher = hs.distributednotifications.new(function()
+        readMenuBarHides()
+        M.update()
+    end, "AppleInterfaceMenuBarHidingChangedNotification"):start()
+    readMenuBarHides()
     drawBadges()
 end
 
