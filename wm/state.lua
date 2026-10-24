@@ -25,6 +25,29 @@ S.defaults = {
         rightResize = {"alt"},   -- + right-drag: resize
     },
 
+    -- Workspace numbers: 1..alwaysShow (even when empty) and any other in
+    -- use, the current one highlighted.
+    indicators = {
+        alwaysShow = 5,
+        menuBar = true, -- in the menu bar
+        -- `show` for the two below: "hiddenMenuBar" (displays whose menu
+        -- bar auto-hides), "always", or false.
+        -- Pop-up on the display that switched, fading after `duration`.
+        popup = { show = "hiddenMenuBar", duration = 0.8, size = 28 },
+        -- Badge kept in a corner ("topLeft", "topRight", "bottomLeft",
+        -- "bottomRight"), `margin` points from the edges. `all` shows every
+        -- number rather than just the display's own.
+        badge = { show = "hiddenMenuBar", corner = "bottomRight", margin = 6, size = 12, all = false },
+    },
+
+    -- Trackpad swipe between workspaces (next/previous on the display under
+    -- the pointer). `distance` is how far the fingers travel sideways, as a
+    -- fraction of the trackpad's width. Set to false to disable.
+    swipe = {
+        fingers = 3,
+        distance = 0.12,
+    },
+
     -- App names whose windows are never watched or tiled (palettes, overlays,
     -- anything noisy). Fewer watched windows means fewer events to process.
     ignoreApps = {},

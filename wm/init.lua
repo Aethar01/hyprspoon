@@ -1,11 +1,12 @@
 -- ~/.config/hammerspoon/wm/init.lua
 --
 -- Hyprland-inspired window manager for Hammerspoon:
---   * toggleable BSP tiling (per Space + display), with drag-and-drop and
+--   * toggleable BSP tiling (per workspace), with drag-and-drop and
 --     split resizing by mouse, keyboard, or native window edges
 --   * modifier + drag anywhere on a window to move/resize it
 --   * focus follows mouse, with cursor warping on keyboard focus changes
---   * directional focus/swap/resize and numbered workspaces (macOS Spaces)
+--   * directional focus/swap/resize and numbered workspaces of our own,
+--     switched by hotkey or trackpad swipe
 --
 -- Usage (init.lua):
 --
@@ -21,7 +22,7 @@
 -- Modules (all under wm/):
 --   state     configuration defaults and state shared between the modules
 --   util      logging, window classification, focus records, pointer warping
---   tree      BSP tree structure, persistence and per-Space/display keys
+--   tree      BSP tree structure, persistence and per-workspace keys
 --   float     automatic and manual floating windows, kept above the tiles
 --   focus     internal focus tracking and the window snapshot for hit testing
 --   discover  finding the manageable windows on each screen
@@ -30,7 +31,10 @@
 --   drop      dragging a tile onto another to move it in the layout
 --   mouse     modifier + drag anywhere on a window
 --   ffm       focus follows mouse
---   spaces    numbered workspaces backed by macOS Spaces
+--   spaces    numbered workspaces, parking the windows of hidden ones
+--   swipe     trackpad swipes between workspaces
+--   bar       workspace numbers in the menu bar, and the row they're drawn as
+--   hud       workspace pop-up and corner badge on the displays
 --   actions   the hotkey actions
 --   init      (this file) the public API, setup and teardown
 --
@@ -50,6 +54,9 @@ local Resize = require("wm.resize")
 local Mouse = require("wm.mouse")
 local Ffm = require("wm.ffm")
 local Spaces = require("wm.spaces")
+local Swipe = require("wm.swipe")
+local Bar = require("wm.bar")
+local Hud = require("wm.hud")
 
 -- The public API.
 local M = {
@@ -82,18 +89,24 @@ function M.stop()
     Discover.stop()
     if S.running.mouseTap then S.running.mouseTap:stop() end
     if S.running.moveTap then S.running.moveTap:stop() end
+    if S.running.gestureTap then S.running.gestureTap:stop() end
     if S.running.windowFilter then S.running.windowFilter:unsubscribeAll() end
     if S.running.pipFilter then S.running.pipFilter:unsubscribeAll() end
     if S.running.spaceWatcher then S.running.spaceWatcher:stop() end
     if S.running.screenWatcher then S.running.screenWatcher:stop() end
     if S.running.sessionWatcher then S.running.sessionWatcher:stop() end
+    if S.running.appearanceWatcher then S.running.appearanceWatcher:stop() end
     for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
     if S.running.ffmTimer then S.running.ffmTimer:stop() end
     Layout.stop()
+    Spaces.stop()
     Float.stop()
     Resize.stop()
     Focus.stop()
     Ffm.stop()
+    Swipe.stop()
+    Bar.stop()
+    Hud.stop()
     Tree.stop() -- last: flushes a pending save after the layout has stopped
     S.running = {}
 end
@@ -101,7 +114,6 @@ end
 function M.setup(opts)
     M.stop()
     Util.forgetManagedWindows()
-    Tree.forgetActiveSpaces()
     S.cfg = Util.deepMerge(S.defaults, opts or {})
 
     hs.window.animationDuration = 0
@@ -110,11 +122,13 @@ function M.setup(opts)
     -- whole layout) for the system default of several seconds.
     hs.window.timeout(S.cfg.axTimeout)
 
-    -- Debounced tree saves must not be lost when Hammerspoon reloads or quits.
+    -- Debounced tree saves must not be lost when Hammerspoon reloads or quits,
+    -- and quitting must not leave windows parked out of sight.
     if not shutdownHooked then
         shutdownHooked = true
         local previous = hs.shutdownCallback
         hs.shutdownCallback = function()
+            Spaces.unparkAll()
             M.stop()
             if previous then previous() end
         end
@@ -133,6 +147,11 @@ function M.setup(opts)
 
     S.running.moveTap = hs.eventtap.new({ Mouse.mouseTypes.mouseMoved }, Ffm.onMouseMoved):start()
     S.running.sessionWatcher = hs.caffeinate.watcher.new(Ffm.onSessionEvent):start()
+
+    if S.cfg.swipe then
+        S.running.gestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture },
+            Swipe.onGesture):start()
+    end
 
     local filter = hs.window.filter.new()
     filter:setDefaultFilter({ allowRoles = Util.MANAGED_ROLES, visible = true })
@@ -161,6 +180,10 @@ function M.setup(opts)
         if win then
             local id = win:id()
             if id == S.requestedFocus then S.requestedFocus = nil end
+            if Spaces.isHidden(id) then
+                Spaces.focusedParked(win)
+                return
+            end
             local intent = S.intent
             if intent and id == intent.id then
                 S.intent = nil
@@ -183,6 +206,11 @@ function M.setup(opts)
     end)
 
     filter:subscribe(hs.window.filter.windowMoved, function(win)
+        -- A parked window that its app moved back into view.
+        if win and Spaces.isHidden(win:id()) then
+            if hs.timer.secondsSinceEpoch() > S.settleUntil then Spaces.place(win, true) end
+            return
+        end
         -- Our own layout moves echo back here; only other moves (e.g. to
         -- another display) can change which screen a window is on.
         if win and hs.timer.secondsSinceEpoch() > S.settleUntil then
@@ -200,6 +228,7 @@ function M.setup(opts)
         local id = win and win:id()
         if id then
             Discover.cancelLayoutCheck(id)
+            Spaces.forget(id)
             Float.forgetFloat(id)
             Util.windowKinds[id] = nil
             S.floatingFrames[id] = nil
@@ -228,8 +257,12 @@ function M.setup(opts)
     }, function(win, appName, event)
         Util.dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
         Util.forgetManagedWindows()
-        if event == hs.window.filter.windowInCurrentSpace then Tree.forgetActiveSpaces() end
-        if win then S.windowInfo[win:id()] = nil end
+        if win then
+            S.windowInfo[win:id()] = nil
+            -- Windows of a hidden app come back where they were: parked if
+            -- their workspace has been left since.
+            Spaces.place(win)
+        end
         Discover.markDirty(win)
         Focus.invalidateWindowCache()
         -- Placed straight away so it doesn't sit where the app opened it;
@@ -254,8 +287,16 @@ function M.setup(opts)
     }, function(win, appName, event)
         Util.dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
         Util.forgetManagedWindows()
-        if event == hs.window.filter.windowNotInCurrentSpace then Tree.forgetActiveSpaces() end
-        if win then S.windowInfo[win:id()] = nil end
+        S.lastGoneTime = hs.timer.secondsSinceEpoch()
+        if win then
+            S.windowInfo[win:id()] = nil
+            -- Back from the Dock or full screen, a window joins the workspace
+            -- showing then.
+            if event == hs.window.filter.windowMinimized
+               or event == hs.window.filter.windowFullscreened then
+                Spaces.forget(win:id())
+            end
+        end
         Discover.markDirty(win)
         Focus.invalidateWindowCache()
         if event == hs.window.filter.windowNotInCurrentSpace then
@@ -272,13 +313,10 @@ function M.setup(opts)
     -- themselves, since this pseudo-event arrives after them).
     filter:subscribe(hs.window.filter.windowsChanged, Util.forgetManagedWindows)
 
+    -- Workspaces don't use Spaces, but full-screen windows still get their
+    -- own: the window list changes going in and out of one.
     S.running.spaceWatcher = hs.spaces.watcher.new(function()
-        Tree.forgetActiveSpaces()
         Util.forgetManagedWindows()
-        -- Space changes we didn't start (trackpad swipes) need the same focus
-        -- fix-up as keyboard ones.
-        S.spaceFocusPending = true
-        Spaces.settleSpaceFocus()
         Focus.invalidateWindowCache()
         Layout.scheduleRetile(true)
     end):start()
@@ -286,20 +324,21 @@ function M.setup(opts)
     -- macOS moves windows off a removed display (and back onto a returning
     -- one) a while after announcing the change, so look again once it has.
     S.running.screenWatcher = hs.screen.watcher.new(function()
-        Tree.forgetActiveSpaces()
-        Focus.invalidateWindowCache()
+        Spaces.screensChanged()
         Layout.scheduleRetile(true)
         for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
         S.running.screenTimers = {}
         for i, delay in ipairs({ 0.5, 1.5, 3 }) do
             S.running.screenTimers[i] = hs.timer.doAfter(delay, function()
-                Tree.forgetActiveSpaces()
-                Focus.invalidateWindowCache()
+                Spaces.screensChanged()
                 Layout.scheduleRetile(true)
             end)
         end
     end):start()
 
+    Bar.start()
+    Hud.start()
+    Spaces.start()
     Layout.scheduleRetile(true)
     return M
 end

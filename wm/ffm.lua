@@ -63,7 +63,7 @@ end
 local function ffmFocusPending()
     local entry = ffmPending
     ffmPending = nil
-    if not entry or S.dragState or locked or S.spaceFocusPending
+    if not entry or S.dragState or locked
        or not Util.pointInFrame(hs.mouse.absolutePosition(), entry.frame)
        or Focus.snapshotEntryAt(hs.mouse.absolutePosition()) ~= entry then
         return
@@ -81,8 +81,7 @@ local function onMouseMoved(event)
     if event:getProperty(hs.eventtap.event.properties.eventSourceUserData) == Util.WARP_MOUSE_EVENT then
         return false
     end
-    -- Mid Space switch the snapshot still holds the old Space's windows.
-    if not S.cfg.focusFollowsMouse or S.dragState or S.spaceFocusPending then
+    if not S.cfg.focusFollowsMouse or S.dragState then
         return false
     end
     -- The pointer moving is the surest sign the lock screen has gone, even

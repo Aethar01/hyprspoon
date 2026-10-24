@@ -57,8 +57,10 @@ local Util = { isPictureInPicture = isPiP, windowKind = function() return "stand
 local Tree = {}
 local Focus = { invalidateWindowCache = function() end }
 local Discover = { layoutChecks = {} }
+local hiddenIDs = {}
+local Spaces = { isHidden = function(id) return hiddenIDs[id] == true end }
 local env = setmetatable({
-    S = S, Util = Util, Tree = Tree, Focus = Focus, Discover = Discover,
+    S = S, Util = Util, Tree = Tree, Focus = Focus, Discover = Discover, Spaces = Spaces,
     hs = { timer = { doAfter = after, secondsSinceEpoch = function() return now end } },
 }, { __index = _G })
 local fullScreen, axReads = nil, 0
@@ -226,6 +228,10 @@ entries = snapshot(true)
 assert(entries[1].id == 2 and entries[1].frame.x == 20, "floats use live geometry")
 snapshot()
 assert(listCalls == 2, "cached snapshots need no WindowServer query")
+hiddenIDs[2] = true
+entries = snapshot(true)
+assert(#entries == 1 and entries[1].id == 1, "parked windows are not hover targets")
+hiddenIDs[2] = nil
 S.running.pipFilter = { getWindows = function()
     return {{ frame = function() return { x = 50, y = 50, w = 100, h = 100 } end }}
 end }
@@ -296,4 +302,40 @@ local recheck = assert(load(extract("layout", "local function scheduleRecheck(st
 recheck()
 drain()
 assert(checks == 3, "discovery retries must continue without a layout change")
-print("Window classification, layout, snapshots, discovery, PiP, and BSP navigation regressions passed")
+-- Swipes fire once per gesture, only with the configured finger count and
+-- mostly sideways movement; fingers moving left go to the next workspace.
+local switches = {}
+local gestures = setmetatable({
+    S = { cfg = { swipe = { fingers = 3, distance = 0.12 } } },
+    Spaces = { gotoWorkspaceRelative = function(delta) switches[#switches + 1] = delta end },
+    hs = { timer = { doAfter = after } },
+}, { __index = _G })
+local onGesture = assert(load(extract("swipe", "local swipe = nil",
+    "-- Forgets a swipe") .. "return onGesture", "swipe", "t", gestures))()
+local function touchAt(count, x, y, phase)
+    local touches = {}
+    for i = 1, count do
+        touches[i] = { touching = phase ~= "ended", phase = phase or "moved",
+            normalizedPosition = { x = x + i * 0.05, y = y } }
+    end
+    return { getTouches = function() return touches end }
+end
+local function gesture(count, points)
+    for _, p in ipairs(points) do onGesture(touchAt(count, p[1], p[2])) end
+    onGesture(touchAt(count, 0, 0, "ended"))
+    drain()
+end
+gesture(3, { { 0.6, 0.5 }, { 0.55, 0.5 }, { 0.45, 0.5 }, { 0.3, 0.5 } })
+assert(#switches == 1 and switches[1] == 1, "three fingers left go to the next workspace once")
+gesture(3, { { 0.3, 0.5 }, { 0.5, 0.5 } })
+assert(#switches == 2 and switches[2] == -1, "three fingers right go to the previous one")
+gesture(2, { { 0.6, 0.5 }, { 0.3, 0.5 } })
+gesture(4, { { 0.6, 0.5 }, { 0.3, 0.5 } })
+assert(#switches == 2, "other finger counts are left to scrolling and macOS")
+gesture(3, { { 0.5, 0.2 }, { 0.4, 0.6 } })
+assert(#switches == 2, "mostly vertical movement is not a sideways swipe")
+gesture(3, { { 0.5, 0.5 }, { 0.45, 0.5 } })
+assert(#switches == 2, "short movements don't switch")
+assert(onGesture({ getTouches = function() return nil end }) == false, "non-gesture events pass through")
+
+print("Window classification, layout, snapshots, discovery, PiP, BSP navigation, and swipe regressions passed")

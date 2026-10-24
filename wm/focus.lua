@@ -6,6 +6,7 @@ package.loaded["wm.focus"] = M
 local S = require("wm.state")
 local Util = require("wm.util")
 local Tree = require("wm.tree")
+local Spaces = require("wm.spaces")
 
 -- ---------------------------------------------------------------------------
 -- Internal focus
@@ -70,7 +71,8 @@ local function focus(win)
 end
 
 -- The window actions apply to: our own record of focus, falling back to
--- macOS's when an app we don't track (ignored apps) is frontmost.
+-- macOS's when an app we don't track (ignored apps) is frontmost. Never a
+-- window parked on another workspace.
 local function currentWindow()
     local actual
     if S.running.pipFilter and #S.running.pipFilter:getWindows() > 0 then
@@ -79,12 +81,14 @@ local function currentWindow()
     end
     local id = Util.focusHistory[1]
     local win = id and Util.winByID[id]
-    if win and win:id() == id then
+    if win and win:id() == id and not Spaces.isHidden(id) then
         local front = hs.application.frontmostApplication()
         local pid = Util.pidByID[id]
         if front and pid and front:pid() == pid then return win end
     end
-    return actual or Util.focusedWindow()
+    actual = actual or Util.focusedWindow()
+    if actual and Spaces.isHidden(actual:id()) then return nil end
+    return actual
 end
 
 -- Rebuilds the snapshot shortly after invalidations go quiet, so the next
@@ -119,7 +123,7 @@ local function windowSnapshot(fresh)
             local disjointTiles = true
             for _, win in ipairs(Util.managedWindows()) do
                 local id = win:id()
-                if id then
+                if id and not Spaces.isHidden(id) then
                     byID[id] = win
                     local tile = Tree.rectFor(id)
                     if tile and not S.autoFloat[id] then

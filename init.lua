@@ -34,6 +34,14 @@ wm.setup({
 		minRatio = 0.20,
 		maxRatio = 0.80,
 	},
+	-- Which workspace is showing. The pop-up and badge are for displays
+	-- whose menu bar auto-hides; set `show = "always"` or false to change.
+	indicators = {
+		alwaysShow = 5,
+		menuBar = true,
+		popup = { show = "hiddenMenuBar", duration = 0.8 },
+		badge = { show = "hiddenMenuBar", corner = "bottomRight", all = false },
+	},
 })
 
 -- ---------------------------------------------------------------------------
@@ -281,7 +289,8 @@ for dir, step in pairs(resizeSteps) do
 	bindRepeat(SUPER_CMD, resizeVimKeys[dir], fn)
 end
 
--- Ctrl+Option+H/L: previous/next workspace on this display.
+-- Ctrl+Option+H/L: previous/next workspace on this display (also a
+-- three-finger swipe; see `swipe` in wm/state.lua).
 hs.hotkey.bind({ "ctrl", "alt" }, "h", function() wm.gotoWorkspaceRelative(-1) end)
 hs.hotkey.bind({ "ctrl", "alt" }, "l", function() wm.gotoWorkspaceRelative(1) end)
 
