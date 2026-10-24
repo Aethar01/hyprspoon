@@ -9,6 +9,7 @@ local Tree = require("wm.tree")
 local Focus = require("wm.focus")
 local Discover = require("wm.discover")
 local Layout = require("wm.layout")
+local Bar = require("wm.bar")
 
 -- ---------------------------------------------------------------------------
 -- Workspaces
@@ -80,9 +81,12 @@ local function saveNow()
     hs.settings.set(STATE_KEY, out)
 end
 
+-- Every change to the workspaces is saved, so this is also where the menu
+-- bar hears about them.
 local function save()
     if saveTimer then saveTimer:stop() end
     saveTimer = hs.timer.doAfter(1, saveNow)
+    Bar.update()
 end
 
 local function loadState()
@@ -407,6 +411,7 @@ function M.moveToWorkspace(n)
     local from = (of[id] and shown[of[id]]) or pointerUUID()
     local to = targetDisplay(n, from)
     of[id] = n
+    save()
     if to ~= from then
         pins[id] = hs.timer.secondsSinceEpoch() + 1
         S.windowInfo[id] = nil
@@ -500,6 +505,21 @@ function M.unparkAll()
     end
     parked = {}
     saveNow()
+end
+
+-- The workspaces in use, by number: { n =, shown = } for each.
+function M.workspaces()
+    local list = {}
+    for n in pairs(home) do list[#list + 1] = { n = n, shown = shown[n] ~= nil } end
+    table.sort(list, function(a, b) return a.n < b.n end)
+    return list
+end
+
+function M.hasWindows(n)
+    for _, m in pairs(of) do
+        if m == n then return true end
+    end
+    return false
 end
 
 function M.start()

@@ -33,6 +33,7 @@
 --   ffm       focus follows mouse
 --   spaces    numbered workspaces, parking the windows of hidden ones
 --   swipe     trackpad swipes between workspaces
+--   bar       menu bar indicator of the workspaces
 --   actions   the hotkey actions
 --   init      (this file) the public API, setup and teardown
 --
@@ -53,6 +54,7 @@ local Mouse = require("wm.mouse")
 local Ffm = require("wm.ffm")
 local Spaces = require("wm.spaces")
 local Swipe = require("wm.swipe")
+local Bar = require("wm.bar")
 
 -- The public API.
 local M = {
@@ -100,6 +102,7 @@ function M.stop()
     Focus.stop()
     Ffm.stop()
     Swipe.stop()
+    Bar.stop()
     Tree.stop() -- last: flushes a pending save after the layout has stopped
     S.running = {}
 end
@@ -329,6 +332,7 @@ function M.setup(opts)
         end
     end):start()
 
+    Bar.start()
     Spaces.start()
     Layout.scheduleRetile(true)
     return M

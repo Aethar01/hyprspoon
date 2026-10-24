@@ -25,6 +25,11 @@ S.defaults = {
         rightResize = {"alt"},   -- + right-drag: resize
     },
 
+    -- Workspace numbers in the menu bar. Set to false to disable.
+    menuBar = {
+        alwaysShow = 5, -- workspaces 1..alwaysShow appear even when empty
+    },
+
     -- Trackpad swipe between workspaces (next/previous on the display under
     -- the pointer). `distance` is how far the fingers travel sideways, as a
     -- fraction of the trackpad's width. Set to false to disable.
