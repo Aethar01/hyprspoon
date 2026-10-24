@@ -5,7 +5,8 @@
 --     split resizing by mouse, keyboard, or native window edges
 --   * modifier + drag anywhere on a window to move/resize it
 --   * focus follows mouse, with cursor warping on keyboard focus changes
---   * directional focus/swap/resize and numbered workspaces of our own
+--   * directional focus/swap/resize and numbered workspaces of our own,
+--     switched by hotkey or trackpad swipe
 --
 -- Usage (init.lua):
 --
@@ -31,6 +32,7 @@
 --   mouse     modifier + drag anywhere on a window
 --   ffm       focus follows mouse
 --   spaces    numbered workspaces, parking the windows of hidden ones
+--   swipe     trackpad swipes between workspaces
 --   actions   the hotkey actions
 --   init      (this file) the public API, setup and teardown
 --
@@ -50,6 +52,7 @@ local Resize = require("wm.resize")
 local Mouse = require("wm.mouse")
 local Ffm = require("wm.ffm")
 local Spaces = require("wm.spaces")
+local Swipe = require("wm.swipe")
 
 -- The public API.
 local M = {
@@ -82,6 +85,7 @@ function M.stop()
     Discover.stop()
     if S.running.mouseTap then S.running.mouseTap:stop() end
     if S.running.moveTap then S.running.moveTap:stop() end
+    if S.running.gestureTap then S.running.gestureTap:stop() end
     if S.running.windowFilter then S.running.windowFilter:unsubscribeAll() end
     if S.running.pipFilter then S.running.pipFilter:unsubscribeAll() end
     if S.running.spaceWatcher then S.running.spaceWatcher:stop() end
@@ -95,6 +99,7 @@ function M.stop()
     Resize.stop()
     Focus.stop()
     Ffm.stop()
+    Swipe.stop()
     Tree.stop() -- last: flushes a pending save after the layout has stopped
     S.running = {}
 end
@@ -135,6 +140,11 @@ function M.setup(opts)
 
     S.running.moveTap = hs.eventtap.new({ Mouse.mouseTypes.mouseMoved }, Ffm.onMouseMoved):start()
     S.running.sessionWatcher = hs.caffeinate.watcher.new(Ffm.onSessionEvent):start()
+
+    if S.cfg.swipe then
+        S.running.gestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture },
+            Swipe.onGesture):start()
+    end
 
     local filter = hs.window.filter.new()
     filter:setDefaultFilter({ allowRoles = Util.MANAGED_ROLES, visible = true })

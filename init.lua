@@ -281,7 +281,8 @@ for dir, step in pairs(resizeSteps) do
 	bindRepeat(SUPER_CMD, resizeVimKeys[dir], fn)
 end
 
--- Ctrl+Option+H/L: previous/next workspace on this display.
+-- Ctrl+Option+H/L: previous/next workspace on this display (also a
+-- three-finger swipe; see `swipe` in wm/state.lua).
 hs.hotkey.bind({ "ctrl", "alt" }, "h", function() wm.gotoWorkspaceRelative(-1) end)
 hs.hotkey.bind({ "ctrl", "alt" }, "l", function() wm.gotoWorkspaceRelative(1) end)
 

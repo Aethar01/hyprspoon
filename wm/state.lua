@@ -25,6 +25,14 @@ S.defaults = {
         rightResize = {"alt"},   -- + right-drag: resize
     },
 
+    -- Trackpad swipe between workspaces (next/previous on the display under
+    -- the pointer). `distance` is how far the fingers travel sideways, as a
+    -- fraction of the trackpad's width. Set to false to disable.
+    swipe = {
+        fingers = 3,
+        distance = 0.12,
+    },
+
     -- App names whose windows are never watched or tiled (palettes, overlays,
     -- anything noisy). Fewer watched windows means fewer events to process.
     ignoreApps = {},
