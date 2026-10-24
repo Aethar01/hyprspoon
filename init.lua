@@ -145,8 +145,8 @@ hs.hotkey.bind(SUPER, "s", wm.toggleFloat)
 -- SUPER+G: cycle focus through floating windows (reaches covered ones).
 hs.hotkey.bind(SUPER, "g", wm.focusFloat)
 
--- Command+Y: flip the focused window's split (horizontal <-> vertical).
-hs.hotkey.bind({ "cmd" }, "y", wm.toggleSplit)
+-- SUPER+Y: flip the focused window's split (horizontal <-> vertical).
+hs.hotkey.bind(SUPER, "y", wm.toggleSplit)
 
 -- SUPER+Return: always open a fresh Ghostty window on the current Space and
 -- screen, regardless of where existing Ghostty windows live.
@@ -245,32 +245,54 @@ end)
 local directions = { h = "left", l = "right", k = "up", j = "down" }
 
 -- Set once the clipboard chooser exists: moves its selection and returns true
--- when the chooser is open, so Option+J/K don't need to go through key events.
+-- when the chooser is open, so Command+J/K don't need to go through key events.
 local chooserMove = nil
 
 for key, dir in pairs(directions) do
-	-- Command+H/J/K/L: focus in a direction (warps the cursor).
-	hs.hotkey.bind({ "cmd" }, key, function() wm.focus(dir) end)
+	-- SUPER+H/J/K/L: focus in a direction (warps the cursor).
+	hs.hotkey.bind(SUPER, key, function() wm.focus(dir) end)
 
-	-- Ctrl+Command+H/J/K/L: send the real Command+key to the focused app
-	-- (native Cmd+L etc.). Posted straight to the app's process so it
-	-- bypasses the Command+H/J/K/L focus hotkeys above.
+	-- SUPER+Shift+H/J/K/L: swap with the neighbour in that direction.
+	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.swap(dir) end)
+
+	-- Command+H/J/K/L: arrow keys, Command+Shift+H/J/K/L: Shift+arrows
+	-- (keyd's Alt layer on Linux; repeats while held). Flags are set
+	-- explicitly: otherwise the held Command leaks into the event and apps
+	-- (e.g. the clipboard chooser) see Command+Arrow instead of the arrow.
+	for _, shift in ipairs({ false, true }) do
+		bindRepeat(shift and { "cmd", "shift" } or { "cmd" }, key, function()
+			if not shift and chooserMove and chooserMove(dir) then return end
+			for _, isDown in ipairs({ true, false }) do
+				hs.eventtap.event.newKeyEvent(dir, isDown)
+					:setFlags(shift and { shift = true } or {}):post()
+			end
+		end)
+	end
+end
+
+-- Command+0 / Command+4: start / end of line (keyd's Alt+0 / Alt+4).
+-- Ghostty gets real Home/End; Cocoa text fields scroll on those instead of
+-- moving the cursor, so everything else gets Command+Left/Right.
+local lineKeys = { ["0"] = { "home", "left" }, ["4"] = { "end", "right" } }
+
+for key, target in pairs(lineKeys) do
+	hs.hotkey.bind({ "cmd" }, key, function()
+		local app = hs.application.frontmostApplication()
+		if app and app:name() == "Ghostty" then
+			hs.eventtap.keyStroke({}, target[1], 0, app)
+		else
+			hs.eventtap.keyStroke({ "cmd" }, target[2], 0)
+		end
+	end)
+end
+
+-- Ctrl+Command+H/J/K/L/0/4: send the real Command+key to the focused app
+-- (native Cmd+L, Cmd+0 etc.). Posted straight to the app's process so it
+-- bypasses the Command hotkeys above.
+for _, key in ipairs({ "h", "j", "k", "l", "0", "4" }) do
 	hs.hotkey.bind({ "ctrl", "cmd" }, key, function()
 		local app = hs.application.frontmostApplication()
 		if app then hs.eventtap.keyStroke({ "cmd" }, key, 0, app) end
-	end)
-
-	-- Command+Shift+H/J/K/L: swap with the neighbour in that direction.
-	hs.hotkey.bind({ "cmd", "shift" }, key, function() wm.swap(dir) end)
-
-	-- Option+H/J/K/L: arrow keys (repeats while held). Flags are cleared
-	-- explicitly: otherwise the held Option leaks into the event and apps
-	-- (e.g. the clipboard chooser) see Option+Arrow instead of the arrow.
-	bindRepeat(SUPER, key, function()
-		if chooserMove and chooserMove(dir) then return end
-		for _, isDown in ipairs({ true, false }) do
-			hs.eventtap.event.newKeyEvent(dir, isDown):setFlags({}):post()
-		end
 	end)
 end
 
