@@ -206,8 +206,9 @@ function M.swap(direction)
     else
         local a = win:frame()
         local b = other:frame()
-        other:setFrame(a, 0)
-        win:setFrame(b, 0)
+        local duration = S.cfg.tiling.animationDuration
+        other:setFrame(a, duration)
+        win:setFrame(b, duration)
     end
 
     Focus.focus(win)

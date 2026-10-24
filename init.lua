@@ -33,6 +33,7 @@ wm.setup({
 		innerGap = 10,
 		minRatio = 0.20,
 		maxRatio = 0.80,
+		animationDuration = 0.2,
 	},
 	-- Which workspace is showing. The pop-up and badge are for displays
 	-- whose menu bar auto-hides; set `show = "always"` or false to change.

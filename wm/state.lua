@@ -57,6 +57,8 @@ S.defaults = {
         innerGap = 5,   -- gap between tiles
         minRatio = 0.20, -- how far a split can be dragged towards either side
         maxRatio = 0.80,
+        -- Seconds to animate retiles over; 0 snaps. Mouse drags always snap.
+        animationDuration = 0,
         -- Drag-and-drop landing highlight.
         dropColor = { red = 0.35, green = 0.6, blue = 1 },
     },

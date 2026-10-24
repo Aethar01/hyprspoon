@@ -319,8 +319,12 @@ local function applyTree(node, rect, byID)
             local moved = math.abs(f.x - rect.x) > 1 or math.abs(f.y - rect.y) > 1
             local resized = math.abs(f.w - rect.w) > 1 or math.abs(f.h - rect.h) > 1
             -- setFrame is size, position, size; one call is enough when only
-            -- one of them changes.
-            if moved and resized then
+            -- one of them changes. Only setFrame animates.
+            local duration = S.cfg.tiling.animationDuration
+            if S.dragState or hs.mouse.getButtons().left then duration = 0 end
+            if duration > 0 and (moved or resized) then
+                win:setFrame(rect, duration)
+            elseif moved and resized then
                 win:setFrame(rect, 0)
             elseif moved then
                 win:setTopLeft(rect)
@@ -421,7 +425,9 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
     if changed or not ok then
         Tree.saveTrees()
         Float.raiseFloating()
+        -- Each animation step fires windowMoved too.
         S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
+            + S.cfg.tiling.animationDuration
         Focus.invalidateWindowCache()
     end
 
