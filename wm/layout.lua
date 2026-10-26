@@ -110,6 +110,10 @@ local function rememberSlot(key, tree, id)
     S.slots[id] = slot and { key = key, seq = slotSeq, slot = slot } or nil
 end
 
+-- Running while a window moves into or out of a full-screen Space: no
+-- passes until macOS reports the Space change (see holdForSpaceMove).
+local spaceMoveTimer = nil
+
 -- Where the next new window goes, chosen ahead (like bspwm's preselection):
 -- { id = tiled window, side = "left"/"right"/"top"/"bottom", key = its
 -- tree }, shown by a highlight over that half of the tile until used.
@@ -475,7 +479,8 @@ end
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
 -- flips only ever affect the layout of the window's own screen).
 local function tileNow(onlyIfChanged, onlyScreenUUID)
-    if not S.tilingEnabled or S.applyingLayout or not S.running.windowFilter then
+    if not S.tilingEnabled or S.applyingLayout or not S.running.windowFilter
+       or spaceMoveTimer then
         return
     end
 
@@ -617,6 +622,23 @@ local function scheduleRetile(force, immediate, delay)
     retileTimer = hs.timer.doAfter(math.max(0, due - now), retileFlush)
 end
 
+-- The Space showing changed: the filter has caught up with every window.
+local function spaceChanged()
+    if spaceMoveTimer then spaceMoveTimer:stop() spaceMoveTimer = nil end
+    scheduleRetile(true)
+end
+
+-- A window is going into or out of full screen. The filter moves the other
+-- windows across one app at a time (over half a second apart), and a pass
+-- in between would drop the ones not yet across from their layouts, so
+-- hold passes until the Space has changed. Behind the system's animation,
+-- so nothing on screen waits.
+local SPACE_MOVE_MAX = 2
+local function holdForSpaceMove()
+    if spaceMoveTimer then spaceMoveTimer:stop() end
+    spaceMoveTimer = hs.timer.doAfter(SPACE_MOVE_MAX, spaceChanged)
+end
+
 -- Takes a window going full screen out of its layout, remembering its
 -- slot. The other tiles stay put: they aren't on the full-screen Space, so
 -- nothing lays them out again before it comes back.
@@ -747,6 +769,7 @@ local function stop()
     S.presel = nil
     showPresel()
     if retileTimer then retileTimer:stop() end
+    if spaceMoveTimer then spaceMoveTimer:stop() spaceMoveTimer = nil end
     if S.recheckTimer then S.recheckTimer:stop() S.recheckTimer = nil end
     retileTimer, retilePending, retileForce = nil, false, false
 end
@@ -759,6 +782,8 @@ M.BSP_TAB_SETTLE = BSP_TAB_SETTLE
 M.BSP_SETTLE = BSP_SETTLE
 M.scheduleRetile = scheduleRetile
 M.scheduleRecheck = scheduleRecheck
+M.spaceChanged = spaceChanged
+M.holdForSpaceMove = holdForSpaceMove
 M.setAside = setAside
 M.restoreFloatingFrames = restoreFloatingFrames
 M.locate = locate

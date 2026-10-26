@@ -365,8 +365,12 @@ function M.setup(opts)
             if event == hs.window.filter.windowFullscreened then S.fullscreen[id] = true end
             if event == hs.window.filter.windowNotInCurrentSpace then
                 S.offSpace[id] = true
-                -- Going into full screen (already saying so).
-                if win:isFullScreen() then S.fullscreen[id] = true end
+                -- Going into full screen (already saying so) or coming out
+                -- of it: the other windows follow over the next second.
+                if S.fullscreen[id] or win:isFullScreen() then
+                    S.fullscreen[id] = true
+                    Layout.holdForSpaceMove()
+                end
             end
             if S.fullscreen[id] then Layout.setAside(id) end
             -- Back from the Dock or full screen, a window joins the workspace
@@ -399,7 +403,7 @@ function M.setup(opts)
     S.running.spaceWatcher = hs.spaces.watcher.new(function()
         Util.forgetManagedWindows()
         Focus.invalidateWindowCache()
-        Layout.scheduleRetile(true)
+        Layout.spaceChanged()
     end):start()
 
     -- macOS moves windows off a removed display (and back onto a returning
