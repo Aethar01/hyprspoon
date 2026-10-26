@@ -5,6 +5,7 @@ package.loaded["wm.util"] = M
 
 local S = require("wm.state")
 local Tree = require("wm.tree")
+local Border = require("wm.border")
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -109,8 +110,21 @@ end
 -- uncached, so it is asked about again.
 local managedCache = nil
 
+-- WindowServer reports moves, resizes and restacks only of the windows a
+-- connection asks about, each ask replacing the last: wm.native.events and
+-- wm.native.border are both told the managed windows (the set changes in
+-- bursts).
+local watchTimer = nil
+
+local function watchWindows()
+    if watchTimer then watchTimer:start() end
+end
+
 local function forgetManagedWindows()
     managedCache = nil
+    -- The windows with rings follow the set.
+    Border.sync()
+    watchWindows()
 end
 
 local function managedWindows()
@@ -122,6 +136,55 @@ local function managedWindows()
     end
     if complete and S.running.windowFilter then managedCache = out end
     return out
+end
+
+-- The native modules in wm/native (built with `make -C wm/native`): nil,
+-- with a note in the console, for one that isn't built or won't load. The
+-- callers then carry on in Lua (and there are no borders).
+local natives = {}
+
+local function native(name)
+    if natives[name] == nil then
+        local ok, mod = pcall(require, "wm.native." .. name)
+        if not ok then
+            print("wm: wm.native." .. name .. " not loaded (build with: make -C wm/native): " .. tostring(mod))
+        end
+        natives[name] = ok and mod or false
+    end
+    return natives[name] or nil
+end
+
+-- Gives `win` the frame `rect`, eased over `duration` seconds: on the app's
+-- own queue with wm.native.frames (returning at once, and a slow app holds
+-- up nobody else), else through hs.window.
+local function setFrame(win, rect, duration)
+    local frames = native("frames")
+    local id = win:id()
+    if frames and id then
+        frames.set(pidByID[id] or win:pid(), id, rect.x, rect.y, rect.w, rect.h, duration or 0)
+    else
+        win:setFrame(rect, duration or 0)
+    end
+end
+
+watchTimer = hs.timer.delayed.new(0.01, function()
+    local ids = {}
+    for _, win in ipairs(managedWindows()) do ids[#ids + 1] = win:id() end
+    if S.running.events then S.running.events.watch(ids) end
+    Border.watch(ids)
+end)
+
+-- Focuses `win`: through WindowServer with wm.native.frames, which doesn't
+-- wait for the app (hs.window:focus() goes through accessibility, and a
+-- busy app holds up the main thread for as long as it takes to answer).
+-- `raise` false leaves it where it is in its app's stacking: raising is an
+-- accessibility call, only needed when one of its app's windows covers it
+-- (bringing the app to the front puts it above other apps' windows).
+local function focusWindow(win, raise)
+    local frames = native("frames")
+    local id = win:id()
+    if frames and id and frames.focus(pidByID[id] or win:pid(), id, raise ~= false) then return end
+    win:focus()
 end
 
 local WARP_MOUSE_EVENT = 0x425350
@@ -167,6 +230,9 @@ S.settleUntil = 0 -- when our own layout's windowMoved echoes end; see Resize.on
 S.lastMouseTime = 0 -- last click/drag/release, to tell user resizes from app ones
 
 M.deepMerge = deepMerge
+M.native = native
+M.setFrame = setFrame
+M.focusWindow = focusWindow
 M.focusHistory = focusHistory
 M.focusTimes = focusTimes
 M.winByID = winByID
@@ -180,6 +246,7 @@ M.MANAGED_ROLES = MANAGED_ROLES
 M.windowKinds = windowKinds
 M.windowKind = windowKind
 M.forgetManagedWindows = forgetManagedWindows
+M.watchWindows = watchWindows
 M.managedWindows = managedWindows
 M.WARP_MOUSE_EVENT = WARP_MOUSE_EVENT
 M.warpToWindow = warpToWindow

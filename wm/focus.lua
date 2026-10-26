@@ -7,6 +7,8 @@ local S = require("wm.state")
 local Util = require("wm.util")
 local Tree = require("wm.tree")
 local Spaces = require("wm.spaces")
+local Border = require("wm.border")
+local Ffm = require("wm.ffm")
 
 -- ---------------------------------------------------------------------------
 -- Internal focus
@@ -43,6 +45,7 @@ local function noteFocus(win)
     Util.focusTimes[id] = hs.timer.secondsSinceEpoch()
     Util.winByID[id] = Util.winByID[id] or win
     S.ffmFocusedID = id
+    Border.focused(win)
 end
 
 -- The window focused last, if macOS focused `win` because that one is
@@ -61,6 +64,61 @@ local function goneBefore(win)
     if role == nil or role == "" or last:isMinimized() then return id end
 end
 
+-- Our requests that a newer one replaced before macOS confirmed them: id ->
+-- when. macOS's report of each still comes, often late (focusing through
+-- WindowServer doesn't wait for the app; median 70ms, up to 1.7s measured),
+-- and must not take focus back from the newer request: moving the pointer
+-- from A to B and back to A would otherwise leave focus and the ring on B.
+local ECHO_WINDOW = 2
+local superseded = {}
+
+-- macOS's report that `id` has focus is the late echo of a request of ours
+-- since replaced (each echo is expected once).
+local function isEcho(id)
+    local t = superseded[id]
+    if not t then return false end
+    superseded[id] = nil
+    return hs.timer.secondsSinceEpoch() - t < ECHO_WINDOW
+end
+
+-- Whether a window of the same app is stacked above `id` and overlaps it,
+-- from the last snapshot (no accessibility calls): only then does focusing
+-- it need a raise. Disjoint tiles never do. Without a snapshot, floats are
+-- raised and tiles aren't.
+local function covered(id)
+    local snapshot = S.ffmSnapshot
+    if not snapshot then return S.autoFloat[id] == true end
+    local target
+    for _, entry in ipairs(snapshot.entries) do
+        if entry.id == id then target = entry.frame break end
+    end
+    if not target then return S.autoFloat[id] == true end
+    local pid = Util.pidByID[id]
+    for _, entry in ipairs(snapshot.entries) do
+        if entry.id == id then return false end
+        local f = entry.frame
+        if (not pid or Util.pidByID[entry.id] == pid)
+           and f.x < target.x + target.w and target.x < f.x + f.w
+           and f.y < target.y + target.h and target.y < f.y + f.h then
+            return true
+        end
+    end
+    return false
+end
+
+-- Asks for focus on `win`, counting it focused from now on rather than from
+-- macOS's report.
+local function request(win)
+    local id = win:id()
+    if not id then return end
+    local previous = S.requestedFocus
+    if previous and previous ~= id then superseded[previous] = hs.timer.secondsSinceEpoch() end
+    superseded[id] = nil
+    noteFocus(win)
+    S.requestedFocus = id
+    Util.focusWindow(win, covered(id))
+end
+
 -- Focus a window on our own initiative.
 local function focus(win)
     if not win then return end
@@ -69,9 +127,7 @@ local function focus(win)
     if S.cfg.reassertFocus and S.ffmFocusedID ~= win:id() then
         S.intent = { id = win:id(), time = hs.timer.secondsSinceEpoch() }
     end
-    noteFocus(win)
-    S.requestedFocus = win:id()
-    win:focus()
+    request(win)
     -- If macOS never reports the focus (an unresponsive app), our record would
     -- stay wrong and focus-follows-mouse would skip that window. Check once.
     if not focusCheck then
@@ -114,6 +170,7 @@ S.ffmPrebuild = nil
 local function invalidateWindowCache()
     S.ffmSnapshot = nil
     S.ffmLastWindow = nil
+    Ffm.snapshotDropped()
     if S.ffmPrebuild then S.ffmPrebuild:start() end
 end
 
@@ -159,6 +216,7 @@ local function windowSnapshot(fresh)
             -- Non-overlapping tiles need no stacking-order query at all.
             if disjointTiles then
                 S.ffmSnapshot = { time = now, entries = entries, unmanaged = unmanaged }
+                Ffm.snapshotBuilt(entries, unmanaged)
                 return entries
             end
             entries = {}
@@ -180,6 +238,7 @@ local function windowSnapshot(fresh)
             end
         end
         S.ffmSnapshot = { time = now, entries = entries, unmanaged = unmanaged }
+        Ffm.snapshotBuilt(entries, unmanaged)
     end
     return S.ffmSnapshot.entries
 end
@@ -234,6 +293,9 @@ M.REASSERT_WINDOW = REASSERT_WINDOW
 M.noteFocus = noteFocus
 M.goneBefore = goneBefore
 M.focus = focus
+M.request = request
+M.covered = covered
+M.isEcho = isEcho
 M.currentWindow = currentWindow
 M.invalidateWindowCache = invalidateWindowCache
 M.windowSnapshot = windowSnapshot

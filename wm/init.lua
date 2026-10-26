@@ -35,8 +35,17 @@
 --   swipe     trackpad swipes between workspaces
 --   bar       workspace numbers in the menu bar, and the row they're drawn as
 --   hud       workspace pop-up and corner badge on the displays
+--   border    rings around the windows, like Hyprland's borders
 --   actions   the hotkey actions
 --   init      (this file) the public API, setup and teardown
+--
+-- Native modules (wm/native/*.c, built with `make -C wm/native`), each
+-- optional: without one, the Lua path it replaces carries on.
+--   border    the rings, drawn and moved by WindowServer
+--   events    window moves and resizes as WindowServer reports them
+--   hover     the window under the pointer, from a native event tap
+--   frames    accessibility frame changes, animations and modifier-drags on
+--             a background queue per app
 --
 -- Modules require each other freely (cycles are harmless: each registers
 -- itself in package.loaded before requiring anything) and call each other
@@ -57,6 +66,7 @@ local Spaces = require("wm.spaces")
 local Swipe = require("wm.swipe")
 local Bar = require("wm.bar")
 local Hud = require("wm.hud")
+local Border = require("wm.border")
 
 -- The public API.
 local M = {
@@ -88,7 +98,9 @@ local shutdownHooked = false
 function M.stop()
     Discover.stop()
     if S.running.mouseTap then S.running.mouseTap:stop() end
+    Mouse.stop()
     if S.running.moveTap then S.running.moveTap:stop() end
+    if S.running.events then S.running.events.stop() end
     if S.running.gestureTap then S.running.gestureTap:stop() end
     if S.running.windowFilter then S.running.windowFilter:unsubscribeAll() end
     if S.running.pipFilter then S.running.pipFilter:unsubscribeAll() end
@@ -108,6 +120,7 @@ function M.stop()
     Swipe.stop()
     Bar.stop()
     Hud.stop()
+    Border.stop()
     Tree.stop() -- last: flushes a pending save after the layout has stopped
     S.running = {}
 end
@@ -137,16 +150,17 @@ function M.setup(opts)
 
     S.running.ffmTimer = hs.timer.delayed.new(Util.FFM_HOVER_DELAY, Ffm.ffmFocusPending)
 
+    -- Presses and releases only: drag events would run Lua, holding up the
+    -- session's input, for every left-drag anywhere (selecting text, the
+    -- system's own resizes). Our own drags get them from Mouse.
     S.running.mouseTap = hs.eventtap.new({
         Mouse.mouseTypes.leftMouseDown,
-        Mouse.mouseTypes.leftMouseDragged,
         Mouse.mouseTypes.leftMouseUp,
         Mouse.mouseTypes.rightMouseDown,
-        Mouse.mouseTypes.rightMouseDragged,
         Mouse.mouseTypes.rightMouseUp,
     }, Mouse.onMouseEvent):start()
 
-    S.running.moveTap = hs.eventtap.new({ Mouse.mouseTypes.mouseMoved }, Ffm.onMouseMoved):start()
+    Ffm.start()
     S.running.sessionWatcher = hs.caffeinate.watcher.new(Ffm.onSessionEvent):start()
 
     if S.cfg.swipe then
@@ -181,7 +195,12 @@ function M.setup(opts)
         if win then
             local id = win:id()
             local requested = id == S.requestedFocus
-            if requested then S.requestedFocus = nil end
+            if requested then
+                S.requestedFocus = nil
+            elseif Focus.isEcho(id) then
+                Focus.invalidateWindowCache()
+                return
+            end
             -- macOS's pick as the focused window closes goes to its sibling.
             local gone = not requested and Focus.goneBefore(win)
             if gone and Layout.handFocusBack(gone, win) then
@@ -200,7 +219,7 @@ function M.setup(opts)
                 S.intent = nil
                 local wanted = Util.winByID[intent.id]
                 if wanted and wanted:id() == intent.id then
-                    wanted:focus()
+                    Util.focusWindow(wanted, Focus.covered(intent.id))
                     Focus.invalidateWindowCache()
                     return
                 end
@@ -213,7 +232,10 @@ function M.setup(opts)
         Focus.invalidateWindowCache()
     end)
 
-    filter:subscribe(hs.window.filter.windowMoved, function(win)
+    filter:subscribe(hs.window.filter.windowUnfocused, Border.unfocused)
+
+    -- A window moved or resized (each step of our own animations too).
+    local function onWindowMoved(win)
         -- A parked window that its app moved back into view.
         if win and Spaces.isHidden(win:id()) then
             if hs.timer.secondsSinceEpoch() > S.settleUntil then Spaces.place(win, true) end
@@ -228,7 +250,26 @@ function M.setup(opts)
         Focus.invalidateWindowCache()
         Float.raiseFloating()
         Resize.onWindowMoved(win)
-    end)
+    end
+
+    -- As WindowServer reports them with wm.native.events, else from the
+    -- filter, which holds each move back half a second. Only our windows.
+    local events = Util.native("events")
+    if events then
+        events.start(function(id)
+            local win = Util.winByID[id]
+            if not (win and win:id() == id) then
+                win = nil
+                for _, w in ipairs(Util.managedWindows()) do
+                    if w:id() == id then win = w break end
+                end
+            end
+            if win then onWindowMoved(win) end
+        end)
+        S.running.events = events
+    else
+        filter:subscribe(hs.window.filter.windowMoved, onWindowMoved)
+    end
 
     -- Forget per-window state once a window is gone.
     filter:subscribe(hs.window.filter.windowDestroyed, function(win)
@@ -304,6 +345,8 @@ function M.setup(opts)
                or event == hs.window.filter.windowFullscreened then
                 Spaces.forget(win:id())
             end
+            -- Not a tab swap: the new tab's focus moves the ring without a fade.
+            if event ~= hs.window.filter.windowNotInCurrentSpace then Border.forget(win:id()) end
         end
         Discover.markDirty(win)
         Focus.invalidateWindowCache()
@@ -347,6 +390,13 @@ function M.setup(opts)
     Bar.start()
     Hud.start()
     Spaces.start()
+    Border.start()
+    Util.watchWindows()
+    -- No focus event is coming for the window already focused.
+    local focused = Util.focusedWindow()
+    if focused and filter:isWindowAllowed(focused) and Util.windowKind(focused) ~= "ignored" then
+        Focus.noteFocus(focused)
+    end
     Layout.scheduleRetile(true)
     return M
 end

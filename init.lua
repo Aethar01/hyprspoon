@@ -29,7 +29,7 @@ wm.setup({
 		rightResize = SUPER, -- Option + right-drag
 	},
 	tiling = {
-		outerGap = 10,
+		outerGap = 15,
 		innerGap = 10,
 		minRatio = 0.20,
 		maxRatio = 0.80,
@@ -43,55 +43,16 @@ wm.setup({
 		popup = { show = "hiddenMenuBar", duration = 0.8 },
 		badge = { show = false, corner = "bottomRight", all = false },
 	},
+	-- Hyprland's borders: active rgba(6C99BAff), inactive rgba(595959aa),
+	-- blending as focus moves. Set to false to turn them off.
+	border = {
+		active = "#6c99ba",
+		inactive = { hex = "#595959", alpha = 0xaa / 255 },
+		width = 3,   -- points, outside the window edges
+		radius = 12, -- corner radius when macOS doesn't report a window's own
+		fade = 0.15, -- seconds
+	},
 })
-
--- ---------------------------------------------------------------------------
--- Window borders (brew install FelixKratz/formulae/borders)
--- ---------------------------------------------------------------------------
-
-local border = {
-	enabled = true,
-	color = "#6c99bb",
-	inactiveColor = "0x00000000", -- transparent; colors use 0xAARRGGBB
-	width = 10,                   -- points, outside the window edges
-	style = "round",              -- "round" or "square"
-	hidpi = true,
-	axFocus = false,              -- resolve focus through Accessibility (WM compatibility)
-	order = "below",
-}
-
--- Hammerspoon owns the process; restart on reload so disabling it also stops
--- the old copy. Do not also start borders through brew services.
-local bordersPath = "/opt/homebrew/bin/borders"
-if not hs.fs.attributes(bordersPath) then bordersPath = "/usr/local/bin/borders" end
-
-if hs.fs.attributes(bordersPath) then
-	bordersRestartTask = hs.task.new("/usr/bin/pkill", function()
-		bordersRestartTask = nil
-		if not border.enabled then return end
-		bordersTask = hs.task.new(bordersPath, function(code, _, stderr)
-			if code ~= 0 then print("borders exited " .. code .. ": " .. stderr) end
-		end, {
-			"active_color=" .. border.color:gsub("^#", "0xff"),
-			"inactive_color=" .. border.inactiveColor,
-			"width=" .. tostring(border.width),
-			"style=" .. border.style,
-			"hidpi=" .. (border.hidpi and "on" or "off"),
-			"ax_focus=" .. (border.axFocus and "on" or "off"),
-			"order=" .. border.order,
-		})
-		if not bordersTask:start() then print("Could not start borders") end
-	end, { "-x", "borders" }):start()
-
-	local previous = hs.shutdownCallback
-	hs.shutdownCallback = function()
-		if bordersRestartTask then bordersRestartTask:terminate() end
-		if bordersTask and bordersTask:isRunning() then bordersTask:terminate() end
-		if previous then previous() end
-	end
-elseif border.enabled then
-	print("Window borders: install with brew install FelixKratz/formulae/borders")
-end
 
 -- ---------------------------------------------------------------------------
 -- Helpers

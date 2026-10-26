@@ -36,6 +36,8 @@ local function adoptFrame(win)
 
     local f = win:frame()
     local r = leaf.rect
+    -- An unreadable frame (a busy app) reads as all zeros, not a resize.
+    if f.w <= 0 or f.h <= 0 then return end
     local function differs(a, b) return math.abs(a - b) > BSP_EDGE_TOLERANCE end
 
     if not (differs(f.x, r.x) or differs(f.y, r.y)
@@ -173,6 +175,13 @@ local function resizeDrag(dx, dy)
     return true
 end
 
+-- The edges the current mouse resize moves on each axis ("a": right or
+-- bottom, "b": left or top, nil: neither), for wm.native.frames to follow.
+local function resizeBranches()
+    if not resizeState then return nil, nil end
+    return resizeState.xBranch, resizeState.yBranch
+end
+
 local function finishResize()
     local state = resizeState
     resizeState = nil
@@ -235,6 +244,7 @@ M.stop = stop
 M.resizePercent = resizePercent
 M.beginResize = beginResize
 M.resizeDrag = resizeDrag
+M.resizeBranches = resizeBranches
 M.finishResize = finishResize
 M.onWindowMoved = onWindowMoved
 

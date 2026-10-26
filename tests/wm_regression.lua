@@ -53,7 +53,7 @@ end
 local S = { autoFloat = {}, tilingEnabled = true, running = { windowFilter = {} },
     applied = {}, settleUntil = 0, lastMouseTime = 0 }
 local Util = { isPictureInPicture = isPiP, windowKind = function() return "standard" end,
-    dlog = function() end }
+    dlog = function() end, setFrame = function(win, rect, duration) win:setFrame(rect, duration) end }
 local Tree = {}
 local Focus = { invalidateWindowCache = function() end }
 local Discover = { layoutChecks = {} }
@@ -61,6 +61,7 @@ local hiddenIDs = {}
 local Spaces = { isHidden = function(id) return hiddenIDs[id] == true end }
 local env = setmetatable({
     S = S, Util = Util, Tree = Tree, Focus = Focus, Discover = Discover, Spaces = Spaces,
+    Ffm = { snapshotBuilt = function() end },
     hs = { timer = { doAfter = after, secondsSinceEpoch = function() return now end } },
 }, { __index = _G })
 local fullScreen, axReads = nil, 0
