@@ -48,6 +48,9 @@ local function adoptFrame(win)
         return
     end
 
+    -- Going into full screen (the green button counts as mouse activity).
+    if S.fullscreen[win:id()] or win:isFullScreen() then return end
+
     -- Our own retiles also fire windowMoved. A window that can't take its
     -- tile's exact size (e.g. an app minimum) would otherwise retile forever,
     -- so only react once to any given frame.
