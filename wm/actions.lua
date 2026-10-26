@@ -292,6 +292,23 @@ function M.toggleSplit()
     Layout.tileNow(false, Tree.keyUUID(key))
 end
 
+-- The tree key of the workspace to act on: the focused tile's, else the
+-- one showing on the display under the pointer.
+local function currentKey()
+    local _, _, key = Layout.locate(Focus.currentWindow())
+    if key then return key end
+    local screen = hs.mouse.getCurrentScreen()
+    return S.tilingEnabled and screen and Tree.keyForScreen(screen) or nil
+end
+
+-- Split every tile of the workspace evenly again.
+function M.balance()
+    local key = currentKey()
+    if not key or not S.trees[key] then return end
+    Tree.balance(S.trees[key])
+    Layout.tileNow(false, Tree.keyUUID(key))
+end
+
 -- Resize the focused window by a percentage of its own size, e.g.
 -- resize(10, 0) grows width by 10%. Tiled windows move the split bordering
 -- them in the key's direction instead (see Resize.resizePercent).

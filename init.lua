@@ -118,6 +118,9 @@ hs.hotkey.bind(SUPER, "g", wm.focusFloat)
 -- SUPER+Y: flip the focused window's split (horizontal <-> vertical).
 hs.hotkey.bind(SUPER, "y", wm.toggleSplit)
 
+-- SUPER+=: split every tile of the workspace evenly again.
+hs.hotkey.bind(SUPER, "=", wm.balance)
+
 -- SUPER+Return: always open a fresh Ghostty window on the current Space and
 -- screen, regardless of where existing Ghostty windows live.
 --

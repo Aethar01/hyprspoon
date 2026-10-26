@@ -404,6 +404,14 @@ local function moveSplit(node, edge, pos)
 end
 
 
+-- Every split back to halves.
+local function balance(node)
+    if not node or isLeaf(node) then return end
+    node.ratio = 0.5
+    balance(node.a)
+    balance(node.b)
+end
+
 -- Flushes a pending debounced save (reload, shutdown).
 local function stop()
     if saveTimer then
@@ -436,6 +444,7 @@ M.keyUUID = keyUUID
 M.findByID = findByID
 M.boundingSplit = boundingSplit
 M.moveSplit = moveSplit
+M.balance = balance
 
 Spaces = require("wm.spaces")
 

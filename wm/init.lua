@@ -70,6 +70,7 @@ local Border = require("wm.border")
 
 -- The public API.
 local M = {
+    balance = Actions.balance,
     closeWindow = Actions.closeWindow,
     focus = Actions.focus,
     focusFloat = Actions.focusFloat,
