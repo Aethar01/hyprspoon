@@ -82,10 +82,10 @@ enum { ORDER_OUT = 0, ORDER_ABOVE = 1 };
 // Just under the menu bar's level: above every app window and the rings.
 #define OVERLAY_LEVEL 23
 
-// The wallpaper is taken again after this long, once a slide is over:
-// macOS can shuffle a folder of them, or change one through the day, and
-// says nothing. At most once a minute, off the switch's path.
-#define WALLPAPER_MAX_AGE 60
+// The wallpaper is taken again once a slide is over if it's older than
+// this (seconds; 0 never): macOS can shuffle a folder of them, or change
+// one through the day, and says nothing. Set by run().
+static double wallpaperMaxAge = 0;
 
 // Everything below belongs to `queue`, with its own connection (cid).
 static dispatch_queue_t queue = NULL;
@@ -391,8 +391,9 @@ static void finish(void *data) {
     clearLayers();
     orderWindow(false);
     // A stale wallpaper is taken again now, between slides.
+    if (wallpaperMaxAge <= 0) return;
     for (int i = 0; i < wallpaperCount; i++) {
-        if (CFAbsoluteTimeGetCurrent() - wallpapers[i].taken > WALLPAPER_MAX_AGE) takeWallpaper(wallpapers[i].bounds);
+        if (CFAbsoluteTimeGetCurrent() - wallpapers[i].taken > wallpaperMaxAge) takeWallpaper(wallpapers[i].bounds);
     }
 }
 
@@ -533,9 +534,9 @@ static int l_wallpaper(lua_State *L) {
 }
 
 // run{ frame = {x, y, w, h}, scale =, out = key, into = key, still = key,
-// dx =, dy =, backdrop =, mass =, stiffness =, damping = }: slides `out`
-// away and `into` in from the side (dx, dy) over `frame`, above `still`,
-// then gets out of the way.
+// dx =, dy =, backdrop =, mass =, stiffness =, damping =, wallpaperAge = }:
+// slides `out` away and `into` in from the side (dx, dy) over `frame`,
+// above `still`, then gets out of the way.
 // The window is up before this returns, so the windows beneath can move.
 static int l_run(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -554,6 +555,7 @@ static int l_run(lua_State *L) {
     s.mass = numberField(L, 1, "mass", 1);
     s.stiffness = numberField(L, 1, "stiffness", 800);
     s.damping = numberField(L, 1, "damping", 50);
+    wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
     if (CGRectIsEmpty(s.frame)) return 0;
     dispatch_sync(queue, ^{ run(s); });
     return 0;

@@ -51,7 +51,21 @@ S.defaults = {
     -- spring (Hyprland's mass, stiffness and dampening). Set to false to
     -- switch without. Needs wm.native.slide (make -C wm/native) and Screen
     -- Recording permission; costs one ~40ms capture per switch.
-    slide = { mass = 0.6, stiffness = 800, damping = 38 },
+    slide = {
+        mass = 0.6,
+        stiffness = 800,
+        damping = 38,
+        -- Numbered workspaces: "horizontal" (the next comes from the
+        -- right), "vertical" (from below), or false.
+        workspaces = "horizontal",
+        -- The edge scratchpads come from and go back to: "bottom", "top",
+        -- "left", "right", or false.
+        scratchpads = "bottom",
+        -- Seconds before the wallpaper slid over is taken again (once a
+        -- slide is over, in the background), for wallpapers that change;
+        -- false only on reload and display changes.
+        wallpaperRefresh = false,
+    },
 
     -- Trackpad swipe between workspaces (next/previous on the display under
     -- the pointer). `distance` is how far the fingers travel sideways, as a
