@@ -517,21 +517,21 @@ local function showScratchpad(n, uuid)
         sync(false)
     end
     Layout.tileNow()
-    -- Least recently used first, so the one used last ends on top, and the
-    -- maximized (or full-screen) window above them all.
+    -- A maximized (or full-screen) window covers the rest: it alone is
+    -- raised, and focused. Otherwise least recently used first, so the one
+    -- used last ends on top. After focusing: a raise only goes above the
+    -- windows of the app in front when it's that app's own.
     local wins, rank = {}, {}
+    local top = S.maximized["ws" .. n]
     for _, win in ipairs(Util.managedWindows()) do
-        if of[win:id()] == n then wins[#wins + 1] = win end
+        local id = win:id()
+        if of[id] == n and (not top or id == top) then wins[#wins + 1] = win end
     end
     for i, id in ipairs(Util.focusHistory) do rank[id] = rank[id] or i end
-    local top = S.maximized["ws" .. n]
-    local function order(win)
-        local id = win:id()
-        return id == top and 0 or rank[id] or math.huge
-    end
-    table.sort(wins, function(a, b) return order(a) > order(b) end)
-    for _, win in ipairs(wins) do win:raise() end
+    table.sort(wins, function(a, b) return (rank[a:id()] or math.huge) > (rank[b:id()] or math.huge) end)
+    if top and #wins == 1 and not S.spaceFocusWin then S.spaceFocusWin = wins[1] end
     focusWorkspace(n, uuid ~= pointerUUID())
+    for _, win in ipairs(wins) do win:raise() end
     Hud.switched(uuid)
 end
 
