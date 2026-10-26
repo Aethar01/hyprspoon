@@ -82,9 +82,10 @@ enum { ORDER_OUT = 0, ORDER_ABOVE = 1 };
 // Just under the menu bar's level: above every app window and the rings.
 #define OVERLAY_LEVEL 23
 
-// The wallpaper is taken again after this long, once a slide is over (a
-// dynamic wallpaper changes through the day).
-#define WALLPAPER_MAX_AGE 600
+// The wallpaper is taken again after this long, once a slide is over:
+// macOS can shuffle a folder of them, or change one through the day, and
+// says nothing. At most once a minute, off the switch's path.
+#define WALLPAPER_MAX_AGE 60
 
 // Everything below belongs to `queue`, with its own connection (cid).
 static dispatch_queue_t queue = NULL;
@@ -378,6 +379,7 @@ typedef struct {
     CGRect frame;   // the area that slides (a display's usable area)
     double scale;   // its backing scale
     int out, into;  // pictures leaving and arriving (0 for none)
+    int still;      // a picture that stays put beneath them (0 for none)
     CGPoint toward; // unit direction the arriving one comes from, e.g. (1, 0): the right
     bool backdrop;  // over the wallpaper, hiding the windows beneath
     double mass, stiffness, damping;
@@ -419,6 +421,8 @@ static void run(Slide s) {
             root.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         }
     }
+    Shot *still = s.still ? pictureFor(s.still) : NULL;
+    if (still) [root addSublayer:pictureLayer(still, s.frame, CGPointZero)];
     // Both pictures ride one plane, which moves the width (or height) of
     // the area: the leaving one off, the arriving one into place.
     CALayer *plane = [CALayer layer];
@@ -528,9 +532,10 @@ static int l_wallpaper(lua_State *L) {
     return 0;
 }
 
-// run{ frame = {x, y, w, h}, scale =, out = key, into = key, dx =, dy =,
-// backdrop =, mass =, stiffness =, damping = }: slides `out` away and
-// `into` in from the side (dx, dy) over `frame`, then gets out of the way.
+// run{ frame = {x, y, w, h}, scale =, out = key, into = key, still = key,
+// dx =, dy =, backdrop =, mass =, stiffness =, damping = }: slides `out`
+// away and `into` in from the side (dx, dy) over `frame`, above `still`,
+// then gets out of the way.
 // The window is up before this returns, so the windows beneath can move.
 static int l_run(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -541,6 +546,7 @@ static int l_run(lua_State *L) {
     s.scale = numberField(L, 1, "scale", 1);
     s.out = (int)numberField(L, 1, "out", 0);
     s.into = (int)numberField(L, 1, "into", 0);
+    s.still = (int)numberField(L, 1, "still", 0);
     s.toward = CGPointMake(numberField(L, 1, "dx", 0), numberField(L, 1, "dy", 0));
     lua_getfield(L, 1, "backdrop");
     s.backdrop = lua_toboolean(L, -1);

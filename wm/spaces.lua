@@ -475,10 +475,12 @@ end
 local hideEmptyScratchpads
 
 -- Puts away the scratchpad showing on display `uuid`, back to the
--- workspace beneath it (its windows are already in place).
-local function hideScratchpad(uuid)
+-- workspace beneath it (its windows are already in place); with `slide`,
+-- sliding it down.
+local function hideScratchpad(uuid, slide)
     local base = under[uuid]
     if not base then return end
+    if slide then Slide.hideScratchpad(connected[uuid], active[uuid], windowsOf(active[uuid])) end
     under[uuid] = nil
     active[uuid] = base
     refresh()
@@ -491,6 +493,7 @@ end
 local function showScratchpad(n, uuid)
     if active[uuid] ~= n then
         local base = under[uuid] or (active[uuid] and active[uuid] <= NAMED_BASE and active[uuid]) or nil
+        if base then Slide.showScratchpad(connected[uuid], n, windowsOf(n), windowsOf(base)) end
         under[uuid] = base
         active[uuid] = n
         home[n] = uuid
@@ -636,7 +639,7 @@ function M.toggleWorkspace(n)
     refresh()
     local at = shown[n]
     if n > NAMED_BASE and at and active[at] == n and under[at] then
-        hideScratchpad(at)
+        hideScratchpad(at, true)
         Layout.tileNow()
         focusWorkspace(active[at], at ~= pointerUUID())
         Hud.switched(at)
@@ -793,7 +796,7 @@ function M.focusedParked(win)
     -- Beneath a scratchpad: that goes.
     for uuid, base in pairs(under) do
         if base == n and behind[n] then
-            hideScratchpad(uuid)
+            hideScratchpad(uuid, true)
             Layout.tileNow()
             focusWorkspace(n, false)
             Hud.switched(uuid)
