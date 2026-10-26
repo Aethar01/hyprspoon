@@ -41,11 +41,11 @@ local Slide = require("wm.slide")
 -- current Desktop's windows.
 --
 -- Besides 1 to 10 there are named workspaces (S.cfg.namedWorkspaces):
--- scratchpads, like Hyprland's special workspaces. One shows over the
--- display's numbered workspace rather than in its place, laid out in
--- S.cfg.scratchpadScale of the area, and goes when toggled again, when the
--- display switches workspace, or when a window beneath it gets focus (a
--- click, Cmd-Tab): macOS would raise that window over it. The windows
+-- scratchpads, like Hyprland's special workspaces. One shows on the
+-- pointer's display, over its numbered workspace rather than in its place,
+-- laid out in S.cfg.scratchpadScale of the area, and goes when toggled
+-- again, when the display switches workspace, or when a window beneath it
+-- gets focus (a click, Cmd-Tab): macOS would raise that window over it. The windows
 -- beneath stay where they are but count as hidden while it shows: they
 -- aren't laid out, ringed, or focused by the pointer.
 
@@ -489,9 +489,24 @@ local function hideScratchpad(uuid, slide)
 end
 
 -- Shows scratchpad `n` over the workspace showing on display `uuid` (or
--- in place of another scratchpad), its windows raised above it.
+-- in place of another scratchpad), its windows raised above it. One
+-- showing on another display comes away from it.
 local function showScratchpad(n, uuid)
+    for other, m in pairs(active) do
+        if m == n and other ~= uuid then hideScratchpad(other) end
+    end
     if active[uuid] ~= n then
+        -- From another display's corner: its windows keep the scratchpad
+        -- while they're laid out here (unpark centres the floats).
+        if home[n] and home[n] ~= uuid then
+            local until_ = hs.timer.secondsSinceEpoch() + 1
+            for id, m in pairs(of) do
+                if m == n then
+                    pins[id] = until_
+                    S.windowInfo[id], S.applied[id] = nil, nil
+                end
+            end
+        end
         local base = under[uuid] or (active[uuid] and active[uuid] <= NAMED_BASE and active[uuid]) or nil
         if base then Slide.showScratchpad(connected[uuid], n, windowsOf(n), windowsOf(base)) end
         under[uuid] = base
@@ -548,7 +563,8 @@ function M.gotoWorkspace(n)
     if not n then return end
     refresh()
     claimAll()
-    local uuid = targetDisplay(n, pointerUUID())
+    -- Scratchpads come to the pointer, like Hyprland's special workspaces.
+    local uuid = n > NAMED_BASE and pointerUUID() or targetDisplay(n, pointerUUID())
     if active[uuid] == n and not under[uuid] and uuid == pointerUUID() then return end
     switchTo(n, uuid)
 end
@@ -585,7 +601,7 @@ function M.moveToWorkspace(n)
     local id = win:id()
     if of[id] == n then return end
     local from = (of[id] and shown[of[id]]) or pointerUUID()
-    local to = targetDisplay(n, from)
+    local to = n > NAMED_BASE and from or targetDisplay(n, from)
     of[id] = n
     save()
     if to ~= from then
@@ -632,13 +648,13 @@ end
 
 -- Workspace `n` (a number or a name) if the pointer's display isn't
 -- showing it, else back. A scratchpad goes back to the workspace beneath
--- it, wherever it shows.
+-- it, or comes to the pointer's display from another.
 function M.toggleWorkspace(n)
     n = number(n)
     if not n then return end
     refresh()
     local at = shown[n]
-    if n > NAMED_BASE and at and active[at] == n and under[at] then
+    if n > NAMED_BASE and at == pointerUUID() and active[at] == n and under[at] then
         hideScratchpad(at, true)
         Layout.tileNow()
         focusWorkspace(active[at], at ~= pointerUUID())
