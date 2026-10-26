@@ -211,6 +211,12 @@ static float mixAt(Ring *ring, double t) {
 
 // Changes to layers outside a transaction would wait for a run loop this
 // queue doesn't have, and would animate.
+// Strings for objects that can outlive this library: a reload unloads it
+// while CoreAnimation still holds finished fades, and releasing one then
+// read its key path from the unloaded image's constant strings (the crash
+// that came with reloads). So they're made at load, on the heap.
+static NSString *borderColorKey = nil, *fadeKey = nil;
+
 static void beginChanges(void) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -316,12 +322,14 @@ static bool makeWindow(Ring *ring) {
     SLSSetWindowOpacity(drawCid, wid, false);
     CFIndex density = 0;
     CFNumberRef value = CFNumberCreate(NULL, kCFNumberCFIndexType, &density);
-    const void *keys[] = { CFSTR("com.apple.WindowShadowDensity") };
+    CFStringRef key = CFStringCreateWithCString(NULL, "com.apple.WindowShadowDensity", kCFStringEncodingUTF8);
+    const void *keys[] = { key };
     const void *values[] = { value };
     CFDictionaryRef shadow = CFDictionaryCreate(NULL, keys, values, 1,
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
     SLSWindowSetShadowProperties(wid, shadow);
     CFRelease(shadow);
+    CFRelease(key);
     CFRelease(value);
     ring->wid = wid;
     ring->context = context;
@@ -575,11 +583,11 @@ static void blend(Ring *ring, float to, double duration) {
             [values addObject:(id)c];
             CGColorRelease(c);
         }
-        CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"borderColor"];
+        CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:borderColorKey];
         fade.values = values;
         fade.calculationMode = kCAAnimationDiscrete;
         fade.duration = duration;
-        [ring->layer addAnimation:fade forKey:@"fade"];
+        [ring->layer addAnimation:fade forKey:fadeKey];
     }
     CGColorRelease(end);
     commitChanges();
@@ -792,10 +800,25 @@ static int l_active(lua_State *L) {
     return 1;
 }
 
+// The layers are taken apart in a transaction of their own, flushed,
+// before anything is released: released mid-fade, outside a transaction,
+// CoreAnimation kept their animations listed, and the next commit (the
+// reloaded config's first rings) crashed on them (4 crash reports in a day of reloads).
 static void releaseAll(void) {
+    if (ringCount == 0) return;
+    beginChanges();
+    for (int i = 0; i < ringCount; i++) {
+        [rings[i].layer removeAllAnimations];
+        [rings[i].layer removeFromSuperlayer];
+        rings[i].context.layer = nil;
+    }
+    commitChanges();
     for (int i = 0; i < ringCount; i++) {
         freeRing(&rings[i]);
         SLSReleaseWindow(drawCid, rings[i].wid);
+        if ([rings[i].context respondsToSelector:@selector(invalidate)]) {
+            [rings[i].context performSelector:@selector(invalidate)];
+        }
         [rings[i].layer release];
         [rings[i].root release];
         [rings[i].context release];
@@ -875,6 +898,10 @@ int luaopen_wm_native_border(lua_State *L) {
     const char *missing = loadSymbols();
     if (missing) return luaL_error(L, "wm.native.border: SkyLight has no %s", missing);
 
+    if (!borderColorKey) {
+        borderColorKey = [[NSString alloc] initWithUTF8String:"borderColor"];
+        fadeKey = [[NSString alloc] initWithUTF8String:"fade"];
+    }
     mainCid = SLSMainConnectionID();
     if (SLSNewConnection(0, &drawCid) != kCGErrorSuccess) return luaL_error(L, "wm.native.border: no WindowServer connection");
     // Each block drains its own autorelease pool (CoreAnimation's objects).
