@@ -514,7 +514,8 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                     S.maximized[key], maxID = nil, nil
                     Border.sync()
                 end
-                applyTree(tree, usableFrame, byID, maxID and { id = maxID, rect = usableFrame } or nil)
+                local fullRect = S.filled[key] and screen:frame() or usableFrame
+                applyTree(tree, usableFrame, byID, maxID and { id = maxID, rect = fullRect } or nil)
             end
         end
     end
@@ -696,11 +697,18 @@ end
 
 -- Fill the workspace's tiling area with tiled window `win`, over the other
 -- tiles, or put it back in its tile. False if it isn't tiled.
-local function toggleMaximized(win)
+-- With `fill`, over the whole display rather than inside the outer gaps.
+-- Asking for the other kind switches to it.
+local function toggleMaximized(win, fill)
     local id = win:id()
     local _, _, key = locate(win)
     if not key then return false end
-    S.maximized[key] = S.maximized[key] ~= id and id or nil
+    fill = fill or nil
+    if S.maximized[key] == id and S.filled[key] == fill then
+        S.maximized[key], S.filled[key] = nil, nil
+    else
+        S.maximized[key], S.filled[key] = id, fill
+    end
     Border.sync()
     tileNow(false, Tree.keyUUID(key))
     -- Above the tiles of its own app too.

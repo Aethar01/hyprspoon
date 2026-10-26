@@ -26,7 +26,9 @@ local function onShow()
     if suspended then return ids end
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        if id and not Spaces.isHidden(id) and not Tree.behindMaximized(id) then ids[#ids + 1] = id end
+        if id and not Spaces.isHidden(id) and not Tree.behindMaximized(id) and not Tree.filling(id) then
+            ids[#ids + 1] = id
+        end
     end
     return ids
 end

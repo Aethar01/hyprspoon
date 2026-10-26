@@ -95,6 +95,7 @@ local M = {
     toggleFloat = Actions.toggleFloat,
     toggleFullScreen = Actions.toggleFullScreen,
     toggleMaximize = Actions.toggleMaximize,
+    toggleFill = Actions.toggleFill,
     toggleOverview = Overview.toggle,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,

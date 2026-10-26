@@ -56,25 +56,41 @@ local unmaximizedFrames = {}
 -- Fill the screen without creating a fullscreen Space, or go back. A tiled
 -- window covers the other tiles until it's toggled back or another tile
 -- takes focus (see Layout.toggleMaximized); a float fills the tiling area.
-function M.toggleMaximize()
+-- With `fill`, the whole display, gaps and all.
+function M.toggleMaximize(fill)
+    fill = fill == true
     local win = Focus.currentWindow()
-    if not win or Layout.toggleMaximized(win) then return end
+    if not win or Layout.toggleMaximized(win, fill) then return end
 
     local id, screen = win:id(), win:screen()
     if not id or not screen then return end
     local gap = S.cfg.tiling.outerGap
     local sf = screen:frame()
-    local full = { x = sf.x + gap, y = sf.y + gap, w = sf.w - 2 * gap, h = sf.h - 2 * gap }
+    local gapped = { x = sf.x + gap, y = sf.y + gap, w = sf.w - 2 * gap, h = sf.h - 2 * gap }
+    local full, other = gapped, sf
+    if fill then full, other = sf, gapped end
     local f = win:frame()
+    local function at(r)
+        return math.abs(f.x - r.x) <= 1 and math.abs(f.y - r.y) <= 1
+            and math.abs(f.w - r.w) <= 1 and math.abs(f.h - r.h) <= 1
+    end
     local before = unmaximizedFrames[id]
-    if before and math.abs(f.x - full.x) <= 1 and math.abs(f.y - full.y) <= 1
-       and math.abs(f.w - full.w) <= 1 and math.abs(f.h - full.h) <= 1 then
+    if before and at(full) then
         unmaximizedFrames[id] = nil
         Util.setFrame(win, before, S.cfg.tiling.animationDuration)
     else
-        unmaximizedFrames[id] = { x = f.x, y = f.y, w = f.w, h = f.h }
+        -- Switching from the other kind keeps the frame to go back to.
+        if not (before and at(other)) then
+            unmaximizedFrames[id] = { x = f.x, y = f.y, w = f.w, h = f.h }
+        end
         Util.setFrame(win, full, S.cfg.tiling.animationDuration)
     end
+end
+
+-- Full screen on this desktop: the window covers the whole display, with
+-- no Space of its own. Again to go back.
+function M.toggleFill()
+    M.toggleMaximize(true)
 end
 
 local focusMethods = {

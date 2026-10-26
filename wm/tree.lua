@@ -23,6 +23,7 @@ local TREES_KEY = "bspTrees"
 local TREES_BOOT_KEY = "bspTreesBoot"
 local MAXIMIZED_KEY = "bspMaximized"
 local UNTILED_KEY = "bspUntiledWorkspaces"
+local FILLED_KEY = "bspFilled"
 local bootTime = tonumber(
     (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 
@@ -33,6 +34,9 @@ S.trees = {}
 -- Tree key -> the window filling that workspace's whole tiling area, over
 -- the other tiles (which keep their places underneath).
 S.maximized = {}
+-- Tree keys whose maximized window fills the whole display instead, gaps
+-- and all: full screen without a Space of its own.
+S.filled = {}
 -- Tree keys of workspaces whose windows float while tiling is on. Their
 -- trees are kept (and ignored) for when tiling comes back.
 S.untiled = {}
@@ -47,6 +51,9 @@ do
         end
         for key in pairs(hs.settings.get(UNTILED_KEY) or {}) do
             if key:match("^ws%d+$") then S.untiled[key] = true end
+        end
+        for key in pairs(hs.settings.get(FILLED_KEY) or {}) do
+            if key:match("^ws%d+$") then S.filled[key] = true end
         end
     end
 end
@@ -72,15 +79,19 @@ local function saveTreesNow()
     for key, tree in pairs(S.trees) do
         out[key] = stripTree(tree)
     end
-    local maximized, untiled = {}, {}
-    for key, id in pairs(S.maximized) do maximized[key] = id end
+    local maximized, untiled, filled = {}, {}, {}
+    for key, id in pairs(S.maximized) do
+        maximized[key] = id
+        filled[key] = S.filled[key]
+    end
     for key in pairs(S.untiled) do untiled[key] = true end
-    local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled })
+    local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled, filled = filled })
     if encoded == savedTrees then return end
     savedTrees = encoded
     hs.settings.set(TREES_KEY, out)
     hs.settings.set(MAXIMIZED_KEY, maximized)
     hs.settings.set(UNTILED_KEY, untiled)
+    hs.settings.set(FILLED_KEY, filled)
     hs.settings.set(TREES_BOOT_KEY, bootTime)
 end
 
@@ -405,6 +416,13 @@ local function behindMaximized(windowID)
     return maxID ~= nil and maxID ~= windowID
 end
 
+-- Whether a window is filling its whole display (no ring around it).
+local function filling(windowID)
+    if not S.tilingEnabled or next(S.filled) == nil or S.autoFloat[windowID] then return false end
+    local _, _, key = findByID(windowID)
+    return key ~= nil and S.filled[key] == true and S.maximized[key] == windowID
+end
+
 -- Nearest split of the given orientation with the window on the given
 -- branch ("a" = split line after the window, i.e. its right/bottom edge).
 local function boundingSplit(path, split, branch)
@@ -514,6 +532,7 @@ end
 M.stop = stop
 M.rectFor = rectFor
 M.behindMaximized = behindMaximized
+M.filling = filling
 M.bootTime = bootTime
 M.saveTreesNow = saveTreesNow
 M.saveTrees = saveTrees
