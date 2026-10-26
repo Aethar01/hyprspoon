@@ -3,11 +3,10 @@
 -- Every window on show gets a ring just outside it, in the gap between
 -- tiles: the focused window's in the active colour, the others in the
 -- (see-through) inactive one, blending between the two as focus moves.
--- They are drawn by wm.native.border (wm/native/border.c), which
--- keeps each ring directly above its window in WindowServer's stacking and
--- moves it from WindowServer's own notifications: a ring is covered by
--- exactly what covers its window, and follows drags, resizes and animated
--- retiles as they happen. This module only tells it which windows are on
+-- They are drawn by wm.native.border (wm/native/border.m), which moves them
+-- from WindowServer's own notifications, so they follow drags, resizes and
+-- animated retiles as they happen. A ring shows over windows that cover its
+-- own (see border.m). This module only tells it which windows are on
 -- show (not parked on another workspace) and which one has focus.
 
 local M = {}

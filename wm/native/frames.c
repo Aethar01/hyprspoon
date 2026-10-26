@@ -248,10 +248,6 @@ typedef struct {
     uint32_t wid;
 } Run;
 
-// For stats(): runs, and seconds spent in them and in their frame reads.
-static _Atomic unsigned long runs = 0;
-static _Atomic double runTime = 0, readTime = 0;
-
 static void run(void *context) {
     Run job = *(Run *)context;
     free(context);
@@ -271,7 +267,6 @@ static void run(void *context) {
     os_unfair_lock_unlock(&requestsLock);
     if (atomic_load(&stopping)) return;
 
-    double began = now();
     App *app = job.app;
     AXUIElementRef win = windowElement(app, job.wid);
     if (!win) return;
@@ -281,7 +276,6 @@ static void run(void *context) {
             forgetWindow(app, job.wid);
             return;
         }
-        readTime += now() - began;
     }
 
     // With this on (VoiceOver, some automation tools), apps animate every
@@ -338,8 +332,6 @@ static void run(void *context) {
         }
         os_unfair_lock_unlock(&requestsLock);
     }
-    runs++;
-    runTime += now() - began;
 }
 
 void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sole) {
@@ -415,24 +407,6 @@ static int l_set(lua_State *L) {
     return 0;
 }
 
-// wait(pid): returns once everything asked of the app has been applied.
-static int l_wait(lua_State *L) {
-    framesWait((pid_t)luaL_checkinteger(L, 1));
-    return 0;
-}
-
-// stats(): { runs =, runTime =, readTime = } (seconds) since loading.
-static int l_stats(lua_State *L) {
-    lua_createtable(L, 0, 3);
-    lua_pushinteger(L, (lua_Integer)runs);
-    lua_setfield(L, -2, "runs");
-    lua_pushnumber(L, runTime);
-    lua_setfield(L, -2, "runTime");
-    lua_pushnumber(L, readTime);
-    lua_setfield(L, -2, "readTime");
-    return 1;
-}
-
 // Collected with the Lua state (reload, quit), before Lua unloads the
 // library: the queues are drained first, so nothing still runs in it.
 static int l_gc(lua_State *L) {
@@ -452,8 +426,6 @@ int luaopen_wm_native_frames(lua_State *L) {
 
     static const luaL_Reg funcs[] = {
         { "set", l_set },
-        { "wait", l_wait },
-        { "stats", l_stats },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);

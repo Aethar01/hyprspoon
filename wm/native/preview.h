@@ -11,6 +11,6 @@
 #include <stdint.h>
 
 // Draws window `wid`'s ring around `frame` from now on, ignoring where the
-// window itself is; with NULL, the ring follows the window again. Main
-// thread only.
+// window itself is; with NULL, the ring follows the window again. Any
+// thread (drag.c calls it from its tap's).
 typedef void (*RingPreview)(uint32_t wid, const CGRect *frame);

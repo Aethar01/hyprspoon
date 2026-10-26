@@ -1,47 +1,55 @@
-// wm/native/border.c: Rings around windows, drawn by WindowServer.
+// wm/native/border.m: Rings around windows, drawn by WindowServer.
 //
 // Loaded by wm/border.lua as wm.native.border (build: make -C wm/native).
 //
 // Every window wm/border.lua lists gets a ring: the focused window's in the
 // active colour, the rest in the inactive one, blending between the two as
-// focus moves. Each ring is a window of our own (see Ring), ordered
-// directly above the window it surrounds: anything stacked above that
-// window covers the ring as well, and nothing below it can. (Directly above rather than below:
-// macOS slots a window raised from an inactive app in just under the active
-// app's windows, which would put it between a window and a ring below it.)
-// WindowServer tells us when a window moves or resizes, and when any window
-// is restacked, and the rings follow straight away, never waiting on a poll,
-// a debounce or Lua.
+// focus moves. Each ring is a window of our own (see Ring), ordered just
+// above the window it surrounds, at its level. WindowServer tells us when a
+// window moves or resizes, and when any window is restacked, and the rings
+// follow straight away, never waiting on a poll, a debounce or Lua.
 //
-// The rings are drawn and moved on a queue of their own, through a
-// WindowServer connection of their own (as JankyBorders does): redrawing a
-// big ring while a big window resizes can take WindowServer several
-// milliseconds to answer, and none of that may hold up Hammerspoon's main
-// thread, where Lua and the event taps run. Notifications only note which
-// windows changed; a burst of them becomes one update at the latest bounds.
+// Each ring's window shows a CoreAnimation layer: a border with the
+// window's corner radius, which WindowServer draws, resizes and fades
+// itself. Nothing is drawn here: a fade is one animation handed over, where
+// redrawing the ring for each of its frames cost Hammerspoon about 100ms of
+// CPU per focus change (measured), and a resize is a new layer size. The
+// price: WindowServer draws such a window above the normal windows whatever
+// its place in the stacking, so a ring shows over windows that cover its
+// own (which also shows where windows are while rearranging).
+//
+// The rings are moved on a queue of their own, through a WindowServer
+// connection of their own (as JankyBorders does), so none of it holds up
+// Hammerspoon's main thread, where Lua and the event taps run.
+// Notifications only note which windows changed; a burst of them becomes
+// one update at the latest bounds.
 //
 // SkyLight's window calls are private (the same ones JankyBorders uses).
 // They are looked up when the module loads, which fails with an error
 // rather than crashing if a macOS update removes one.
 
-#include <CoreFoundation/CoreFoundation.h>
-#include <CoreGraphics/CoreGraphics.h>
+#import <Foundation/Foundation.h>
+#import <QuartzCore/QuartzCore.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <mach/mach.h>
 #include <math.h>
 #include <os/lock.h>
-#include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "lauxlib.h"
 #include "lua.h"
 #include "preview.h"
 #include "luacall.h"
 #include "skylight.h"
+
+// CoreAnimation's link to a WindowServer window (private).
+@interface CAContext : NSObject
++ (instancetype)contextWithCGSConnection:(uint32_t)cid options:(NSDictionary *)options;
+@property (retain) CALayer *layer;
+@end
 
 // ---------------------------------------------------------------------------
 // SkyLight
@@ -56,7 +64,9 @@
     X(CGError, SLSRegisterNotifyProc, (void *, uint32_t, void *))                      \
     X(CGError, SLSRemoveNotifyProc, (void *, uint32_t, void *))                        \
     X(CGError, SLSRequestNotificationsForWindows, (int, uint32_t *, int))              \
-    X(CGError, SLSNewWindow, (int, int, float, float, CFTypeRef, uint32_t *))          \
+    X(CGError, SLSNewWindowWithOpaqueShapeAndContext, (int, int, CFTypeRef, CFTypeRef,  \
+                                                       int, uint64_t *, float, float,  \
+                                                       int, uint32_t *, void *))       \
     X(CGError, SLSReleaseWindow, (int, uint32_t))                                      \
     X(CGError, SLSSetWindowTags, (int, uint32_t, uint64_t *, int))                     \
     X(CGError, SLSSetWindowShape, (int, uint32_t, float, float, CFTypeRef))            \
@@ -65,9 +75,6 @@
     X(CGError, SLSGetWindowBounds, (int, uint32_t, CGRect *))                          \
     X(CGError, SLSGetWindowLevel, (int, uint32_t, int64_t *))                          \
     X(CGError, CGSNewRegionWithRect, (CGRect *, CFTypeRef *))                          \
-    X(CGError, CGSNewRegionWithRectList, (const CGRect *, int, CFTypeRef *))           \
-    X(CGContextRef, SLWindowContextCreate, (int, uint32_t, CFDictionaryRef))           \
-    X(CGError, SLSFlushWindowContentRegion, (int, uint32_t, void *))                   \
     X(CGError, SLSWindowSetShadowProperties, (uint32_t, CFDictionaryRef))              \
     X(CGError, SLSWindowFreezeWithOptions, (int, uint32_t, CFTypeRef))                 \
     X(CGError, SLSWindowThaw, (int, uint32_t))                                         \
@@ -110,10 +117,12 @@ enum { ORDER_OUT = 0, ORDER_ABOVE = 1 };
 
 typedef struct {
     uint32_t wid;    // our window
-    CGContextRef ctx; // drawing into it; NULL until first drawn
+    CAContext *context;
+    CALayer *root;   // the window's content, its origin top-left
+    CALayer *layer;  // the ring: a border around the target's outline
     uint32_t target; // the window it surrounds; 0 when free
     CGRect bounds;   // the target's bounds it was last placed for
-    bool drawn;      // drawn for bounds.size
+    bool drawn;      // laid out for bounds.size
     CGSize canvas;   // the window's size, the ring drawn in its top-left corner
     bool hidden;     // its target's app is hidden
     bool fills;      // its target fills a display (native full screen)
@@ -123,10 +132,9 @@ typedef struct {
     bool previewing; // drawn around `preview` (a drag's frame), not the target
     CGRect preview;
     // How active it looks, 0 to 1, going from `from` to `to` over
-    // `duration` from `start`.
-    float mix, from, to;
+    // `duration` from `start` (see mixAt).
+    float from, to;
     double start, duration;
-    bool blending;
 } Ring;
 
 #define MAX_RINGS 128
@@ -188,82 +196,43 @@ static CGFloat padding(void) {
     return style.width + 1;
 }
 
-static CGPathRef roundedRect(CGRect r, CGFloat radius) {
-    radius = fmin(fmax(radius, 0), fmin(r.size.width, r.size.height) / 2);
-    return CGPathCreateWithRoundedRect(r, radius, radius, NULL);
-}
-
-// The ring's four sides, as strips of the window that hold every pixel the
-// ring can touch, corners and antialiasing included, in the context's
-// coordinates (origin bottom-left).
-static void strips(Ring *ring, CGRect out[4]) {
-    CGFloat pad = padding();
-    CGRect window = { { pad, ring->canvas.height - pad - ring->bounds.size.height }, ring->bounds.size };
-    CGRect box = CGRectInset(window, -pad, -pad);
-    CGFloat t = fmin(pad + ring->radius + 1, fmin(box.size.width, box.size.height) / 2);
-    out[0] = CGRectMake(box.origin.x, box.origin.y, box.size.width, t);
-    out[1] = CGRectMake(box.origin.x, CGRectGetMaxY(box) - t, box.size.width, t);
-    out[2] = CGRectMake(box.origin.x, box.origin.y + t, t, box.size.height - 2 * t);
-    out[3] = CGRectMake(CGRectGetMaxX(box) - t, box.origin.y + t, t, box.size.height - 2 * t);
-}
-
-// The strips as a region of the window, whose origin is top-left.
-static CFTypeRef stripRegion(Ring *ring) {
-    CGRect sides[4];
-    strips(ring, sides);
-    for (int i = 0; i < 4; i++) sides[i].origin.y = ring->canvas.height - CGRectGetMaxY(sides[i]);
-    CFTypeRef region = NULL;
-    CGSNewRegionWithRectList(sides, 4, &region);
-    return region;
-}
-
-// The ring is everything between the target's outline (with its corner
-// radius) and that outline grown by the width, filled even-odd in the
-// colour `mix` of the way from inactive to active. `whole` clears the whole
-// window first (its size changed); otherwise only the ring's strips are
-// cleared, redrawn and sent to the screen. That saves less than it looks:
-// CoreAnimation still copies the window's whole previous buffer for each
-// update, so a fade costs Hammerspoon about 110ms of CPU per focus change,
-// close to redrawing it all (measured). A layer-backed window, its colour
-// animated by WindowServer, would cost next to nothing (untried here).
-static void draw(Ring *ring, bool whole) {
-    if (!ring->ctx) ring->ctx = SLWindowContextCreate(drawCid, ring->wid, NULL);
-    CGContextRef ctx = ring->ctx;
-    if (!ctx) return;
-    CGFloat pad = padding();
-    CGRect window = { { pad, ring->canvas.height - pad - ring->bounds.size.height }, ring->bounds.size };
-    CGRect sides[4];
-    strips(ring, sides);
+// The ring's colour `mix` of the way from inactive to active (retained).
+static CGColorRef colorAt(float mix) {
     CGFloat c[4];
-    for (int i = 0; i < 4; i++) c[i] = style.inactive[i] + (style.active[i] - style.inactive[i]) * ring->mix;
-    CGPathRef outer = roundedRect(CGRectInset(window, -style.width, -style.width), ring->radius + style.width);
-    CGPathRef inner = roundedRect(window, ring->radius);
-    // Side by side, each under its own clip: an update's dirty area is what
-    // one drawing call can reach.
-    for (int side = 0; side < (whole ? 1 : 4); side++) {
-        CGContextSaveGState(ctx);
-        if (whole) {
-            CGContextClearRect(ctx, (CGRect){ CGPointZero, ring->canvas });
-        } else {
-            CGContextClipToRect(ctx, sides[side]);
-            CGContextClearRect(ctx, sides[side]);
-        }
-        if (c[3] > 0) {
-            CGContextSetRGBFillColor(ctx, c[0], c[1], c[2], c[3]);
-            CGContextAddPath(ctx, outer);
-            CGContextAddPath(ctx, inner);
-            CGContextEOFillPath(ctx);
-        }
-        CGContextRestoreGState(ctx);
-    }
-    CGPathRelease(outer);
-    CGPathRelease(inner);
-    CGContextFlush(ctx);
-    CFTypeRef dirty = whole ? NULL : stripRegion(ring);
-    SLSFlushWindowContentRegion(drawCid, ring->wid, (void *)dirty);
-    if (dirty) CFRelease(dirty);
+    for (int i = 0; i < 4; i++) c[i] = style.inactive[i] + (style.active[i] - style.inactive[i]) * mix;
+    return CGColorCreateSRGB(c[0], c[1], c[2], c[3]);
 }
 
+// How active the ring looks at time `t`.
+static float mixAt(Ring *ring, double t) {
+    double p = ring->duration > 0 ? (t - ring->start) / ring->duration : 1;
+    return p >= 1 ? ring->to : ring->from + (ring->to - ring->from) * (float)p;
+}
+
+// Changes to layers outside a transaction would wait for a run loop this
+// queue doesn't have, and would animate.
+static void beginChanges(void) {
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+}
+
+static void commitChanges(void) {
+    [CATransaction commit];
+    [CATransaction flush];
+}
+
+// The ring around the target's outline: inside, the target's corner
+// radius; outside, that grown by the width. The target sits `padding` in
+// from the window's top-left corner.
+static void layout(Ring *ring) {
+    CGFloat pad = padding(), w = style.width;
+    beginChanges();
+    ring->root.frame = (CGRect){ CGPointZero, ring->canvas };
+    ring->layer.frame = CGRectMake(pad - w, pad - w, ring->bounds.size.width + 2 * w, ring->bounds.size.height + 2 * w);
+    ring->layer.borderWidth = w;
+    ring->layer.cornerRadius = ring->radius + w;
+    commitChanges();
+}
 
 // The window's corner radius as WindowServer has it, so the ring's inside
 // follows the window's corners exactly; else the configured radius.
@@ -308,18 +277,40 @@ static void joinTargetSpace(Ring *ring) {
     CFRelease(spaces);
 }
 
-static uint32_t createWindow(void) {
-    CGRect frame = { CGPointZero, { 1, 1 } };
-    CFTypeRef region = NULL;
+// The ring's window, showing its layers, kept out of window lists and
+// Mission Control and never taking the mouse (as JankyBorders). False if
+// WindowServer won't make one.
+static bool makeWindow(Ring *ring) {
+    CGRect frame = { CGPointZero, { 1, 1 } }, none = CGRectZero;
+    CFTypeRef region = NULL, opaque = NULL;
     CGSNewRegionWithRect(&frame, &region);
-    if (!region) return 0;
-    uint32_t wid = 0;
-    SLSNewWindow(drawCid, kCGBackingStoreBuffered, -9999, -9999, region, &wid);
-    CFRelease(region);
-    if (!wid) return 0;
-    // As JankyBorders: kept out of window lists and Mission Control, and
-    // never takes the mouse.
+    CGSNewRegionWithRect(&none, &opaque);
+    beginChanges();
+    CAContext *context = [[CAContext contextWithCGSConnection:(uint32_t)drawCid options:@{}] retain];
+    CALayer *root = [[CALayer alloc] init];
+    root.geometryFlipped = YES;
+    CALayer *layer = [[CALayer alloc] init];
+    layer.cornerCurve = kCACornerCurveCircular;
+    CGColorRef color = colorAt(0);
+    layer.borderColor = color;
+    CGColorRelease(color);
+    [root addSublayer:layer];
+    context.layer = root;
+    commitChanges();
     uint64_t tags = (1ULL << 1) | (1ULL << 9);
+    uint32_t wid = 0;
+    // Type 3 is a window whose content is a CoreAnimation context.
+    if (region && opaque) {
+        SLSNewWindowWithOpaqueShapeAndContext(drawCid, 3, region, opaque, 13, &tags, -9999, -9999, 64, &wid, context);
+    }
+    if (region) CFRelease(region);
+    if (opaque) CFRelease(opaque);
+    if (!wid) {
+        [layer release];
+        [root release];
+        [context release];
+        return false;
+    }
     SLSSetWindowResolution(drawCid, wid, style.resolution);
     SLSSetWindowTags(drawCid, wid, &tags, 64);
     SLSSetWindowOpacity(drawCid, wid, false);
@@ -332,7 +323,11 @@ static uint32_t createWindow(void) {
     SLSWindowSetShadowProperties(wid, shadow);
     CFRelease(shadow);
     CFRelease(value);
-    return wid;
+    ring->wid = wid;
+    ring->context = context;
+    ring->root = root;
+    ring->layer = layer;
+    return true;
 }
 
 // Native full screen: the window covers its display, with nowhere to draw.
@@ -360,7 +355,7 @@ static void order(CFTypeRef t, Ring *ring) {
 }
 
 // The ring's window is sized in steps, with room to spare: a window that
-// resizes is then mostly only redrawn in a window that keeps its size.
+// resizes then mostly only resizes the layer, in a window that keeps its size.
 // Reshaping a window on every frame of a resize makes WindowServer time out
 // (thousands of times a minute, measured), hitching the whole screen.
 #define STEP 200
@@ -388,10 +383,10 @@ static bool place(Ring *ring, bool restack) {
     ring->fills = fills;
     ring->bounds = bounds;
 
-    // A reshape, its redraw and the move go to the screen together: without
-    // SLSDisableUpdate around them WindowServer times out part-way through
-    // (51 timeouts in 150 resizes, measured, against 2 with it) and can show
-    // the reshaped ring window before it's redrawn.
+    // A reshape, its new layout and the move go to the screen together:
+    // without SLSDisableUpdate around them WindowServer times out part-way
+    // through (51 timeouts in 150 resizes, measured, against 2 with it) and
+    // can show the reshaped window before the ring is laid out in it.
     if (reshape) {
         SLSDisableUpdate(drawCid);
         ring->canvas = CGSizeMake(stepUp(need.width), stepUp(need.height));
@@ -403,15 +398,10 @@ static bool place(Ring *ring, bool restack) {
             SLSSetWindowShape(drawCid, ring->wid, frame.origin.x, frame.origin.y, region);
             CFRelease(region);
         }
-        // A context made before the reshape keeps drawing at the old size.
-        if (ring->ctx) CGContextRelease(ring->ctx);
-        ring->ctx = NULL;
-        draw(ring, true);
+        layout(ring);
         SLSWindowThaw(drawCid, ring->wid);
     } else if (resize) {
-        SLSWindowFreezeWithOptions(drawCid, ring->wid, NULL);
-        draw(ring, true);
-        SLSWindowThaw(drawCid, ring->wid);
+        layout(ring);
     }
     ring->drawn = true;
 
@@ -454,7 +444,6 @@ static void freeRing(Ring *ring) {
     }
     ring->target = 0;
     ring->shown = false;
-    ring->blending = false;
     ring->previewing = false;
     ring->resizing = false;
 }
@@ -469,16 +458,23 @@ static Ring *newRing(uint32_t target) {
     }
     if (!ring) {
         if (ringCount == MAX_RINGS) return NULL;
-        uint32_t wid = createWindow();
-        if (!wid) return NULL;
+        Ring made;
+        memset(&made, 0, sizeof(made));
+        if (!makeWindow(&made)) return NULL;
         ring = &rings[ringCount++];
-        memset(ring, 0, sizeof(*ring));
-        ring->wid = wid;
+        *ring = made;
     }
     ring->target = target;
-    ring->hidden = ring->fills = ring->shown = ring->blending = ring->previewing = ring->resizing = false;
+    ring->hidden = ring->fills = ring->shown = ring->previewing = ring->resizing = false;
     ring->drawn = false;
-    ring->mix = target == active ? 1 : 0;
+    ring->from = ring->to = target == active ? 1 : 0;
+    ring->duration = 0;
+    beginChanges();
+    CGColorRef color = colorAt(ring->to);
+    [ring->layer removeAllAnimations];
+    ring->layer.borderColor = color;
+    CGColorRelease(color);
+    commitChanges();
     ring->radius = cornerRadius(target);
     joinTargetSpace(ring);
     if (!place(ring, true)) {
@@ -552,53 +548,41 @@ static bool systemResizing(Ring *ring) {
 // Blending between the colours
 // ---------------------------------------------------------------------------
 
-static dispatch_source_t blendTimer = NULL;
-static bool blendTimerRunning = false;
+// Fades are stepped at this rate rather than drawn at the display's: each
+// frame is a composite of the screen for WindowServer, and a smooth fade at
+// 120Hz cost it about twice the CPU (measured).
+#define FADE_RATE 60
 
-// A frame of the fades: each fading ring redrawn in its new colour.
-static void blendTick(void *unused) {
-    (void)unused;
-    double t = now();
-    bool any = false;
-    for (int i = 0; i < ringCount; i++) {
-        Ring *ring = &rings[i];
-        if (!ring->blending) continue;
-        double p = ring->duration > 0 ? (t - ring->start) / ring->duration : 1;
-        if (p >= 1) {
-            ring->blending = false;
-            ring->mix = ring->to;
-        } else {
-            ring->mix = ring->from + (ring->to - ring->from) * (float)p;
-            any = true;
-        }
-        if (ring->target && ring->drawn) draw(ring, false);
-    }
-    if (!any && blendTimerRunning) {
-        dispatch_suspend(blendTimer);
-        blendTimerRunning = false;
-    }
-}
-
+// Fades the ring from how it looks now to `to` over `duration` seconds.
 static void blend(Ring *ring, float to, double duration) {
-    if (!ring || (ring->mix == to && !ring->blending)) return;
-    ring->from = ring->mix;
+    if (!ring) return;
+    double t = now();
+    float from = mixAt(ring, t);
+    if (from == to && ring->to == to) return;
+    ring->from = from;
     ring->to = to;
-    ring->start = now();
+    ring->start = t;
     ring->duration = duration;
-    ring->blending = true;
-    if (duration <= 0) {
-        blendTick(NULL);
-        return;
+    beginChanges();
+    [ring->layer removeAllAnimations];
+    CGColorRef end = colorAt(to);
+    ring->layer.borderColor = end;
+    int steps = (int)ceil(duration * FADE_RATE);
+    if (steps > 1) {
+        NSMutableArray *values = [NSMutableArray arrayWithCapacity:steps];
+        for (int i = 1; i <= steps; i++) {
+            CGColorRef c = i == steps ? CGColorRetain(end) : colorAt(from + (to - from) * (float)i / steps);
+            [values addObject:(id)c];
+            CGColorRelease(c);
+        }
+        CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:@"borderColor"];
+        fade.values = values;
+        fade.calculationMode = kCAAnimationDiscrete;
+        fade.duration = duration;
+        [ring->layer addAnimation:fade forKey:@"fade"];
     }
-    if (!blendTimer) {
-        blendTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
-        dispatch_source_set_timer(blendTimer, DISPATCH_TIME_NOW, NSEC_PER_SEC / 60, NSEC_PER_SEC / 1000);
-        dispatch_source_set_event_handler_f(blendTimer, blendTick);
-    }
-    if (!blendTimerRunning) {
-        dispatch_resume(blendTimer);
-        blendTimerRunning = true;
-    }
+    CGColorRelease(end);
+    commitChanges();
 }
 
 // ---------------------------------------------------------------------------
@@ -811,8 +795,10 @@ static int l_active(lua_State *L) {
 static void releaseAll(void) {
     for (int i = 0; i < ringCount; i++) {
         freeRing(&rings[i]);
-        if (rings[i].ctx) CGContextRelease(rings[i].ctx);
         SLSReleaseWindow(drawCid, rings[i].wid);
+        [rings[i].layer release];
+        [rings[i].root release];
+        [rings[i].context release];
     }
     ringCount = 0;
 }
@@ -872,13 +858,6 @@ static int l_gc(lua_State *L) {
             releaseCheck = NULL;
             releaseCheckRunning = false;
         }
-        if (blendTimer) {
-            if (!blendTimerRunning) dispatch_resume(blendTimer); // can't cancel a suspended source
-            dispatch_source_cancel(blendTimer);
-            dispatch_release(blendTimer);
-            blendTimer = NULL;
-            blendTimerRunning = false;
-        }
         releaseAll();
         if (drain) {
             dispatch_source_cancel(drain);
@@ -898,7 +877,9 @@ int luaopen_wm_native_border(lua_State *L) {
 
     mainCid = SLSMainConnectionID();
     if (SLSNewConnection(0, &drawCid) != kCGErrorSuccess) return luaL_error(L, "wm.native.border: no WindowServer connection");
-    queue = dispatch_queue_create("wm.border", DISPATCH_QUEUE_SERIAL);
+    // Each block drains its own autorelease pool (CoreAnimation's objects).
+    queue = dispatch_queue_create("wm.border",
+        dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
     drainPort = MACH_PORT_NULL;
     if (SLSGetEventPort(drawCid, &drainPort) == kCGErrorSuccess && drainPort != MACH_PORT_NULL) {
         drain = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, drainPort, 0, queue);

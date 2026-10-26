@@ -219,7 +219,7 @@ function M.setup(opts)
                 S.intent = nil
                 local wanted = Util.winByID[intent.id]
                 if wanted and wanted:id() == intent.id then
-                    Util.focusWindow(wanted, Focus.covered(intent.id))
+                    Util.focusWindow(wanted, true)
                     Focus.invalidateWindowCache()
                     return
                 end

@@ -82,9 +82,9 @@ local function isEcho(id)
 end
 
 -- Whether a window of the same app is stacked above `id` and overlaps it,
--- from the last snapshot (no accessibility calls): only then does focusing
--- it need a raise. Disjoint tiles never do. Without a snapshot, floats are
--- raised and tiles aren't.
+-- from the last snapshot (no accessibility calls): then focusing it needs a
+-- raise. Disjoint tiles never do. Without a snapshot, floats are raised and
+-- tiles aren't.
 local function covered(id)
     local snapshot = S.ffmSnapshot
     if not snapshot then return S.autoFloat[id] == true end
@@ -114,9 +114,14 @@ local function request(win)
     local previous = S.requestedFocus
     if previous and previous ~= id then superseded[previous] = hs.timer.secondsSinceEpoch() end
     superseded[id] = nil
+    -- Between two windows of the app already in front, bringing the app to
+    -- the front changes nothing: only a raise makes it switch windows.
+    local from = S.ffmFocusedID
+    local pid = Util.pidByID[id]
+    local raise = covered(id) or (from ~= nil and from ~= id and pid ~= nil and Util.pidByID[from] == pid)
     noteFocus(win)
     S.requestedFocus = id
-    Util.focusWindow(win, covered(id))
+    Util.focusWindow(win, raise)
 end
 
 -- Focus a window on our own initiative.
