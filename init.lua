@@ -303,11 +303,24 @@ end
 hs.hotkey.bind({ "ctrl", "alt" }, "h", function() wm.gotoWorkspaceRelative(-1) end)
 hs.hotkey.bind({ "ctrl", "alt" }, "l", function() wm.gotoWorkspaceRelative(1) end)
 
--- SUPER+1..0: go to workspace; SUPER+Shift+1..0: move window there.
+-- SUPER+1..0: go to workspace; SUPER+Shift+1..0: move window there;
+-- Ctrl+SUPER+1..0: move it there without following.
 for i = 1, 10 do
 	local key = tostring(i % 10)
 	hs.hotkey.bind(SUPER, key, function() wm.gotoWorkspace(i) end)
 	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.moveToWorkspace(i) end)
+	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveToWorkspaceSilent(i) end)
+end
+
+-- SUPER+`: back to the previous workspace.
+hs.hotkey.bind(SUPER, "`", wm.gotoPreviousWorkspace)
+
+-- SUPER+,/.: focus the display to the left/right; SUPER+Shift+,/.: send
+-- the window there; Ctrl+SUPER+,/.: send the whole workspace there.
+for key, delta in pairs({ [","] = -1, ["."] = 1 }) do
+	hs.hotkey.bind(SUPER, key, function() wm.focusDisplay(delta) end)
+	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.moveToDisplay(delta) end)
+	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveWorkspaceToDisplay(delta) end)
 end
 
 -- ---------------------------------------------------------------------------

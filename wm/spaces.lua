@@ -58,6 +58,10 @@ local primaryUUID = nil
 local lastSwitch = 0
 S.lastGoneTime = 0
 
+-- The workspace the pointer's display showed before the last switch, for
+-- going back to it.
+local previous = nil
+
 -- hs.reload() is how this config reloads; anything else ending Hammerspoon
 -- brings the parked windows back (see unparkAll).
 local reloading = false
@@ -392,6 +396,7 @@ end
 -- Show workspace `n` on display `uuid` and focus it.
 local function switchTo(n, uuid)
     local pointer = pointerUUID()
+    if active[pointer] and active[pointer] ~= n then previous = active[pointer] end
     if active[uuid] ~= n then
         active[uuid] = n
         home[n] = uuid
@@ -460,6 +465,121 @@ function M.moveToWorkspace(n)
     end
     S.spaceFocusWin = win
     switchTo(n, to)
+end
+
+-- Move the focused window to a workspace without following it, like
+-- Hyprland's movetoworkspacesilent: focus stays on the workspace showing.
+function M.moveToWorkspaceSilent(n)
+    local win = Focus.currentWindow()
+    if not win then return end
+    refresh()
+    claimAll()
+
+    local id = win:id()
+    local current = of[id]
+    if current == n then return end
+    local from = (current and shown[current]) or pointerUUID()
+    if not home[n] then home[n] = from end
+    of[id] = n
+    if shown[n] then
+        if shown[n] ~= from then
+            pins[id] = hs.timer.secondsSinceEpoch() + 1
+            S.windowInfo[id] = nil
+            settle()
+            win:moveToScreen(connected[shown[n]], false, true, 0)
+        end
+    else
+        park(win, n)
+    end
+    save()
+    Layout.tileNow()
+    focusWorkspace(current or active[from], false, id)
+end
+
+-- Back to the workspace shown before the last switch.
+function M.gotoPreviousWorkspace()
+    if previous then M.gotoWorkspace(previous) end
+end
+
+-- The displays left to right (then top to bottom), and where `uuid` is
+-- among them.
+local function displaysInOrder(uuid)
+    local list = {}
+    for _, screen in pairs(connected) do list[#list + 1] = screen end
+    table.sort(list, function(a, b)
+        local af, bf = a:fullFrame(), b:fullFrame()
+        if af.x == bf.x then return af.y < bf.y end
+        return af.x < bf.x
+    end)
+    local at = 1
+    for i, screen in ipairs(list) do
+        list[i] = screen:getUUID()
+        if list[i] == uuid then at = i end
+    end
+    return list, at
+end
+
+-- The display of the focused window (else the pointer's), and the one
+-- `delta` places from it left to right, wrapping around; nil for that with
+-- one display.
+local function displayStep(delta)
+    refresh()
+    local win = Focus.currentWindow()
+    local n = win and of[win:id()]
+    local from = (n and shown[n]) or pointerUUID()
+    local list, at = displaysInOrder(from)
+    if #list < 2 then return from, nil end
+    return from, list[(at - 1 + delta) % #list + 1]
+end
+
+-- Focus the display `delta` places along (Hyprland's focusmonitor): its
+-- workspace's last used window, or the middle of an empty one.
+function M.focusDisplay(delta)
+    local _, to = displayStep(delta)
+    if to then focusWorkspace(active[to], true) end
+end
+
+-- Send the focused window to the workspace showing on the display `delta`
+-- places along, and follow it.
+function M.moveToDisplay(delta)
+    local _, to = displayStep(delta)
+    if to then M.moveToWorkspace(active[to]) end
+end
+
+-- Move the workspace showing on the focused display to the display `delta`
+-- places along (Hyprland's movecurrentworkspacetomonitor), windows and
+-- all. The display left behind shows another of its workspaces, or a new
+-- one; the one it goes to keeps its own for later.
+function M.moveWorkspaceToDisplay(delta)
+    local from, to = displayStep(delta)
+    if not to then return end
+    claimAll()
+    local n = active[from]
+    local replacement = nil
+    for m, uuid in pairs(home) do
+        if uuid == from and m ~= n and not shown[m] and (not replacement or m < replacement) then
+            replacement = m
+        end
+    end
+    home[n], active[to], active[from] = to, n, replacement
+    refresh()
+
+    local until_ = hs.timer.secondsSinceEpoch() + 1
+    settle()
+    for _, win in ipairs(Util.managedWindows()) do
+        local id = win:id()
+        if of[id] == n then
+            pins[id] = until_
+            S.windowInfo[id], S.applied[id] = nil, nil
+            win:moveToScreen(connected[to], false, true, 0)
+        end
+    end
+    lastSwitch = hs.timer.secondsSinceEpoch()
+    sync(false)
+    Layout.scheduleRetile(true)
+    focusWorkspace(n, true)
+    Hud.switched(to)
+    Hud.switched(from)
 end
 
 -- ---------------------------------------------------------------------------
