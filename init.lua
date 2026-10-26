@@ -479,11 +479,15 @@ end
 -- Config reload watcher + startup notification
 -- ---------------------------------------------------------------------------
 
+-- Config files and rebuilt native modules (`make -C wm/native` writes them
+-- one at a time, hence the wait), but not the tests.
 local configDir = hs.configdir .. "/"
+local reloadSoon = hs.timer.delayed.new(0.3, hs.reload)
 configWatcher = hs.pathwatcher.new(configDir, function(files)
 	for _, file in ipairs(files) do
-		if file:match("%.lua$") then
-			hs.reload()
+		local rel = file:sub(#configDir + 1)
+		if not rel:match("^tests/") and (rel:match("%.lua$") or rel:match("^wm/native/.*%.so$")) then
+			reloadSoon:start()
 			return
 		end
 	end
