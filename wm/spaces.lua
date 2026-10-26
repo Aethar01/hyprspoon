@@ -139,7 +139,7 @@ local function loadState()
         if tonumber(n) and tonumber(n) >= 1 then of[tonumber(id)] = tonumber(n) end
     end
     for id, f in pairs(saved.parked or {}) do
-        parked[tonumber(id)] = { x = f.x, y = f.y, w = f.w, h = f.h, resize = f.resize }
+        parked[tonumber(id)] = { x = f.x, y = f.y, w = f.w, h = f.h }
     end
 end
 
@@ -268,6 +268,9 @@ end
 
 -- Moves a window into its workspace's corner, remembering where it was the
 -- first time. Its tile is the frame when it has one (no accessibility read).
+-- Parking and unparking go through Util.setFrame like tiling does, so they
+-- replace a tiling animation still running (or queued for a busy app)
+-- instead of being undone by it when switching back and forth quickly.
 local function park(win, n)
     local id = win:id()
     local frame = parked[id]
@@ -281,7 +284,8 @@ local function park(win, n)
     S.windowInfo[id] = nil
     settle()
     Border.forget(id)
-    win:setTopLeft(parkPoint(displayOf(n), frame))
+    local p = parkPoint(displayOf(n), frame)
+    Util.setFrame(win, { x = p.x, y = p.y, w = frame.w, h = frame.h }, 0)
 end
 
 -- Puts a parked window back. Tiles are left to the retile that follows;
@@ -302,7 +306,7 @@ local function unpark(win)
         frame.y = sf.y + (sf.h - frame.h) / 2
     end
     settle()
-    if frame.resize then win:setFrame(frame, 0) else win:setTopLeft(frame) end
+    Util.setFrame(win, frame, 0)
 end
 
 -- Parks the windows of workspaces not showing and brings back the rest.
@@ -711,7 +715,7 @@ end
 -- Where a parked window goes back to (tiling turned off while it was parked).
 function M.setParkedFrame(id, frame)
     if not parked[id] then return end
-    parked[id] = { x = frame.x, y = frame.y, w = frame.w, h = frame.h, resize = true }
+    parked[id] = { x = frame.x, y = frame.y, w = frame.w, h = frame.h }
     save()
 end
 
