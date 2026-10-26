@@ -10,6 +10,7 @@
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "luacall.h"
 
@@ -202,6 +203,43 @@ static int l_forget(lua_State *L) {
     return 0;
 }
 
+static int number(CFDictionaryRef info, CFStringRef key, CFNumberType type, void *out) {
+    CFNumberRef n = CFDictionaryGetValue(info, key);
+    return n && CFNumberGetValue(n, type, out);
+}
+
+// topAt(x, y): the frontmost window on screen under the point, as its id,
+// its owner's pid and its level (0 for normal windows, 101 for menus).
+// Skips Hammerspoon's own (rings, highlights), invisible ones and the
+// cursor's. Nothing if there's none. One WindowServer query, ~1ms.
+static int l_topAt(lua_State *L) {
+    CGPoint p = { luaL_checknumber(L, 1), luaL_checknumber(L, 2) };
+    CFArrayRef list = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!list) return 0;
+    pid_t self = getpid();
+    int found = 0;
+    for (CFIndex i = 0; i < CFArrayGetCount(list) && !found; i++) {
+        CFDictionaryRef info = CFArrayGetValueAtIndex(list, i);
+        int32_t pid = 0, layer = 0, id = 0;
+        double alpha = 1;
+        CGRect bounds;
+        CFDictionaryRef b = CFDictionaryGetValue(info, kCGWindowBounds);
+        if (!number(info, kCGWindowOwnerPID, kCFNumberSInt32Type, &pid) || pid == self) continue;
+        number(info, kCGWindowLayer, kCFNumberSInt32Type, &layer);
+        number(info, kCGWindowAlpha, kCFNumberDoubleType, &alpha);
+        number(info, kCGWindowNumber, kCFNumberSInt32Type, &id);
+        if (alpha <= 0 || layer >= kCGScreenSaverWindowLevel) continue;
+        if (!b || !CGRectMakeWithDictionaryRepresentation(b, &bounds) || !inside(p, bounds)) continue;
+        lua_pushinteger(L, id);
+        lua_pushinteger(L, pid);
+        lua_pushinteger(L, layer);
+        found = 3;
+    }
+    CFRelease(list);
+    return found;
+}
+
 static int l_stop(lua_State *L) {
     (void)L;
     stop();
@@ -220,6 +258,7 @@ int luaopen_wm_native_hover(lua_State *L) {
         { "snapshot", l_snapshot },
         { "invalidate", l_invalidate },
         { "forget", l_forget },
+        { "topAt", l_topAt },
         { "stop", l_stop },
         { NULL, NULL },
     };
