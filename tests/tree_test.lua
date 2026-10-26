@@ -181,6 +181,56 @@ test("findByID, rectFor and maximized tiles", function()
     tree.a.fullRect = nil
 end)
 
+test("a window set aside goes back to its slot", function()
+    -- 1 | (2 over 3): 2 leaves, then comes back on top of 3.
+    local tree = split("vertical", leaf(1), split("horizontal", leaf(2), leaf(3), 0.3), 0.6)
+    local slot = Tree.slotOf(tree, 2)
+    assert(slot.split == "horizontal" and slot.branch == "a" and slot.ratio == 0.3)
+    tree = Tree.removeID(tree, 2)
+    local inserted
+    tree, inserted = Tree.insertSlot(tree, 2, slot)
+    assert(inserted and tree.ratio == 0.6 and tree.a.windowID == 1)
+    assert(tree.b.split == "horizontal" and tree.b.ratio == 0.3)
+    assert(tree.b.a.windowID == 2 and tree.b.b.windowID == 3)
+
+    -- Beside a whole subtree: 1 | (2 over 3), 1 leaves.
+    tree = split("vertical", leaf(1), split("horizontal", leaf(2), leaf(3)), 0.4)
+    slot = Tree.slotOf(tree, 1)
+    tree = Tree.removeID(tree, 1)
+    tree = Tree.insertSlot(tree, 1, slot)
+    assert(tree.split == "vertical" and tree.ratio == 0.4 and tree.a.windowID == 1)
+    assert(tree.b.a.windowID == 2 and tree.b.b.windowID == 3)
+
+    assert(Tree.slotOf(leaf(1), 1) == nil, "alone, there's no slot")
+end)
+
+test("slots taken in turn go back in reverse", function()
+    -- 1 | (2 over 3): 2 leaves, then 3; back in the other order.
+    local tree = split("vertical", leaf(1), split("horizontal", leaf(2), leaf(3), 0.3), 0.6)
+    local slot2 = Tree.slotOf(tree, 2)
+    tree = Tree.removeID(tree, 2)
+    local slot3 = Tree.slotOf(tree, 3)
+    tree = Tree.removeID(tree, 3)
+    tree = Tree.insertSlot(tree, 3, slot3)
+    tree = Tree.insertSlot(tree, 2, slot2)
+    assert(tree.ratio == 0.6 and tree.a.windowID == 1 and tree.b.ratio == 0.3)
+    assert(tree.b.a.windowID == 2 and tree.b.b.windowID == 3)
+end)
+
+test("no slot once its neighbours have been rearranged", function()
+    local tree = split("vertical", leaf(1), split("horizontal", leaf(2), leaf(3)))
+    local slot = Tree.slotOf(tree, 1)
+    -- 2 and 3 now each sit beside a newcomer, 4.
+    tree = split("vertical", split("horizontal", leaf(2), leaf(4)), leaf(3))
+    local _, inserted = Tree.insertSlot(tree, 1, slot)
+    assert(not inserted)
+    -- Its sibling gone altogether.
+    _, inserted = Tree.insertSlot(leaf(5), 1, slot)
+    assert(not inserted)
+    _, inserted = Tree.insertSlot(nil, 1, slot)
+    assert(not inserted)
+end)
+
 test("workspaces with tiling off have no tiles", function()
     S.trees = { ws1 = split("vertical", leaf(1), leaf(2)), ws2 = leaf(3) }
     S.keyIndex = {}

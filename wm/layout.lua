@@ -99,6 +99,17 @@ local signatures = {}
 
 local pendingRefocus = nil -- window id to focus once the next retile is done
 
+-- Window id -> { key =, seq =, slot = (Tree.slotOf) }: where a window that
+-- went full screen or to another Space sat, to go back to on its return.
+S.slots = {}
+local slotSeq = 0
+
+local function rememberSlot(key, tree, id)
+    local slot = Tree.slotOf(tree, id)
+    slotSeq = slotSeq + 1
+    S.slots[id] = slot and { key = key, seq = slotSeq, slot = slot } or nil
+end
+
 -- Where the next new window goes, chosen ahead (like bspwm's preselection):
 -- { id = tiled window, side = "left"/"right"/"top"/"bottom", key = its
 -- tree }, shown by a highlight over that half of the tile until used.
@@ -205,8 +216,45 @@ local function reconcileTree(key, windows)
         end
     end
 
-    local tree = Restore.rebuild(key, Tree.prune(previous, valid), valid)
+    -- Windows leaving for another macOS Space (full screen) remember their
+    -- slots, taken out one at a time after the closed ones so that putting
+    -- them back in reverse undoes it.
+    local away = {}
+    for id in pairs(before) do
+        if not valid[id] and (S.fullscreen[id] or S.offSpace[id]) then away[#away + 1] = id end
+    end
+    local keep = valid
+    if #away > 0 then
+        table.sort(away)
+        keep = {}
+        for id in pairs(valid) do keep[id] = true end
+        for _, id in ipairs(away) do keep[id] = true end
+    end
+    previous = Tree.prune(previous, keep)
+    for _, id in ipairs(away) do
+        rememberSlot(key, previous, id)
+        previous = Tree.removeID(previous, id)
+    end
+
+    local tree = Restore.rebuild(key, previous, valid)
     local present = Tree.collectIDs(tree)
+
+    -- Windows back from another Space return to their slots, latest first.
+    local returning = {}
+    for _, win in ipairs(windows) do
+        local id = win:id()
+        local s = S.slots[id]
+        if s and not present[id] then
+            S.slots[id] = nil
+            if s.key == key then returning[#returning + 1] = { id = id, seq = s.seq, slot = s.slot } end
+        end
+    end
+    table.sort(returning, function(a, b) return a.seq > b.seq end)
+    for _, r in ipairs(returning) do
+        local inserted
+        tree, inserted = Tree.insertSlot(tree, r.id, r.slot)
+        if inserted then present[r.id] = true end
+    end
 
     for _, win in ipairs(windows) do
         local id = win:id()
@@ -569,6 +617,19 @@ local function scheduleRetile(force, immediate, delay)
     retileTimer = hs.timer.doAfter(math.max(0, due - now), retileFlush)
 end
 
+-- Takes a window going full screen out of its layout, remembering its
+-- slot. The other tiles stay put: they aren't on the full-screen Space, so
+-- nothing lays them out again before it comes back.
+local function setAside(id)
+    local _, _, key = Tree.findByID(id)
+    if not key then return end
+    rememberSlot(key, S.trees[key], id)
+    S.trees[key] = Tree.removeID(S.trees[key], id)
+    S.keyIndex = {}
+    signatures[key] = nil
+    Tree.saveTrees()
+end
+
 -- Apps update their window lists a little after the events that announce a
 -- change (notably native tabs opening and closing), so look again shortly
 -- after windows come or go. Skipped by the signature check when nothing
@@ -698,6 +759,7 @@ M.BSP_TAB_SETTLE = BSP_TAB_SETTLE
 M.BSP_SETTLE = BSP_SETTLE
 M.scheduleRetile = scheduleRetile
 M.scheduleRecheck = scheduleRecheck
+M.setAside = setAside
 M.restoreFloatingFrames = restoreFloatingFrames
 M.locate = locate
 M.toggleMaximized = toggleMaximized

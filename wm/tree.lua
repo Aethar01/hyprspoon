@@ -285,6 +285,59 @@ local function ancestors(node, windowID)
     return nil
 end
 
+-- Where a window sits, for putting it back later with insertSlot: its
+-- parent split, the branch it's on and the windows on the other branch.
+-- nil when it's alone in the tree (or not in it).
+local function slotOf(node, windowID)
+    local path = ancestors(node, windowID)
+    local step = path and path[1]
+    if not step then return nil end
+    return {
+        split = step.node.split,
+        ratio = step.node.ratio,
+        branch = step.branch,
+        siblings = collectIDs(step.node[step.branch == "a" and "b" or "a"]),
+    }
+end
+
+-- Puts `newID` back in a slot from slotOf: split against the subtree that
+-- holds exactly the slot's siblings still in the tree. Returns the tree and
+-- whether it went in (not when those windows have been split up or joined
+-- by others since).
+local function insertSlot(node, newID, slot)
+    local present = collectIDs(node)
+    local want, count = {}, 0
+    for id in pairs(slot.siblings) do
+        if present[id] then want[id], count = true, count + 1 end
+    end
+    if count == 0 then return node, false end
+
+    local function place(n)
+        local ids, size, inside = collectIDs(n), 0, true
+        for id in pairs(ids) do
+            size = size + 1
+            if not want[id] then inside = false end
+        end
+        if inside and size == count then
+            local newLeaf = bspLeaf(newID)
+            local first = slot.branch == "a"
+            return {
+                split = slot.split,
+                ratio = slot.ratio,
+                a = first and newLeaf or n,
+                b = first and n or newLeaf,
+            }, true
+        end
+        if isLeaf(n) then return n, false end
+        local replaced, inserted = place(n.a)
+        if inserted then n.a = replaced return n, true end
+        replaced, inserted = place(n.b)
+        if inserted then n.b = replaced end
+        return n, inserted
+    end
+    return place(node)
+end
+
 -- The tree key of the workspace showing on a screen ("ws<number>").
 local function keyForScreen(screen)
     return Spaces.keyForUUID(screen:getUUID())
@@ -476,6 +529,8 @@ M.nearestSide = nearestSide
 M.removeID = removeID
 M.swapIDs = swapIDs
 M.ancestors = ancestors
+M.slotOf = slotOf
+M.insertSlot = insertSlot
 M.keyForScreen = keyForScreen
 M.keyUUID = keyUUID
 M.findByID = findByID

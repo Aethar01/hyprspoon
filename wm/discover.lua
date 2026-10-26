@@ -15,6 +15,14 @@ local Spaces = require("wm.spaces")
 -- changes drop everything).
 S.windowInfo = {}
 
+-- Windows known to be full screen (window id -> true), from the filter's
+-- events and these lookups: by the time the filter reports a window leaving
+-- its full-screen Space, the window no longer says it's full screen.
+S.fullscreen = {}
+
+-- Windows the filter last reported as off the current macOS Space.
+S.offSpace = {}
+
 -- The rect each window was last laid out to ("x,y,w,h"). A window known to be
 -- in place isn't asked for its frame again; entries are dropped when the
 -- window moves on its own (windowMoved outside our settle period), when the
@@ -95,6 +103,7 @@ local function windowInfoFor(win)
     if info then return info end
     local screen = win:screen()
     info = { uuid = screen and screen:getUUID(), full = win:isFullScreen() }
+    S.fullscreen[id] = info.full or nil
     -- A window with no screen yet (still being created) isn't cached.
     if info.uuid then S.windowInfo[id] = info end
     return info

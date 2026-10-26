@@ -295,6 +295,7 @@ function M.setup(opts)
         local id = win and win:id()
         if id then
             Discover.cancelLayoutCheck(id)
+            S.fullscreen[id], S.offSpace[id], S.slots[id] = nil, nil, nil
             Spaces.forget(id)
             Float.forgetFloat(id)
             Util.windowKinds[id] = nil
@@ -327,6 +328,8 @@ function M.setup(opts)
         Util.forgetManagedWindows()
         if win then
             S.windowInfo[win:id()] = nil
+            if event == hs.window.filter.windowInCurrentSpace then S.offSpace[win:id()] = nil end
+            if event == hs.window.filter.windowUnfullscreened then S.fullscreen[win:id()] = nil end
             -- Windows of a hidden app come back where they were: parked if
             -- their workspace has been left since.
             Spaces.place(win)
@@ -357,12 +360,20 @@ function M.setup(opts)
         Util.forgetManagedWindows()
         S.lastGoneTime = hs.timer.secondsSinceEpoch()
         if win then
-            S.windowInfo[win:id()] = nil
+            local id = win:id()
+            S.windowInfo[id] = nil
+            if event == hs.window.filter.windowFullscreened then S.fullscreen[id] = true end
+            if event == hs.window.filter.windowNotInCurrentSpace then
+                S.offSpace[id] = true
+                -- Going into full screen (already saying so).
+                if win:isFullScreen() then S.fullscreen[id] = true end
+            end
+            if S.fullscreen[id] then Layout.setAside(id) end
             -- Back from the Dock or full screen, a window joins the workspace
             -- showing then.
             if event == hs.window.filter.windowMinimized
                or event == hs.window.filter.windowFullscreened then
-                Spaces.forget(win:id())
+                Spaces.forget(id)
             end
             -- Not a tab swap: the new tab's focus moves the ring without a fade.
             if event ~= hs.window.filter.windowNotInCurrentSpace then Border.forget(win:id()) end
