@@ -43,7 +43,7 @@ local function layout(list, size, pill)
     local row = { cells = {}, h = pill, size = size, font = font }
     local x = 0
     for i, entry in ipairs(list) do
-        local text = hs.drawing.getTextDrawingSize(tostring(entry.n), { font = font, size = size })
+        local text = hs.drawing.getTextDrawingSize(Spaces.label(entry.n), { font = font, size = size })
         local w = math.max(pill, math.ceil(text.w) + 2 * pad)
         row.cells[i] = { entry = entry, x = x, w = w, textH = math.ceil(text.h) }
         x = x + w + gap
@@ -69,7 +69,7 @@ local function drawRow(canvas, row, x0, y0, colors, current)
         end
         local color = inPill and colors.pillText or colors.text
         canvas:appendElements({
-            type = "text", text = tostring(entry.n),
+            type = "text", text = Spaces.label(entry.n),
             textFont = row.font, textSize = row.size,
             textAlignment = "center",
             textColor = { white = color and color.white or 0,

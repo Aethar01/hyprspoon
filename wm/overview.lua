@@ -82,7 +82,7 @@ local function draw(screen, list)
         local cellID = "ws" .. ws.n
         targets[cellID] = { n = ws.n }
         canvas:appendElements({
-            type = "text", text = tostring(ws.n),
+            type = "text", text = Spaces.label(ws.n),
             textSize = 18, textColor = { white = 1, alpha = ws.showing and 1 or 0.6 },
             frame = { x = cx, y = cy - LABEL, w = cellW, h = LABEL },
         }, {
