@@ -330,6 +330,13 @@ function M.setup(opts)
             S.windowInfo[win:id()] = nil
             if event == hs.window.filter.windowInCurrentSpace then S.offSpace[win:id()] = nil end
             if event == hs.window.filter.windowUnfullscreened then S.fullscreen[win:id()] = nil end
+            -- Back from full screen with focus, so no focus event comes to
+            -- light its ring again (it arrives on the desktop's Space first).
+            if (event == hs.window.filter.windowInCurrentSpace
+                or event == hs.window.filter.windowUnfullscreened)
+               and Util.focusHistory[1] == win:id() and not win:isFullScreen() then
+                Border.focused(win)
+            end
             -- Windows of a hidden app come back where they were: parked if
             -- their workspace has been left since.
             Spaces.place(win)
