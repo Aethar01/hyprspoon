@@ -13,7 +13,9 @@
 //
 // Requests for a window coalesce: one still waiting is replaced by the next,
 // and an animation still running stops for it, so an app that can't keep up
-// skips to the latest frame instead of falling behind.
+// skips to the latest frame instead of falling behind. An app's windows
+// animate together, a step of each per frame: one at a time, a retile
+// moved a terminal's other windows first and the focused one last.
 
 #include <dispatch/dispatch.h>
 #include <errno.h>
@@ -41,10 +43,11 @@ static double now(void) {
 // makes them) and the app's queue (which carries them out).
 typedef struct {
     uint32_t wid;
+    pid_t pid;
     CGRect target;
     double duration;
     uint64_t generation; // bumped by each request
-    bool queued;         // a run for this window is on the app's queue
+    bool pending;        // not yet taken up by the app's loop
     bool sole;           // see framesSet
     CGRect given;        // the frame last applied
     bool haveGiven;
@@ -72,7 +75,7 @@ static Request *requestFor(uint32_t wid, bool create) {
     }
     // Full: take over one that's done.
     for (int i = 0; i < requestCount; i++) {
-        if (!requests[i].queued) {
+        if (!requests[i].pending) {
             memset(&requests[i], 0, sizeof(requests[i]));
             requests[i].wid = wid;
             return &requests[i];
@@ -99,10 +102,11 @@ typedef struct {
     // Used on the queue only.
     AXUIElementRef element;
     CFMutableDictionaryRef windows; // window id (CFNumber) -> AXUIElementRef
-    // The window to raise, under requestsLock: only the latest raise asked
-    // for runs (see framesRaise).
+    // Under requestsLock: the window to raise (only the latest raise asked
+    // for runs, see framesRaise), and whether the app's loop is on its queue.
     uint32_t raise;
     bool raiseQueued;
+    bool running;
 } App;
 
 #define MAX_APPS 64
@@ -243,41 +247,32 @@ static void applyFrame(AXUIElementRef win, CGRect f, CGRect from) {
     }
 }
 
+// A window easing towards its target, in its app's loop.
 typedef struct {
-    App *app;
     uint32_t wid;
-} Run;
+    AXUIElementRef win; // retained: the app's window table may drop it
+    CGRect from, target;
+    double start, duration;
+    uint64_t generation;
+} Animation;
 
-static void run(void *context) {
-    Run job = *(Run *)context;
-    free(context);
+// A request taken up by the app's loop.
+typedef struct {
+    uint32_t wid;
+    CGRect target, given;
+    double duration;
+    uint64_t generation;
+    bool known;
+} Taken;
 
-    os_unfair_lock_lock(&requestsLock);
-    Request *r = requestFor(job.wid, false);
-    if (!r) {
-        os_unfair_lock_unlock(&requestsLock);
-        return;
-    }
-    r->queued = false;
-    CGRect target = r->target;
-    double duration = r->duration;
-    uint64_t generation = r->generation;
-    bool known = r->sole && r->haveGiven && duration <= 0;
-    CGRect given = r->given;
-    os_unfair_lock_unlock(&requestsLock);
-    if (atomic_load(&stopping)) return;
+#define MAX_ANIMATIONS 64
 
-    App *app = job.app;
-    AXUIElementRef win = windowElement(app, job.wid);
-    if (!win) return;
-    CGRect from = given;
-    if (!known) {
-        if (!readFrame(win, &from)) {
-            forgetWindow(app, job.wid);
-            return;
-        }
-    }
+static void removeAnimation(Animation *anims, int *count, int i) {
+    CFRelease(anims[i].win);
+    anims[i] = anims[--*count];
+}
 
+static bool enhancedOff(App *app) {
     // With this on (VoiceOver, some automation tools), apps animate every
     // frame change themselves.
     CFTypeRef enhanced = NULL;
@@ -285,53 +280,132 @@ static void run(void *context) {
             == kAXErrorSuccess && enhanced == kCFBooleanTrue;
     if (enhanced) CFRelease(enhanced);
     if (restore) AXUIElementSetAttributeValue(app->element, CFSTR("AXEnhancedUserInterface"), kCFBooleanFalse);
+    return restore;
+}
 
-    bool superseded = false;
-    if (duration > 0 && !CGRectEqualToRect(from, target)) {
-        double start = now();
-        const double step = 1.0 / 60;
-        for (int i = 1;; i++) {
-            if (atomic_load(&stopping) || generationOf(job.wid) != generation) {
-                superseded = true;
-                break;
-            }
-            double p = (now() - start) / duration;
-            if (p >= 1) break;
-            double e = 1 - (1 - p) * (1 - p);
-            CGRect f = {
-                { from.origin.x + (target.origin.x - from.origin.x) * e,
-                  from.origin.y + (target.origin.y - from.origin.y) * e },
-                { from.size.width + (target.size.width - from.size.width) * e,
-                  from.size.height + (target.size.height - from.size.height) * e },
-            };
-            setPosition(win, f.origin);
-            setSize(win, f.size);
-            double wait = start + i * step - now();
-            if (wait > 0) usleep((useconds_t)(wait * 1e6));
-        }
-        // The steps went through every intermediate frame: finish as a full set.
-        from = CGRectNull;
+static void noteGiven(uint32_t wid, uint64_t generation, CGRect target) {
+    os_unfair_lock_lock(&requestsLock);
+    Request *r = requestFor(wid, false);
+    if (r && r->generation == generation) {
+        r->given = target;
+        r->haveGiven = true;
     }
-    if (!superseded) {
-        if (CGRectIsNull(from)) {
-            setSize(win, target.size);
-            setPosition(win, target.origin);
-            setSize(win, target.size);
-        } else {
-            applyFrame(win, target, from);
-        }
-    }
+    os_unfair_lock_unlock(&requestsLock);
+}
 
-    if (restore) AXUIElementSetAttributeValue(app->element, CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
-    if (!superseded) {
+// An app's queue runs this while it has anything to do: it takes up new
+// requests and raises, and steps every animation of the app's windows
+// each frame, until all are done.
+static void appLoop(void *context) {
+    App *app = context;
+    Animation anims[MAX_ANIMATIONS];
+    int animCount = 0;
+    Taken taken[MAX_ANIMATIONS];
+    bool restore = false, checkedEnhanced = false;
+    const double step = 1.0 / 60;
+    double tick = now();
+
+    for (;;) {
+        int takenCount = 0;
         os_unfair_lock_lock(&requestsLock);
-        Request *done = requestFor(job.wid, false);
-        if (done) {
-            done->given = target;
-            done->haveGiven = true;
+        bool stop = atomic_load(&stopping);
+        for (int i = 0; i < requestCount && takenCount < MAX_ANIMATIONS && !stop; i++) {
+            Request *r = &requests[i];
+            if (!r->pending || r->pid != app->pid) continue;
+            r->pending = false;
+            taken[takenCount++] = (Taken){ r->wid, r->target, r->given, r->duration, r->generation,
+                r->sole && r->haveGiven && r->duration <= 0 };
+        }
+        bool raise = app->raiseQueued && !stop;
+        uint32_t raiseWid = app->raise;
+        app->raiseQueued = false;
+        if (stop || (takenCount == 0 && animCount == 0 && !raise)) {
+            app->running = false;
+            os_unfair_lock_unlock(&requestsLock);
+            break;
         }
         os_unfair_lock_unlock(&requestsLock);
+
+        if (raise) {
+            AXUIElementRef win = windowElement(app, raiseWid);
+            if (win) AXUIElementPerformAction(win, kAXRaiseAction);
+        }
+
+        for (int i = 0; i < takenCount; i++) {
+            Taken *t = &taken[i];
+            // A newer request for a window mid-animation takes over from
+            // wherever the window is now.
+            for (int j = 0; j < animCount; j++) {
+                if (anims[j].wid == t->wid) removeAnimation(anims, &animCount, j--);
+            }
+            AXUIElementRef win = windowElement(app, t->wid);
+            if (!win) continue;
+            if (!checkedEnhanced) {
+                restore = enhancedOff(app);
+                checkedEnhanced = true;
+            }
+            CGRect from = t->given;
+            if (!t->known && !readFrame(win, &from)) {
+                forgetWindow(app, t->wid);
+                continue;
+            }
+            if (t->duration > 0 && !CGRectEqualToRect(from, t->target) && animCount < MAX_ANIMATIONS) {
+                if (animCount == 0) tick = now();
+                CFRetain(win);
+                anims[animCount++] = (Animation){ t->wid, win, from, t->target, now(), t->duration, t->generation };
+            } else {
+                applyFrame(win, t->target, from);
+                noteGiven(t->wid, t->generation, t->target);
+            }
+        }
+
+        double t = now();
+        for (int i = 0; i < animCount; i++) {
+            Animation *a = &anims[i];
+            // Replaced: the new request is taken up on the next pass.
+            if (generationOf(a->wid) != a->generation) {
+                removeAnimation(anims, &animCount, i--);
+                continue;
+            }
+            double p = (t - a->start) / a->duration;
+            if (p >= 1) {
+                // The steps went through every intermediate frame: finish
+                // as a full set.
+                setSize(a->win, a->target.size);
+                setPosition(a->win, a->target.origin);
+                setSize(a->win, a->target.size);
+                noteGiven(a->wid, a->generation, a->target);
+                removeAnimation(anims, &animCount, i--);
+                continue;
+            }
+            double e = 1 - (1 - p) * (1 - p);
+            CGRect f = {
+                { a->from.origin.x + (a->target.origin.x - a->from.origin.x) * e,
+                  a->from.origin.y + (a->target.origin.y - a->from.origin.y) * e },
+                { a->from.size.width + (a->target.size.width - a->from.size.width) * e,
+                  a->from.size.height + (a->target.size.height - a->from.size.height) * e },
+            };
+            setPosition(a->win, f.origin);
+            setSize(a->win, f.size);
+        }
+
+        if (animCount > 0) {
+            tick += step;
+            double wait = tick - now();
+            if (wait > 0) usleep((useconds_t)(wait * 1e6));
+            else tick = now(); // the app is slower than the frame rate
+        }
     }
+
+    while (animCount > 0) removeAnimation(anims, &animCount, 0);
+    if (restore) AXUIElementSetAttributeValue(app->element, CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
+}
+
+// With requestsLock held: true if the app's loop must be put on its queue.
+static bool wake(App *app) {
+    if (app->running) return false;
+    app->running = true;
+    return true;
 }
 
 void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sole) {
@@ -339,21 +413,18 @@ void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sol
     if (!app) return;
     os_unfair_lock_lock(&requestsLock);
     Request *r = requestFor(wid, true);
-    bool enqueue = false;
+    bool start = false;
     if (r) {
+        r->pid = pid;
         r->target = target;
         r->duration = duration;
         r->sole = sole;
         r->generation++;
-        enqueue = !r->queued;
-        r->queued = true;
+        r->pending = true;
+        start = wake(app);
     }
     os_unfair_lock_unlock(&requestsLock);
-    if (!enqueue) return;
-    Run *job = malloc(sizeof(Run));
-    job->app = app;
-    job->wid = wid;
-    dispatch_async_f(app->queue, job, run);
+    if (start) dispatch_async_f(app->queue, app, appLoop);
 }
 
 // Raising waits for the app, which can take a busy app (a terminal
@@ -362,26 +433,15 @@ void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sol
 // (7s of every 20 measured), and every other accessibility call to it,
 // Hammerspoon's main thread's included, waited behind them. So a raise
 // still waiting is replaced by the next one for the same app.
-static void raiseWindow(void *context) {
-    App *app = context;
-    os_unfair_lock_lock(&requestsLock);
-    uint32_t wid = app->raise;
-    app->raiseQueued = false;
-    os_unfair_lock_unlock(&requestsLock);
-    if (atomic_load(&stopping)) return;
-    AXUIElementRef win = windowElement(app, wid);
-    if (win) AXUIElementPerformAction(win, kAXRaiseAction);
-}
-
 void framesRaise(pid_t pid, uint32_t wid) {
     App *app = appFor(pid, true);
     if (!app) return;
     os_unfair_lock_lock(&requestsLock);
     app->raise = wid;
-    bool enqueue = !app->raiseQueued;
     app->raiseQueued = true;
+    bool start = wake(app);
     os_unfair_lock_unlock(&requestsLock);
-    if (enqueue) dispatch_async_f(app->queue, app, raiseWindow);
+    if (start) dispatch_async_f(app->queue, app, appLoop);
 }
 
 static void nothing(void *context) {

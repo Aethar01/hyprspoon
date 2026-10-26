@@ -21,6 +21,8 @@ local Spaces -- required last: it loads modules that read M.bootTime at load
 -- ones are pruned when the tree is reconciled).
 local TREES_KEY = "bspTrees"
 local TREES_BOOT_KEY = "bspTreesBoot"
+local MAXIMIZED_KEY = "bspMaximized"
+local UNTILED_KEY = "bspUntiledWorkspaces"
 local bootTime = tonumber(
     (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 
@@ -28,11 +30,23 @@ local bootTime = tonumber(
 -- reused by unrelated windows, so saved trees are discarded. So are trees
 -- from before workspaces were our own (keyed by display and macOS Space).
 S.trees = {}
+-- Tree key -> the window filling that workspace's whole tiling area, over
+-- the other tiles (which keep their places underneath).
+S.maximized = {}
+-- Tree keys of workspaces whose windows float while tiling is on. Their
+-- trees are kept (and ignored) for when tiling comes back.
+S.untiled = {}
 do
     local savedBoot = hs.settings.get(TREES_BOOT_KEY)
     if type(savedBoot) == "number" and math.abs(savedBoot - bootTime) < 120 then
         for key, tree in pairs(hs.settings.get(TREES_KEY) or {}) do
             if key:match("^ws%d+$") then S.trees[key] = tree end
+        end
+        for key, id in pairs(hs.settings.get(MAXIMIZED_KEY) or {}) do
+            if key:match("^ws%d+$") then S.maximized[key] = id end
+        end
+        for key in pairs(hs.settings.get(UNTILED_KEY) or {}) do
+            if key:match("^ws%d+$") then S.untiled[key] = true end
         end
     end
 end
@@ -58,10 +72,15 @@ local function saveTreesNow()
     for key, tree in pairs(S.trees) do
         out[key] = stripTree(tree)
     end
-    local encoded = hs.json.encode(out)
+    local maximized, untiled = {}, {}
+    for key, id in pairs(S.maximized) do maximized[key] = id end
+    for key in pairs(S.untiled) do untiled[key] = true end
+    local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled })
     if encoded == savedTrees then return end
     savedTrees = encoded
     hs.settings.set(TREES_KEY, out)
+    hs.settings.set(MAXIMIZED_KEY, maximized)
+    hs.settings.set(UNTILED_KEY, untiled)
     hs.settings.set(TREES_BOOT_KEY, bootTime)
 end
 
@@ -284,18 +303,20 @@ S.keyIndex = {}
 -- Where a window sits in the trees, by id (no accessibility calls): the path
 -- of splits above it, its leaf and its tree key. If a stale tree still holds
 -- it (e.g. an emptied display that was never reconciled), the tree for an
--- active Space wins.
+-- active Space wins. Workspaces with tiling off have no tiles.
 local function findByID(windowID)
     if not windowID then return nil end
     local cachedKey = S.keyIndex[windowID]
-    if cachedKey and S.trees[cachedKey] then
+    if cachedKey and S.trees[cachedKey] and not S.untiled[cachedKey] then
         local path, leaf = ancestors(S.trees[cachedKey], windowID)
         if path then return path, leaf, cachedKey end
     end
     local found = {}
     for key, tree in pairs(S.trees) do
-        local path, leaf = ancestors(tree, windowID)
-        if path then found[#found + 1] = { path = path, leaf = leaf, key = key } end
+        if not S.untiled[key] then
+            local path, leaf = ancestors(tree, windowID)
+            if path then found[#found + 1] = { path = path, leaf = leaf, key = key } end
+        end
     end
     local f = found[1]
     if #found > 1 then
@@ -316,10 +337,19 @@ end
 
 -- Floats are never tiles, even while a tree that hasn't been reconciled
 -- since they started floating still holds them.
+-- A maximized tile's is the area it fills.
 local function rectFor(windowID)
     if not S.tilingEnabled or S.autoFloat[windowID] then return nil end
     local _, leaf = findByID(windowID)
-    return leaf and leaf.rect
+    return leaf and (leaf.fullRect or leaf.rect)
+end
+
+-- Whether a tile is out of sight under its workspace's maximized window.
+local function behindMaximized(windowID)
+    if not S.tilingEnabled or next(S.maximized) == nil or S.autoFloat[windowID] then return false end
+    local _, _, key = findByID(windowID)
+    local maxID = key and S.maximized[key]
+    return maxID ~= nil and maxID ~= windowID
 end
 
 -- Nearest split of the given orientation with the window on the given
@@ -385,6 +415,40 @@ local function moveSplit(node, edge, pos)
 end
 
 
+-- Every split back to halves.
+local function balance(node)
+    if not node or isLeaf(node) then return end
+    node.ratio = 0.5
+    balance(node.a)
+    balance(node.b)
+end
+
+-- The layout turned a quarter clockwise: left/right splits become
+-- top/bottom ones, and top/bottom ones right/left.
+local function rotate(node)
+    if not node or isLeaf(node) then return end
+    if node.split == "vertical" then
+        node.split = "horizontal"
+    else
+        node.split = "vertical"
+        node.a, node.b = node.b, node.a
+        node.ratio = 1 - (node.ratio or 0.5)
+    end
+    rotate(node.a)
+    rotate(node.b)
+end
+
+-- The layout mirrored left to right.
+local function mirror(node)
+    if not node or isLeaf(node) then return end
+    if node.split == "vertical" then
+        node.a, node.b = node.b, node.a
+        node.ratio = 1 - (node.ratio or 0.5)
+    end
+    mirror(node.a)
+    mirror(node.b)
+end
+
 -- Flushes a pending debounced save (reload, shutdown).
 local function stop()
     if saveTimer then
@@ -396,6 +460,7 @@ end
 
 M.stop = stop
 M.rectFor = rectFor
+M.behindMaximized = behindMaximized
 M.bootTime = bootTime
 M.saveTreesNow = saveTreesNow
 M.saveTrees = saveTrees
@@ -416,6 +481,9 @@ M.keyUUID = keyUUID
 M.findByID = findByID
 M.boundingSplit = boundingSplit
 M.moveSplit = moveSplit
+M.balance = balance
+M.rotate = rotate
+M.mirror = mirror
 
 Spaces = require("wm.spaces")
 

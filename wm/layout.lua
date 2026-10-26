@@ -10,6 +10,9 @@ local Float = require("wm.float")
 local Focus = require("wm.focus")
 local Discover = require("wm.discover")
 local Spaces = require("wm.spaces")
+local Border = require("wm.border")
+local Drop = require("wm.drop")
+local Restore = require("wm.restore")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -96,6 +99,30 @@ local signatures = {}
 
 local pendingRefocus = nil -- window id to focus once the next retile is done
 
+-- Where the next new window goes, chosen ahead (like bspwm's preselection):
+-- { id = tiled window, side = "left"/"right"/"top"/"bottom", key = its
+-- tree }, shown by a highlight over that half of the tile until used.
+S.presel = nil
+local preselCanvas = nil
+
+-- Shows the preselection where its tile is now, or drops it once its
+-- window has left the tree or the workspace isn't showing.
+local function showPresel()
+    local p = S.presel
+    local leaf, key
+    if p then _, leaf, key = Tree.findByID(p.id) end
+    if p and (key ~= p.key or not leaf.rect or Spaces.isHidden(p.id)) then
+        S.presel, p = nil, nil
+    end
+    if not p then
+        if preselCanvas then preselCanvas:delete() preselCanvas = nil end
+        return
+    end
+    local rect = Drop.sideRect(leaf.fullRect or leaf.rect, p.side)
+    if preselCanvas then preselCanvas:frame(rect) else preselCanvas = Drop.highlight(rect) end
+    preselCanvas:show()
+end
+
 local function reconcileTree(key, windows)
     local valid = {}
     local byID = {}
@@ -178,7 +205,7 @@ local function reconcileTree(key, windows)
         end
     end
 
-    local tree = Tree.prune(previous, valid)
+    local tree = Restore.rebuild(key, Tree.prune(previous, valid), valid)
     local present = Tree.collectIDs(tree)
 
     for _, win in ipairs(windows) do
@@ -211,10 +238,16 @@ local function reconcileTree(key, windows)
                 target = target or Tree.rightmostLeafID(tree)
 
                 -- Split the previously focused tile along its longer axis;
-                -- the mouse picks which side the new window goes on.
+                -- the mouse picks which side the new window goes on. A
+                -- preselection decides both instead, once.
                 local inserted = false
+                local p = S.presel
+                if p and p.key == key and Tree.treeContains(tree, p.id) then
+                    S.presel = nil
+                    tree, inserted = Tree.insertBeside(tree, p.id, id, p.side)
+                end
                 local _, targetLeaf = Tree.ancestors(tree, target)
-                if targetLeaf and targetLeaf.rect then
+                if not inserted and targetLeaf and targetLeaf.rect then
                     tree, inserted = Tree.insertBeside(tree, target, id,
                         splitSide(targetLeaf.rect, hs.mouse.absolutePosition()))
                 end
@@ -271,7 +304,7 @@ local function verifyLayout(win, rect, rectKey, animating)
             if not S.tilingEnabled or not S.running.windowFilter or win:id() ~= id
                or S.autoFloat[id] or S.dragState or hs.mouse.getButtons().left
                or S.lastMouseTime > pending.started
-               or not leaf or not leaf.rect or not framesMatch(leaf.rect, rect) then
+               or not leaf or not leaf.rect or not framesMatch(leaf.fullRect or leaf.rect, rect) then
                 Discover.layoutChecks[id] = nil
                 return
             end
@@ -300,13 +333,21 @@ local function verifyLayout(win, rect, rectKey, animating)
     check(1)
 end
 
-local function applyTree(node, rect, byID)
+-- `full` is { id =, rect = } for the workspace's maximized window: it gets
+-- the whole area, while its tile (`rect`) is kept for navigation and for
+-- coming back to.
+local function applyTree(node, rect, byID, full)
     if not node then return end
 
     -- Remembered so resizing knows each split's and tile's size.
     node.rect = rect
 
     if Tree.isLeaf(node) then
+        node.fullRect = nil
+        if full and full.id == node.windowID then
+            node.fullRect = full.rect
+            rect = full.rect
+        end
         local win = byID[node.windowID]
         if win then
             local id = node.windowID
@@ -364,8 +405,8 @@ local function applyTree(node, rect, byID)
             rect.h
         )
 
-        applyTree(node.a, aRect, byID)
-        applyTree(node.b, bRect, byID)
+        applyTree(node.a, aRect, byID, full)
+        applyTree(node.b, bRect, byID, full)
     else
         local usable = math.max(1, rect.h - gap)
         local first = math.floor(usable * ratio)
@@ -378,8 +419,8 @@ local function applyTree(node, rect, byID)
             usable - first
         )
 
-        applyTree(node.a, aRect, byID)
-        applyTree(node.b, bRect, byID)
+        applyTree(node.a, aRect, byID, full)
+        applyTree(node.b, bRect, byID, full)
     end
 end
 
@@ -401,8 +442,8 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
     for _, screen in ipairs(hs.screen.allScreens()) do
         local windows = byScreen[screen:getUUID()] or {}
 
-        if #windows > 0 then
-            local key = Tree.keyForScreen(screen)
+        local key = #windows > 0 and Tree.keyForScreen(screen)
+        if key and not S.untiled[key] then
             local usableFrame = inset(screen:frame(), S.cfg.tiling.outerGap)
 
             local ids = {}
@@ -415,7 +456,12 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                 changed = true
                 signatures[key] = signature
                 local tree, byID = reconcileTree(key, windows)
-                applyTree(tree, usableFrame, byID)
+                local maxID = S.maximized[key]
+                if maxID and not byID[maxID] then
+                    S.maximized[key], maxID = nil, nil
+                    Border.sync()
+                end
+                applyTree(tree, usableFrame, byID, maxID and { id = maxID, rect = usableFrame } or nil)
             end
         end
     end
@@ -428,6 +474,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
     end
 
     S.applyingLayout = false
+    if S.presel or preselCanvas then showPresel() end
     if changed or not ok then
         Tree.saveTrees()
         Float.raiseFloating()
@@ -564,8 +611,80 @@ local function locate(win)
     return path, leaf, key
 end
 
+-- Fill the workspace's tiling area with tiled window `win`, over the other
+-- tiles, or put it back in its tile. False if it isn't tiled.
+local function toggleMaximized(win)
+    local id = win:id()
+    local _, _, key = locate(win)
+    if not key then return false end
+    S.maximized[key] = S.maximized[key] ~= id and id or nil
+    Border.sync()
+    tileNow(false, Tree.keyUUID(key))
+    -- Above the tiles of its own app too.
+    if S.maximized[key] then Util.focusWindow(win, true) end
+    Focus.invalidateWindowCache()
+    return true
+end
+
+-- Focus went to `id`: another tile of a workspace with a maximized window
+-- puts that window back in its tile, so the focused one can be seen.
+local function focused(id)
+    if not S.tilingEnabled or next(S.maximized) == nil or not id or S.autoFloat[id] then return end
+    local _, _, key = Tree.findByID(id)
+    local maxID = key and S.maximized[key]
+    if not maxID or maxID == id then return end
+    S.maximized[key] = nil
+    Border.sync()
+    tileNow(false, Tree.keyUUID(key))
+end
+
+-- Turns tiling off or back on for one workspace. Its windows go back to
+-- the frames they had before they were tiled, and its tree is kept for
+-- when tiling comes back.
+local function toggleWorkspaceTiling(key)
+    if S.untiled[key] then
+        S.untiled[key] = nil
+        S.keyIndex = {}
+        scheduleRetile(true)
+        return true
+    end
+    S.untiled[key] = true
+    S.maximized[key] = nil
+    S.keyIndex = {}
+    signatures[key] = nil
+    for id in pairs(Tree.collectIDs(S.trees[key])) do
+        Discover.cancelLayoutCheck(id)
+        local win, frame = Util.winByID[id], S.floatingFrames[id]
+        S.floatingFrames[id], S.applied[id] = nil, nil
+        if frame and win and win:id() == id and not Spaces.isHidden(id) then
+            S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE + S.cfg.tiling.animationDuration
+            Util.setFrame(win, frame, S.cfg.tiling.animationDuration)
+        end
+    end
+    Tree.saveTrees()
+    Border.sync()
+    Focus.invalidateWindowCache()
+    return false
+end
+
+-- Preselect `side` of tiled window `win` for the next new window, or
+-- cancel the preselection if it's already that.
+local function preselect(win, side)
+    local _, _, key = locate(win)
+    if not key then return end
+    local p = S.presel
+    if p and p.id == win:id() and p.side == side then
+        S.presel = nil
+    else
+        S.presel = { id = win:id(), side = side, key = key }
+    end
+    showPresel()
+end
+
 -- Cancels the pending retile and recheck (reload, shutdown).
 local function stop()
+    S.presel = nil
+    showPresel()
     if retileTimer then retileTimer:stop() end
     if S.recheckTimer then S.recheckTimer:stop() S.recheckTimer = nil end
     retileTimer, retilePending, retileForce = nil, false, false
@@ -581,5 +700,9 @@ M.scheduleRetile = scheduleRetile
 M.scheduleRecheck = scheduleRecheck
 M.restoreFloatingFrames = restoreFloatingFrames
 M.locate = locate
+M.toggleMaximized = toggleMaximized
+M.focused = focused
+M.preselect = preselect
+M.toggleWorkspaceTiling = toggleWorkspaceTiling
 
 return M

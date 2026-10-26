@@ -50,11 +50,30 @@ function M.toggleFullScreen()
     if win then win:toggleFullScreen() end
 end
 
--- Fill the screen without creating a fullscreen Space.
-function M.maximize()
+-- Floating windows' frames from before they were maximized.
+local unmaximizedFrames = {}
+
+-- Fill the screen without creating a fullscreen Space, or go back. A tiled
+-- window covers the other tiles until it's toggled back or another tile
+-- takes focus (see Layout.toggleMaximized); a float fills the tiling area.
+function M.toggleMaximize()
     local win = Focus.currentWindow()
-    if win then
-        win:maximize(0)
+    if not win or Layout.toggleMaximized(win) then return end
+
+    local id, screen = win:id(), win:screen()
+    if not id or not screen then return end
+    local gap = S.cfg.tiling.outerGap
+    local sf = screen:frame()
+    local full = { x = sf.x + gap, y = sf.y + gap, w = sf.w - 2 * gap, h = sf.h - 2 * gap }
+    local f = win:frame()
+    local before = unmaximizedFrames[id]
+    if before and math.abs(f.x - full.x) <= 1 and math.abs(f.y - full.y) <= 1
+       and math.abs(f.w - full.w) <= 1 and math.abs(f.h - full.h) <= 1 then
+        unmaximizedFrames[id] = nil
+        Util.setFrame(win, before, S.cfg.tiling.animationDuration)
+    else
+        unmaximizedFrames[id] = { x = f.x, y = f.y, w = f.w, h = f.h }
+        Util.setFrame(win, full, S.cfg.tiling.animationDuration)
     end
 end
 
@@ -193,9 +212,19 @@ function M.swap(direction)
     end
     if not other then return end
 
-    local _, _, keyA = Layout.locate(win)
-    local _, _, keyB = Layout.locate(other)
-    if keyA or keyB then
+    local _, leafA, keyA = Layout.locate(win)
+    local _, leafB, keyB = Layout.locate(other)
+    if keyA and keyB and keyA ~= keyB then
+        -- Tiles on two displays trade places, and workspaces.
+        leafA.windowID, leafB.windowID = other:id(), win:id()
+        S.keyIndex = {}
+        S.applied[win:id()], S.applied[other:id()] = nil, nil
+        Spaces.exchange(win:id(), other:id())
+        Layout.tileNow(false)
+        Focus.focus(win)
+        Util.warpToWindow(win)
+        return
+    elseif keyA or keyB then
         -- Only swap within one layout; frame swaps would be undone by the
         -- next retile.
         if keyA == keyB then
@@ -271,6 +300,60 @@ function M.toggleSplit()
 
     parent.split = (parent.split == "vertical") and "horizontal" or "vertical"
     Layout.tileNow(false, Tree.keyUUID(key))
+end
+
+-- The tree key of the workspace to act on: the focused tile's, else the
+-- one showing on the display under the pointer.
+local function currentKey()
+    local _, _, key = Layout.locate(Focus.currentWindow())
+    if key then return key end
+    local screen = hs.mouse.getCurrentScreen()
+    return S.tilingEnabled and screen and Tree.keyForScreen(screen) or nil
+end
+
+-- Split every tile of the workspace evenly again.
+function M.balance()
+    local key = currentKey()
+    if not key or not S.trees[key] then return end
+    Tree.balance(S.trees[key])
+    Layout.tileNow(false, Tree.keyUUID(key))
+end
+
+-- Open the next new window on the focused tile's side in a direction
+-- ("left"/"right"/"up"/"down"), instead of where the pointer says; the
+-- same again cancels.
+function M.preselect(direction)
+    local win = Focus.currentWindow()
+    local sides = { left = "left", right = "right", up = "top", down = "bottom" }
+    if win and sides[direction] then Layout.preselect(win, sides[direction]) end
+end
+
+-- Turn the workspace's layout a quarter clockwise.
+function M.rotate()
+    local key = currentKey()
+    if not key or not S.trees[key] then return end
+    Tree.rotate(S.trees[key])
+    Layout.tileNow(false, Tree.keyUUID(key))
+end
+
+-- Mirror the workspace's layout left to right.
+function M.mirror()
+    local key = currentKey()
+    if not key or not S.trees[key] then return end
+    Tree.mirror(S.trees[key])
+    Layout.tileNow(false, Tree.keyUUID(key))
+end
+
+-- Tiling on or off for the workspace showing where the focused window (or
+-- the pointer) is, leaving the other workspaces as they are.
+function M.toggleWorkspaceTiling()
+    if not S.tilingEnabled then return end
+    local win = Focus.currentWindow()
+    local screen = (win and win:screen()) or hs.mouse.getCurrentScreen()
+    if not screen then return end
+    local key = Tree.keyForScreen(screen)
+    local on = Layout.toggleWorkspaceTiling(key)
+    hs.alert.show(string.format("Workspace %s tiling %s", key:match("%d+"), on and "on" or "off"))
 end
 
 -- Resize the focused window by a percentage of its own size, e.g.

@@ -34,6 +34,9 @@ local function adoptFrame(win)
         return
     end
 
+    -- A maximized window isn't in its tile: nothing to adopt.
+    if leaf.fullRect then return end
+
     local f = win:frame()
     local r = leaf.rect
     -- An unreadable frame (a busy app) reads as all zeros, not a resize.

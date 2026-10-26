@@ -17,7 +17,10 @@ local SUPER_CMD   = { "alt", "cmd" } -- replacement for Hyprland SUPER+ALT
 
 -- Window manager (tiling, mouse move/resize, focus follows mouse,
 -- workspaces). See wm/state.lua for all options and their defaults.
-local wm          = require("wm")
+-- Global, so the `hs` tool can drive it like hyprctl, e.g.
+--   hs -c 'wm.gotoWorkspace(3)'
+--   hs -c 'return hs.json.encode(wm.workspaces())'
+wm                = require("wm")
 
 wm.setup({
 	focusFollowsMouse = true,
@@ -35,6 +38,10 @@ wm.setup({
 		maxRatio = 0.80,
 		animationDuration = 0.2,
 	},
+	-- Hyprland-style window rules (see wm/state.lua), e.g.
+	--   { app = "1Password", float = true },
+	--   { app = "Slack", workspace = 4, silent = true },
+	rules = {},
 	-- Which workspace is showing. The pop-up and badge are for displays
 	-- whose menu bar auto-hides; set `show = "always"` or false to change.
 	indicators = {
@@ -95,11 +102,15 @@ end)
 -- SUPER+F: native macOS full screen
 hs.hotkey.bind(SUPER, "f", wm.toggleFullScreen)
 
--- SUPER+Shift+F: maximize without creating a fullscreen Space.
-hs.hotkey.bind(SUPER_SHIFT, "f", wm.maximize)
+-- SUPER+Shift+F: maximize without creating a fullscreen Space (again to
+-- go back; a tile also goes back when another tile takes focus).
+hs.hotkey.bind(SUPER_SHIFT, "f", wm.toggleMaximize)
 
 -- SUPER+B: toggle BSP tiling (persists across reloads).
 hs.hotkey.bind(SUPER, "b", wm.toggleTiling)
+
+-- SUPER+Shift+B: toggle tiling for just this workspace (persists too).
+hs.hotkey.bind(SUPER_SHIFT, "b", wm.toggleWorkspaceTiling)
 
 -- SUPER+S: toggle floating for the focused window.
 hs.hotkey.bind(SUPER, "s", wm.toggleFloat)
@@ -109,6 +120,14 @@ hs.hotkey.bind(SUPER, "g", wm.focusFloat)
 
 -- SUPER+Y: flip the focused window's split (horizontal <-> vertical).
 hs.hotkey.bind(SUPER, "y", wm.toggleSplit)
+
+-- SUPER+=: split every tile of the workspace evenly again.
+hs.hotkey.bind(SUPER, "=", wm.balance)
+
+-- SUPER+R: turn the workspace's layout a quarter clockwise;
+-- SUPER+Shift+R: mirror it left to right.
+hs.hotkey.bind(SUPER, "r", wm.rotate)
+hs.hotkey.bind(SUPER_SHIFT, "r", wm.mirror)
 
 -- SUPER+Return: always open a fresh Ghostty window on the current Space and
 -- screen, regardless of where existing Ghostty windows live.
@@ -195,10 +214,9 @@ end)
 --     hs.eventtap.keyStroke({"cmd"}, "space", 0)
 -- end)
 
--- SUPER+Tab: Mission Control (closest useful replacement for overview/group UI).
-hs.hotkey.bind(SUPER, "tab", function()
-	hs.spaces.toggleMissionControl()
-end)
+-- SUPER+Tab: an overview of every workspace (click a window or workspace
+-- to go there, 1-0 to switch, Escape to close).
+hs.hotkey.bind(SUPER, "tab", wm.toggleOverview)
 
 -- ---------------------------------------------------------------------------
 -- Window manager keybindings
@@ -273,16 +291,40 @@ for dir, step in pairs(resizeSteps) do
 	bindRepeat(SUPER_CMD, resizeVimKeys[dir], fn)
 end
 
+-- Ctrl+Option+arrows: open the next new window on that side of the focused
+-- tile (again to cancel).
+for _, dir in ipairs({ "left", "right", "up", "down" }) do
+	hs.hotkey.bind({ "ctrl", "alt" }, dir, function() wm.preselect(dir) end)
+end
+
 -- Ctrl+Option+H/L: previous/next workspace on this display (also a
 -- three-finger swipe; see `swipe` in wm/state.lua).
 hs.hotkey.bind({ "ctrl", "alt" }, "h", function() wm.gotoWorkspaceRelative(-1) end)
 hs.hotkey.bind({ "ctrl", "alt" }, "l", function() wm.gotoWorkspaceRelative(1) end)
 
--- SUPER+1..0: go to workspace; SUPER+Shift+1..0: move window there.
+-- SUPER+1..0: go to workspace; SUPER+Shift+1..0: move window there;
+-- Ctrl+SUPER+1..0: move it there without following.
 for i = 1, 10 do
 	local key = tostring(i % 10)
 	hs.hotkey.bind(SUPER, key, function() wm.gotoWorkspace(i) end)
 	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.moveToWorkspace(i) end)
+	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveToWorkspaceSilent(i) end)
+end
+
+-- SUPER+P: show/hide the scratchpad (Hyprland's special workspace) over
+-- this workspace; SUPER+Shift+P: put the window in it.
+hs.hotkey.bind(SUPER, "p", wm.toggleScratchpad)
+hs.hotkey.bind(SUPER_SHIFT, "p", wm.moveToScratchpad)
+
+-- SUPER+`: back to the previous workspace.
+hs.hotkey.bind(SUPER, "`", wm.gotoPreviousWorkspace)
+
+-- SUPER+,/.: focus the display to the left/right; SUPER+Shift+,/.: send
+-- the window there; Ctrl+SUPER+,/.: send the whole workspace there.
+for key, delta in pairs({ [","] = -1, ["."] = 1 }) do
+	hs.hotkey.bind(SUPER, key, function() wm.focusDisplay(delta) end)
+	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.moveToDisplay(delta) end)
+	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveWorkspaceToDisplay(delta) end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -439,9 +481,9 @@ hs.hotkey.bind(SUPER, "n", function()
 	hs.eventtap.keyStroke({ "fn" }, "n", 0)
 end)
 
--- SUPER+M: Launchpad.
+-- SUPER+M: Apps (Launchpad's replacement since macOS 26).
 hs.hotkey.bind(SUPER, "m", function()
-	hs.spaces.toggleLaunchPad()
+	hs.task.new("/usr/bin/open", nil, { "-a", "Apps" }):start()
 end)
 
 -- SUPER+Command+V: open TextEdit as a lightweight "edit anywhere" fallback.
@@ -476,11 +518,15 @@ end
 -- Config reload watcher + startup notification
 -- ---------------------------------------------------------------------------
 
+-- Config files and rebuilt native modules (`make -C wm/native` writes them
+-- one at a time, hence the wait), but not the tests.
 local configDir = hs.configdir .. "/"
+local reloadSoon = hs.timer.delayed.new(0.3, hs.reload)
 configWatcher = hs.pathwatcher.new(configDir, function(files)
 	for _, file in ipairs(files) do
-		if file:match("%.lua$") then
-			hs.reload()
+		local rel = file:sub(#configDir + 1)
+		if not rel:match("^tests/") and (rel:match("%.lua$") or rel:match("^wm/native/.*%.so$")) then
+			reloadSoon:start()
 			return
 		end
 	end

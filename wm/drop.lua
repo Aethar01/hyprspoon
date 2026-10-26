@@ -28,6 +28,35 @@ local function screenAt(point)
     return nil
 end
 
+-- The half of tile `f` a window put on its `side` would take.
+local function sideRect(f, side)
+    local r = hs.geometry.copy(f)
+    if side == "left" or side == "right" then
+        r.w = f.w / 2
+    else
+        r.h = f.h / 2
+    end
+    if side == "right" then r.x = f.x + f.w / 2 end
+    if side == "bottom" then r.y = f.y + f.h / 2 end
+    return r
+end
+
+-- A highlight over `rect` showing where a window will land.
+local function highlight(rect)
+    local c = S.cfg.tiling.dropColor
+    local canvas = hs.canvas.new(rect)
+    canvas:level(hs.canvas.windowLevels.overlay)
+    canvas[1] = {
+        type = "rectangle",
+        action = "strokeAndFill",
+        fillColor = { red = c.red, green = c.green, blue = c.blue, alpha = 0.25 },
+        strokeColor = { red = c.red, green = c.green, blue = c.blue, alpha = 0.9 },
+        strokeWidth = 3,
+        roundedRectRadii = { xRadius = 8, yRadius = 8 },
+    }
+    return canvas
+end
+
 -- The tile under the cursor, the side nearest the cursor, and the half of
 -- the tile the dropped window would take.
 local function dropTarget(targets, point)
@@ -35,17 +64,7 @@ local function dropTarget(targets, point)
         local f = target.frame
         if Util.pointInFrame(point, f) then
             local side = Tree.nearestSide(f, point)
-
-            local r = hs.geometry.copy(f)
-            if side == "left" or side == "right" then
-                r.w = f.w / 2
-            else
-                r.h = f.h / 2
-            end
-            if side == "right" then r.x = f.x + f.w / 2 end
-            if side == "bottom" then r.y = f.y + f.h / 2 end
-
-            return target, side, r
+            return target, side, sideRect(f, side)
         end
     end
     return nil
@@ -62,7 +81,7 @@ local function beginDrag(win)
     local byScreen = Discover.windowsByScreen()
     for _, s in ipairs(hs.screen.allScreens()) do
         local sKey = Tree.keyForScreen(s)
-        for _, w in ipairs(byScreen[s:getUUID()] or {}) do
+        for _, w in ipairs(not S.untiled[sKey] and byScreen[s:getUUID()] or {}) do
             if w:id() ~= win:id() then
                 table.insert(targets, { win = w, frame = Tree.rectFor(w:id()) or w:frame(), key = sKey })
             end
@@ -99,17 +118,7 @@ local function updateDrag(point)
     dropRect = rect
 
     if not dropPreview then
-        local c = S.cfg.tiling.dropColor
-        dropPreview = hs.canvas.new(rect)
-        dropPreview:level(hs.canvas.windowLevels.overlay)
-        dropPreview[1] = {
-            type = "rectangle",
-            action = "strokeAndFill",
-            fillColor = { red = c.red, green = c.green, blue = c.blue, alpha = 0.25 },
-            strokeColor = { red = c.red, green = c.green, blue = c.blue, alpha = 0.9 },
-            strokeWidth = 3,
-            roundedRectRadii = { xRadius = 8, yRadius = 8 },
-        }
+        dropPreview = highlight(rect)
     else
         dropPreview:frame(rect)
     end
@@ -152,6 +161,8 @@ local function finishDrag(win, point)
     return true
 end
 
+M.sideRect = sideRect
+M.highlight = highlight
 M.beginDrag = beginDrag
 M.updateDrag = updateDrag
 M.finishDrag = finishDrag

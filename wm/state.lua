@@ -67,6 +67,20 @@ S.defaults = {
     -- anything noisy). Fewer watched windows means fewer events to process.
     ignoreApps = {},
 
+    -- Per-window rules, like Hyprland's windowrules. Each matches on `app`
+    -- (the app's name) and/or `title` (a Lua pattern), and sets:
+    --   float = true/false   float it, or tile it even if it would float
+    --   workspace = n        put it on workspace n when it first appears,
+    --                        and go there unless `silent = true`; or
+    --                        "scratchpad" to start out in the scratchpad
+    -- Rules are read once per window, when it first appears (titles that
+    -- change later don't count); later matching rules win. E.g.
+    --   rules = {
+    --       { app = "1Password", float = true },
+    --       { app = "Slack", workspace = 4, silent = true },
+    --   }
+    rules = {},
+
     tiling = {
         outerGap = 10,  -- gap between tiles and the screen edge
         innerGap = 5,   -- gap between tiles

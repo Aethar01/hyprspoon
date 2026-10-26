@@ -66,6 +66,24 @@ local function unlock()
     end
 end
 
+-- Whether the pointer is over a menu or popup rather than the window
+-- `entry` under it: a context menu reaching past its window, a menu bar
+-- menu, a dropdown or anything else kept above the windows, or a window
+-- the focused app drew that we don't manage (its own popups). Focusing the
+-- window underneath would close it. Asked of WindowServer only as focus is
+-- about to change, and only with wm.native.hover.
+local function overPopup(point, entry)
+    if not hover then return false end
+    local id, pid, layer = hover.topAt(point.x, point.y)
+    if not id or id == entry.id or Util.windowKinds[id] == "standard"
+       or Util.windowKinds[id] == "subwindow" then
+        return false
+    end
+    if layer > 0 then return true end
+    local focusedPid = S.ffmFocusedID and Util.pidByID[S.ffmFocusedID]
+    return focusedPid ~= nil and pid == focusedPid
+end
+
 local function ffmFocusPending()
     local entry = ffmPending
     ffmPending = nil
@@ -74,8 +92,16 @@ local function ffmFocusPending()
         return
     end
     -- By id: the snapshot may have been rebuilt since.
-    local under = Focus.snapshotEntryAt(hs.mouse.absolutePosition())
+    local point = hs.mouse.absolutePosition()
+    local under = Focus.snapshotEntryAt(point)
     if not under or under.id ~= entry.id then return end
+    if S.ffmFocusedID ~= entry.id and overPopup(point, entry) then
+        -- Report the next move even over the same window: once the menu
+        -- has gone, it focuses as usual.
+        S.ffmLastWindow = nil
+        hover.forget()
+        return
+    end
     if S.ffmFocusedID ~= entry.id then
         -- The pointer is the user's say: it overrides any request of ours.
         S.intent = nil
@@ -86,7 +112,7 @@ end
 -- The pointer is at `point`, over a window other than last time (or we
 -- can't tell: no snapshot).
 local function onPointer(point)
-    if not S.cfg.focusFollowsMouse or S.dragState then return end
+    if not S.cfg.focusFollowsMouse or S.dragState or S.overviewOpen then return end
     -- The pointer moving is the surest sign the lock screen has gone, even
     -- when no unlock notification came.
     if locked then

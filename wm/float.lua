@@ -73,14 +73,18 @@ local function shouldFloat(win)
         S.autoFloat[id] = true
         return true
     end
-    local ok, canFullScreen = pcall(function()
-        local ax = hs.axuielement.windowElement(win)
-        return ax and ax:isAttributeSettable("AXFullScreen")
-    end)
-    -- Unreadable (a busy app, or no such attribute): tile, ask next pass.
-    if not ok or canFullScreen == nil then return false end
-
-    S.autoFloat[id] = not canFullScreen
+    local rule = Util.rulesFor(win).float
+    if rule ~= nil then
+        S.autoFloat[id] = rule == true
+    else
+        local ok, canFullScreen = pcall(function()
+            local ax = hs.axuielement.windowElement(win)
+            return ax and ax:isAttributeSettable("AXFullScreen")
+        end)
+        -- Unreadable (a busy app, or no such attribute): tile, ask next pass.
+        if not ok or canFullScreen == nil then return false end
+        S.autoFloat[id] = not canFullScreen
+    end
     if S.autoFloat[id] then
         local screen = win:screen()
         if screen then
