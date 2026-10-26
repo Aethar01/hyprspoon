@@ -71,7 +71,8 @@ S.defaults = {
     -- (the app's name) and/or `title` (a Lua pattern), and sets:
     --   float = true/false   float it, or tile it even if it would float
     --   workspace = n        put it on workspace n when it first appears,
-    --                        and go there unless `silent = true`
+    --                        and go there unless `silent = true`; or
+    --                        "scratchpad" to start out in the scratchpad
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {

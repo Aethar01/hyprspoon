@@ -312,6 +312,11 @@ for i = 1, 10 do
 	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveToWorkspaceSilent(i) end)
 end
 
+-- SUPER+P: show/hide the scratchpad (Hyprland's special workspace) over
+-- this workspace; SUPER+Shift+P: put the window in it.
+hs.hotkey.bind(SUPER, "p", wm.toggleScratchpad)
+hs.hotkey.bind(SUPER_SHIFT, "p", wm.moveToScratchpad)
+
 -- SUPER+`: back to the previous workspace.
 hs.hotkey.bind(SUPER, "`", wm.gotoPreviousWorkspace)
 

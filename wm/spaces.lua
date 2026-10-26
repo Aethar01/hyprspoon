@@ -12,6 +12,7 @@ local Layout = require("wm.layout")
 local Bar = require("wm.bar")
 local Hud = require("wm.hud")
 local Border = require("wm.border")
+local Float = require("wm.float")
 
 -- ---------------------------------------------------------------------------
 -- Workspaces
@@ -37,10 +38,17 @@ local Border = require("wm.border")
 --
 -- Use one macOS Desktop per display: the window filter only sees the
 -- current Desktop's windows.
+--
+-- Workspace 0 is the scratchpad (Hyprland's special workspace): its
+-- windows float, and it's shown over the workspace on a display only while
+-- toggled on. It's never a display's own workspace, nor listed.
 
 -- Window IDs are only meaningful within one boot, so the saved state is
 -- discarded after a restart (see Tree.bootTime).
 local STATE_KEY = "wmWorkspaces"
+
+local SCRATCH = 0
+local scratchOn = nil -- UUID of the display the scratchpad shows on, if it does
 
 local active = {} -- screen UUID -> workspace number it shows
 local home = {}   -- workspace number -> screen UUID it lives on
@@ -164,6 +172,8 @@ local function refresh()
     for uuid, n in pairs(active) do
         if connected[uuid] and displayOf(n) == uuid then shown[n] = uuid end
     end
+    if scratchOn and not connected[scratchOn] then scratchOn = nil end
+    shown[SCRATCH] = scratchOn
 end
 
 local function pointerUUID()
@@ -306,10 +316,15 @@ local function claim(win, uuid)
     if not connected[uuid] or not active[uuid] then refresh() end
     -- A rule's workspace (see S.cfg.rules), the first time it's seen.
     local rule = not n and Util.rulesFor(win)
-    local wanted = rule and math.tointeger(rule.workspace)
-    if wanted and wanted >= 1 and wanted ~= active[uuid] then
+    local wanted = rule and (rule.workspace == "scratchpad" and SCRATCH or math.tointeger(rule.workspace))
+    if wanted and wanted >= 0 and wanted ~= active[uuid] then
         of[id] = wanted
-        if not home[wanted] then home[wanted] = uuid end
+        if wanted == SCRATCH then
+            S.autoFloat[id] = true
+            rule = { silent = true }
+        elseif not home[wanted] then
+            home[wanted] = uuid
+        end
         local to = shown[wanted]
         if to and to ~= uuid then
             pins[id] = hs.timer.secondsSinceEpoch() + 1
@@ -445,6 +460,11 @@ end
 
 -- Move the focused window to a workspace and follow it there, like
 -- Hyprland's movetoworkspace (not movetoworkspacesilent).
+-- A window leaving the scratchpad floats or tiles as it would have.
+local function leaveScratchpad(id)
+    if of[id] == SCRATCH then Float.forgetFloat(id) end
+end
+
 function M.moveToWorkspace(n)
     local win = Focus.currentWindow()
     if not win then return end
@@ -453,6 +473,7 @@ function M.moveToWorkspace(n)
 
     local id = win:id()
     if of[id] == n then return end
+    leaveScratchpad(id)
     local from = (of[id] and shown[of[id]]) or pointerUUID()
     local to = targetDisplay(n, from)
     of[id] = n
@@ -478,6 +499,7 @@ function M.moveToWorkspaceSilent(n)
     local id = win:id()
     local current = of[id]
     if current == n then return end
+    leaveScratchpad(id)
     local from = (current and shown[current]) or pointerUUID()
     if not home[n] then home[n] = from end
     of[id] = n
@@ -493,7 +515,61 @@ function M.moveToWorkspaceSilent(n)
     end
     save()
     Layout.tileNow()
-    focusWorkspace(current or active[from], false, id)
+    focusWorkspace((current ~= SCRATCH and current) or active[from], false, id)
+end
+
+-- Put the focused window in the scratchpad, floating, centred on its
+-- display. Out of sight unless the scratchpad is showing.
+function M.moveToScratchpad()
+    local win = Focus.currentWindow()
+    if not win then return end
+    refresh()
+    claimAll()
+
+    local id = win:id()
+    local current = of[id]
+    if current == SCRATCH then return end
+    local from = (current and shown[current]) or pointerUUID()
+    local f = win:frame()
+    local sf = connected[from]:frame()
+    local centred = { x = sf.x + (sf.w - f.w) / 2, y = sf.y + (sf.h - f.h) / 2 }
+    of[id] = SCRATCH
+    S.autoFloat[id] = true
+    if shown[SCRATCH] then
+        settle()
+        win:setTopLeft(centred)
+    else
+        parked[id] = { x = centred.x, y = centred.y, w = f.w, h = f.h }
+        park(win, SCRATCH)
+    end
+    save()
+    Layout.tileNow()
+    if not shown[SCRATCH] then focusWorkspace(current or active[from], false, id) end
+end
+
+-- Show the scratchpad over the workspace on the focused display (focusing
+-- its last used window, with the pointer on it), or hide it again.
+function M.toggleScratchpad()
+    refresh()
+    lastSwitch = hs.timer.secondsSinceEpoch()
+    if shown[SCRATCH] then
+        local on = scratchOn
+        scratchOn = nil
+        refresh()
+        sync(false)
+        focusWorkspace(active[on], false)
+        return
+    end
+    if not M.hasWindows(SCRATCH) then
+        hs.alert.show("Scratchpad is empty")
+        return
+    end
+    local win = Focus.currentWindow()
+    local n = win and of[win:id()]
+    scratchOn = (n and shown[n]) or pointerUUID()
+    refresh()
+    sync(false)
+    focusWorkspace(SCRATCH, true)
 end
 
 -- Back to the workspace shown before the last switch.
@@ -627,7 +703,11 @@ function M.focusedParked(win)
         return
     end
     S.spaceFocusWin = win
-    M.gotoWorkspace(of[win:id()])
+    if of[win:id()] == SCRATCH then
+        M.toggleScratchpad()
+    else
+        M.gotoWorkspace(of[win:id()])
+    end
 end
 
 -- Where a parked window goes back to (tiling turned off while it was parked).
