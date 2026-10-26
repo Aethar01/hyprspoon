@@ -300,6 +300,9 @@ function M.setup(opts)
         if id then
             Discover.cancelLayoutCheck(id)
             S.fullscreen[id], S.offSpace[id], S.slots[id] = nil, nil, nil
+            for key, maxID in pairs(S.maximized) do
+                if maxID == id then S.maximized[key] = nil end
+            end
             Spaces.forget(id)
             Float.forgetFloat(id)
             Util.windowKinds[id] = nil

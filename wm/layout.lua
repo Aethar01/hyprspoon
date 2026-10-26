@@ -517,8 +517,11 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                 changed = true
                 signatures[key] = signature
                 local tree, byID = reconcileTree(key, windows)
+                -- The maximized window left the tree (moved, floated). One not
+                -- seen at all may only not be found yet (an app after a
+                -- reload); a closed one is forgotten as it closes.
                 local maxID = S.maximized[key]
-                if maxID and not byID[maxID] then
+                if maxID and not byID[maxID] and S.openIDs[maxID] then
                     S.maximized[key], maxID = nil, nil
                     Border.sync()
                 end
