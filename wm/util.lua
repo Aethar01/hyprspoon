@@ -103,6 +103,36 @@ local function windowKind(win)
     return kind
 end
 
+-- The rules (S.cfg.rules) matching a window, merged into one table: later
+-- matches override earlier ones. Worked out once per window.
+local windowRules = {} -- window id -> merged rule
+
+local function rulesFor(win)
+    local id = win:id()
+    if id and windowRules[id] then return windowRules[id] end
+    local out = {}
+    local rules = S.cfg.rules or {}
+    if #rules > 0 then
+        local app = win:application()
+        local name = app and app:name() or ""
+        local title = nil
+        for _, rule in ipairs(rules) do
+            local match = rule.app == nil or rule.app == name
+            if match and rule.title then
+                title = title or win:title() or ""
+                match = title:match(rule.title) ~= nil
+            end
+            if match then
+                for k, v in pairs(rule) do
+                    if k ~= "app" and k ~= "title" then out[k] = v end
+                end
+            end
+        end
+    end
+    if id then windowRules[id] = out end
+    return out
+end
+
 -- The filter's windows minus the helper windows above. getWindows() asks
 -- macOS whether each window's app is still running and re-sorts on every
 -- call, so the list is kept until the filter reports a change (callers must
@@ -245,6 +275,8 @@ M.isPictureInPicture = isPictureInPicture
 M.MANAGED_ROLES = MANAGED_ROLES
 M.windowKinds = windowKinds
 M.windowKind = windowKind
+M.windowRules = windowRules
+M.rulesFor = rulesFor
 M.forgetManagedWindows = forgetManagedWindows
 M.watchWindows = watchWindows
 M.managedWindows = managedWindows

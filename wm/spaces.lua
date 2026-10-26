@@ -299,6 +299,27 @@ local function claim(win, uuid)
     local id = win:id()
     local n = of[id]
     if not connected[uuid] or not active[uuid] then refresh() end
+    -- A rule's workspace (see S.cfg.rules), the first time it's seen.
+    local rule = not n and Util.rulesFor(win)
+    local wanted = rule and math.tointeger(rule.workspace)
+    if wanted and wanted >= 1 and wanted ~= active[uuid] then
+        of[id] = wanted
+        if not home[wanted] then home[wanted] = uuid end
+        local to = shown[wanted]
+        if to and to ~= uuid then
+            pins[id] = hs.timer.secondsSinceEpoch() + 1
+            S.windowInfo[id] = nil
+            win:moveToScreen(connected[to], false, true, 0)
+        elseif not to then
+            park(win, wanted)
+        end
+        if not rule.silent then
+            S.spaceFocusWin = win
+            hs.timer.doAfter(0, function() M.gotoWorkspace(wanted) end)
+        end
+        save()
+        return to
+    end
     if not n or (shown[n] ~= uuid and (pins[id] or 0) < hs.timer.secondsSinceEpoch()) then
         n = active[uuid]
         of[id] = n
@@ -440,7 +461,15 @@ end
 function M.place(win, force)
     local id = win and win:id()
     local n = id and of[id]
-    if not n then return end
+    if not n then
+        -- With tiling off nothing else claims a new window straight away;
+        -- one a rule sends to a workspace shouldn't wait for a switch.
+        if id and not S.tilingEnabled and Util.rulesFor(win).workspace then
+            local screen = win:screen()
+            if screen then claim(win, screen:getUUID()) end
+        end
+        return
+    end
     if shown[n] then
         if parked[id] then unpark(win) end
     elseif not parked[id] then

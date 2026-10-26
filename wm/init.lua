@@ -281,6 +281,7 @@ function M.setup(opts)
             Spaces.forget(id)
             Float.forgetFloat(id)
             Util.windowKinds[id] = nil
+            Util.windowRules[id] = nil
             S.floatingFrames[id] = nil
             Util.winByID[id] = nil
             S.windowInfo[id] = nil

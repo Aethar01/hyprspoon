@@ -52,7 +52,9 @@ end
 -- Stand-ins for the wm modules the snippets refer to (S, Util, Tree, ...).
 local S = { autoFloat = {}, tilingEnabled = true, running = { windowFilter = {} },
     applied = {}, settleUntil = 0, lastMouseTime = 0 }
+local rules = {}
 local Util = { isPictureInPicture = isPiP, windowKind = function() return "standard" end,
+    rulesFor = function() return rules end,
     dlog = function() end, setFrame = function(win, rect, duration) win:setFrame(rect, duration) end }
 local Tree = {}
 local Focus = { invalidateWindowCache = function() end }
@@ -104,6 +106,11 @@ setSavedFloats({})
 Util.windowKind = function() return "subwindow" end
 assert(classify(true) == true and axReads == 0, "dialogs and panels always float")
 Util.windowKind = function() return "standard" end
+rules = { float = true }
+assert(classify(true) == true and axReads == 0, "a float rule overrides full-screen support")
+rules = { float = false }
+assert(classify(false) == false and S.autoFloat[1] == false and axReads == 0, "a tile rule keeps it tiled")
+rules = {}
 
 -- Dialog/panel roles are managed only when they have a close button, are
 -- modal, or have a default or cancel button.

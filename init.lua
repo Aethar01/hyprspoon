@@ -38,6 +38,10 @@ wm.setup({
 		maxRatio = 0.80,
 		animationDuration = 0.2,
 	},
+	-- Hyprland-style window rules (see wm/state.lua), e.g.
+	--   { app = "1Password", float = true },
+	--   { app = "Slack", workspace = 4, silent = true },
+	rules = {},
 	-- Which workspace is showing. The pop-up and badge are for displays
 	-- whose menu bar auto-hides; set `show = "always"` or false to change.
 	indicators = {
