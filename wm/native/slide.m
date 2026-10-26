@@ -154,9 +154,40 @@ static CGRect displaysBounds(void) {
     return all;
 }
 
-// One capture of `wids` together, as they're stacked, and where it covers
-// (retained; NULL if there's nothing to see).
+// Puts `wids` in their on-screen order, front first: a capture stacks them
+// in the order it's given, the first on top. Ones not on screen go last.
+static void sortByStacking(uint32_t *wids, int count) {
+    CFArrayRef list = CGWindowListCreate(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
+    if (!list) return;
+    CFIndex n = CFArrayGetCount(list);
+    CFIndex rank[count];
+    for (int i = 0; i < count; i++) {
+        rank[i] = n + i;
+        for (CFIndex j = 0; j < n; j++) {
+            if ((uint32_t)(uintptr_t)CFArrayGetValueAtIndex(list, j) == wids[i]) {
+                rank[i] = j;
+                break;
+            }
+        }
+    }
+    CFRelease(list);
+    for (int i = 1; i < count; i++) {
+        uint32_t wid = wids[i];
+        CFIndex r = rank[i];
+        int j = i - 1;
+        for (; j >= 0 && rank[j] > r; j--) {
+            wids[j + 1] = wids[j];
+            rank[j + 1] = rank[j];
+        }
+        wids[j + 1] = wid;
+        rank[j + 1] = r;
+    }
+}
+
+// One capture of `wids` together, as they're stacked on screen, and where
+// it covers (retained; NULL if there's nothing to see).
 static CGImageRef capture(uint32_t *wids, int count, CGRect *bounds) {
+    sortByStacking(wids, count);
     CGRect screen = displaysBounds(), area = CGRectNull;
     for (int i = 0; i < count; i++) {
         CGRect b;
