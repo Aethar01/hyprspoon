@@ -214,10 +214,9 @@ end)
 --     hs.eventtap.keyStroke({"cmd"}, "space", 0)
 -- end)
 
--- SUPER+Tab: Mission Control (closest useful replacement for overview/group UI).
-hs.hotkey.bind(SUPER, "tab", function()
-	hs.spaces.toggleMissionControl()
-end)
+-- SUPER+Tab: an overview of every workspace (click a window or workspace
+-- to go there, 1-0 to switch, Escape to close).
+hs.hotkey.bind(SUPER, "tab", wm.toggleOverview)
 
 -- ---------------------------------------------------------------------------
 -- Window manager keybindings
@@ -482,9 +481,9 @@ hs.hotkey.bind(SUPER, "n", function()
 	hs.eventtap.keyStroke({ "fn" }, "n", 0)
 end)
 
--- SUPER+M: Launchpad.
+-- SUPER+M: Apps (Launchpad's replacement since macOS 26).
 hs.hotkey.bind(SUPER, "m", function()
-	hs.spaces.toggleLaunchPad()
+	hs.task.new("/usr/bin/open", nil, { "-a", "Apps" }):start()
 end)
 
 -- SUPER+Command+V: open TextEdit as a lightweight "edit anywhere" fallback.

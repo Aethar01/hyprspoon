@@ -36,6 +36,7 @@
 --   bar       workspace numbers in the menu bar, and the row they're drawn as
 --   hud       workspace pop-up and corner badge on the displays
 --   border    rings around the windows, like Hyprland's borders
+--   overview  every workspace at a glance, in place of Mission Control
 --   actions   the hotkey actions
 --   init      (this file) the public API, setup and teardown
 --
@@ -67,6 +68,7 @@ local Swipe = require("wm.swipe")
 local Bar = require("wm.bar")
 local Hud = require("wm.hud")
 local Border = require("wm.border")
+local Overview = require("wm.overview")
 
 -- The public API.
 local M = {
@@ -93,6 +95,7 @@ local M = {
     toggleFloat = Actions.toggleFloat,
     toggleFullScreen = Actions.toggleFullScreen,
     toggleMaximize = Actions.toggleMaximize,
+    toggleOverview = Overview.toggle,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,
     toggleWorkspaceTiling = Actions.toggleWorkspaceTiling,
@@ -133,6 +136,7 @@ function M.stop()
     Swipe.stop()
     Bar.stop()
     Hud.stop()
+    Overview.stop()
     Border.stop()
     Tree.stop() -- last: flushes a pending save after the layout has stopped
     S.running = {}

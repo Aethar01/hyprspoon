@@ -112,7 +112,7 @@ end
 -- The pointer is at `point`, over a window other than last time (or we
 -- can't tell: no snapshot).
 local function onPointer(point)
-    if not S.cfg.focusFollowsMouse or S.dragState then return end
+    if not S.cfg.focusFollowsMouse or S.dragState or S.overviewOpen then return end
     -- The pointer moving is the surest sign the lock screen has gone, even
     -- when no unlock notification came.
     if locked then

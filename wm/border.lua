@@ -19,9 +19,11 @@ local Tree = require("wm.tree")
 
 -- The native module, loaded and styled by M.start(); false if unavailable.
 local native = false
+local suspended = false -- no rings at all (the overview is open)
 
 local function onShow()
     local ids = {}
+    if suspended then return ids end
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
         if id and not Spaces.isHidden(id) and not Tree.behindMaximized(id) then ids[#ids + 1] = id end
@@ -42,6 +44,12 @@ end
 -- The windows WindowServer should tell us about (see Util.watchWindows).
 function M.watch(ids)
     if native then native.watch(ids) end
+end
+
+-- Takes every ring away, or brings them back.
+function M.suspend(on)
+    suspended = on
+    if native then native.set(onShow()) end
 end
 
 -- No window has focus: every ring goes inactive.
@@ -115,6 +123,7 @@ end
 
 -- Removes the rings (reload, shutdown).
 function M.stop()
+    suspended = false
     syncTimer:stop()
     unfocusCheck:stop()
     if native then native.stop() end

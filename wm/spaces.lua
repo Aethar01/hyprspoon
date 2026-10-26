@@ -765,6 +765,36 @@ function M.workspaces()
     return list
 end
 
+-- For wm/overview.lua: each workspace in use, by number, as { n =,
+-- display = UUID it shows on, showing =, windows = { { id =, win =,
+-- frame = } } }, tiles first, then floats, each with where it is or (when
+-- parked) where it goes back to.
+function M.overview()
+    refresh()
+    local byN, list = {}, {}
+    for n in pairs(home) do
+        byN[n] = { n = n, display = displayOf(n), showing = shown[n] ~= nil, windows = {} }
+        list[#list + 1] = byN[n]
+    end
+    local floats = {}
+    for _, win in ipairs(Util.managedWindows()) do
+        local id = win:id()
+        local ws = of[id] and byN[of[id]]
+        if ws then
+            local frame = Tree.rectFor(id) or parked[id]
+            if not frame then
+                local f = win:frame()
+                frame = { x = f.x, y = f.y, w = f.w, h = f.h }
+            end
+            local entry = { id = id, win = win, frame = frame }
+            if S.autoFloat[id] then floats[#floats + 1] = { ws, entry } else table.insert(ws.windows, entry) end
+        end
+    end
+    for _, f in ipairs(floats) do table.insert(f[1].windows, f[2]) end
+    table.sort(list, function(a, b) return a.n < b.n end)
+    return list
+end
+
 function M.hasWindows(n)
     for _, m in pairs(of) do
         if m == n then return true end
