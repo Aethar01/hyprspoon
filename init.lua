@@ -17,7 +17,10 @@ local SUPER_CMD   = { "alt", "cmd" } -- replacement for Hyprland SUPER+ALT
 
 -- Window manager (tiling, mouse move/resize, focus follows mouse,
 -- workspaces). See wm/state.lua for all options and their defaults.
-local wm          = require("wm")
+-- Global, so the `hs` tool can drive it like hyprctl, e.g.
+--   hs -c 'wm.gotoWorkspace(3)'
+--   hs -c 'return hs.json.encode(wm.workspaces())'
+wm                = require("wm")
 
 wm.setup({
 	focusFollowsMouse = true,

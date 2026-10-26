@@ -86,6 +86,7 @@ local M = {
     toggleTiling = Actions.toggleTiling,
     warpToFocusedWindow = Actions.warpToFocusedWindow,
     warpToWindow = Actions.warpToWindow,
+    workspaces = Spaces.workspaces,
 }
 
 -- ---------------------------------------------------------------------------
