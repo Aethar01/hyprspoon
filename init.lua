@@ -112,8 +112,8 @@ hs.hotkey.bind(SUPER, "b", wm.toggleTiling)
 -- SUPER+Shift+B: toggle tiling for just this workspace (persists too).
 hs.hotkey.bind(SUPER_SHIFT, "b", wm.toggleWorkspaceTiling)
 
--- SUPER+S: toggle floating for the focused window.
-hs.hotkey.bind(SUPER, "s", wm.toggleFloat)
+-- SUPER+T: toggle floating for the focused window.
+hs.hotkey.bind(SUPER, "t", wm.toggleFloat)
 
 -- SUPER+G: cycle focus through floating windows (reaches covered ones).
 hs.hotkey.bind(SUPER, "g", wm.focusFloat)
@@ -311,10 +311,15 @@ for i = 1, 10 do
 	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveToWorkspaceSilent(i) end)
 end
 
--- SUPER+P: show/hide the scratchpad (Hyprland's special workspace) over
--- this workspace; SUPER+Shift+P: put the window in it.
-hs.hotkey.bind(SUPER, "p", wm.toggleScratchpad)
-hs.hotkey.bind(SUPER_SHIFT, "p", wm.moveToScratchpad)
+-- Named workspaces A/S/D, as scratchpads: SUPER+A/S/D goes there, or
+-- back to where you were; SUPER+Shift+A/S/D moves the window there;
+-- Ctrl+SUPER+A/S/D moves it without following.
+for _, name in ipairs({ "A", "S", "D" }) do
+	local key = name:lower()
+	hs.hotkey.bind(SUPER, key, function() wm.toggleWorkspace(name) end)
+	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.moveToWorkspace(name) end)
+	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveToWorkspaceSilent(name) end)
+end
 
 -- SUPER+`: back to the previous workspace.
 hs.hotkey.bind(SUPER, "`", wm.gotoPreviousWorkspace)

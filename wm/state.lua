@@ -40,6 +40,9 @@ S.defaults = {
         badge = { show = "hiddenMenuBar", corner = "bottomRight", margin = 6, size = 12, all = false },
     },
 
+    -- Workspaces with names (e.g. for scratchpads), after 1 to 10.
+    namedWorkspaces = { "A", "S", "D" },
+
     -- Trackpad swipe between workspaces (next/previous on the display under
     -- the pointer). `distance` is how far the fingers travel sideways, as a
     -- fraction of the trackpad's width. Set to false to disable.
@@ -71,8 +74,8 @@ S.defaults = {
     -- (the app's name) and/or `title` (a Lua pattern), and sets:
     --   float = true/false   float it, or tile it even if it would float
     --   workspace = n        put it on workspace n when it first appears,
-    --                        and go there unless `silent = true`; or
-    --                        "scratchpad" to start out in the scratchpad
+    --                        and go there unless `silent = true` (n can
+    --                        be a named workspace, e.g. "A")
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {
