@@ -26,6 +26,7 @@
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <string.h>
 
@@ -84,7 +85,7 @@ enum { ORDER_OUT = 0, ORDER_ABOVE = 1 };
 
 // The wallpaper is taken again once a slide is over if it's older than
 // this (seconds; 0 never): macOS can shuffle a folder of them, or change
-// one through the day, and says nothing. Set by run().
+// one through the day, and says nothing. Set by run() and begin().
 static double wallpaperMaxAge = 0;
 
 // Everything below belongs to `queue`, with its own connection (cid).
@@ -385,10 +386,17 @@ typedef struct {
     double mass, stiffness, damping;
 } Slide;
 
+// The plane both pictures ride (root holds it; nil between slides), how
+// far it travels, and the spring that moves it.
+static CALayer *plane = nil;
+static CGPoint travel = { 0, 0 };
+static double springMass = 1, springStiffness = 800, springDamping = 50;
+
 static void finish(void *data) {
     unsigned which = (unsigned)(uintptr_t)data;
     if (which != generation) return;
     clearLayers();
+    plane = nil;
     orderWindow(false);
     // A stale wallpaper is taken again now, between slides.
     if (wallpaperMaxAge <= 0) return;
@@ -397,18 +405,28 @@ static void finish(void *data) {
     }
 }
 
-static void run(Slide s) {
-    if (!wid && !makeWindow()) return;
+static CGPoint planeAt(double progress) {
+    return CGPointMake(-travel.x * progress, -travel.y * progress);
+}
+
+// Puts the slide's layers up with the plane `progress` of the way along
+// (0: as the switch starts). False if there's nothing to show.
+static bool build(Slide s, double progress) {
+    if (!wid && !makeWindow()) return false;
     generation++;
     clearLayers();
+    plane = nil;
     Shot *out = s.out ? pictureFor(s.out) : NULL;
     Shot *into = s.into ? pictureFor(s.into) : NULL;
     if (!out && !into) {
         orderWindow(false);
-        return;
+        return false;
     }
+    springMass = s.mass;
+    springStiffness = s.stiffness;
+    springDamping = s.damping;
 
-    CGPoint travel = { s.toward.x * s.frame.size.width, s.toward.y * s.frame.size.height };
+    travel = CGPointMake(s.toward.x * s.frame.size.width, s.toward.y * s.frame.size.height);
     beginChanges();
     root.frame = (CGRect){ CGPointZero, s.frame.size };
     root.backgroundColor = NULL;
@@ -426,30 +444,55 @@ static void run(Slide s) {
     if (still) [root addSublayer:pictureLayer(still, s.frame, CGPointZero)];
     // Both pictures ride one plane, which moves the width (or height) of
     // the area: the leaving one off, the arriving one into place.
-    CALayer *plane = [CALayer layer];
+    plane = [CALayer layer];
     plane.frame = root.bounds;
     plane.anchorPoint = CGPointZero;
-    plane.position = CGPointZero;
+    plane.position = planeAt(progress);
     if (out) [plane addSublayer:pictureLayer(out, s.frame, CGPointZero)];
     if (into) [plane addSublayer:pictureLayer(into, s.frame, travel)];
     [root addSublayer:plane];
-    CGPoint end = { -travel.x, -travel.y };
-    plane.position = end;
-    CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:positionKey];
-    spring.mass = s.mass;
-    spring.stiffness = s.stiffness;
-    spring.damping = s.damping;
-    spring.fromValue = [NSValue valueWithBytes:&(CGPoint){ 0, 0 } objCType:@encode(CGPoint)];
-    spring.toValue = [NSValue valueWithBytes:&end objCType:@encode(CGPoint)];
-    spring.duration = spring.settlingDuration;
-    [plane addAnimation:spring forKey:slideKey];
-    double duration = spring.duration;
     commitChanges();
 
     placeWindow(s.frame, s.scale);
     orderWindow(true);
+    return true;
+}
+
+// Moves the plane to `to` of the way along on the spring, starting at
+// `velocity` (of the way along per second, positive towards all the way),
+// then takes the slide down.
+static void settle(double to, double velocity) {
+    if (!plane) return;
+    CGPoint from = ((CALayer *)plane.presentationLayer ?: plane).position;
+    CGPoint end = planeAt(to);
+    double distance = hypot(end.x - from.x, end.y - from.y);
+    double length = hypot(travel.x, travel.y);
+    double at = length > 0 ? -(from.x * travel.x + from.y * travel.y) / (length * length) : to;
+    if (to < at) velocity = -velocity; // towards `to`
+    double duration = 0;
+    beginChanges();
+    [plane removeAllAnimations];
+    plane.position = end;
+    if (distance >= 1 && length > 0) {
+        CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:positionKey];
+        spring.mass = springMass;
+        spring.stiffness = springStiffness;
+        spring.damping = springDamping;
+        // In distances to go per second, as CoreAnimation takes it.
+        spring.initialVelocity = velocity * length / distance;
+        spring.fromValue = [NSValue valueWithBytes:&from objCType:@encode(CGPoint)];
+        spring.toValue = [NSValue valueWithBytes:&end objCType:@encode(CGPoint)];
+        spring.duration = spring.settlingDuration;
+        [plane addAnimation:spring forKey:slideKey];
+        duration = spring.duration;
+    }
+    commitChanges();
     dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)), queue,
         (void *)(uintptr_t)generation, finish);
+}
+
+static void run(Slide s) {
+    if (build(s, 0)) settle(1, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -533,12 +576,8 @@ static int l_wallpaper(lua_State *L) {
     return 0;
 }
 
-// run{ frame = {x, y, w, h}, scale =, out = key, into = key, still = key,
-// dx =, dy =, backdrop =, mass =, stiffness =, damping =, wallpaperAge = }:
-// slides `out` away and `into` in from the side (dx, dy) over `frame`,
-// above `still`, then gets out of the way.
-// The window is up before this returns, so the windows beneath can move.
-static int l_run(lua_State *L) {
+// A slide as run() and begin() take it.
+static Slide readSlide(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     Slide s;
     lua_getfield(L, 1, "frame");
@@ -556,13 +595,62 @@ static int l_run(lua_State *L) {
     s.stiffness = numberField(L, 1, "stiffness", 800);
     s.damping = numberField(L, 1, "damping", 50);
     wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
+    return s;
+}
+
+// run{ frame = {x, y, w, h}, scale =, out = key, into = key, still = key,
+// dx =, dy =, backdrop =, mass =, stiffness =, damping =, wallpaperAge = }:
+// slides `out` away and `into` in from the side (dx, dy) over `frame`,
+// above `still`, then gets out of the way. The window is up before this
+// returns, so the windows beneath can move.
+static int l_run(lua_State *L) {
+    Slide s = readSlide(L);
     if (CGRectIsEmpty(s.frame)) return 0;
     dispatch_sync(queue, ^{ run(s); });
     return 0;
 }
 
+// begin{ as run }: puts the slide up without moving it, for track() to
+// move (a swipe). True if there's anything to show.
+static int l_begin(lua_State *L) {
+    Slide s = readSlide(L);
+    __block bool up = false;
+    if (!CGRectIsEmpty(s.frame)) dispatch_sync(queue, ^{ up = build(s, 0); });
+    lua_pushboolean(L, up);
+    return 1;
+}
+
+// track(progress): the slide begun is `progress` of the way along (0 to 1),
+// at once. Only the latest of a burst is drawn.
+static _Atomic double tracked = 0;
+static atomic_bool trackQueued = false;
+
+static void trackNow(void *unused) {
+    (void)unused;
+    atomic_store(&trackQueued, false);
+    if (!plane) return;
+    beginChanges();
+    plane.position = planeAt(atomic_load(&tracked));
+    commitChanges();
+}
+
+static int l_track(lua_State *L) {
+    atomic_store(&tracked, luaL_checknumber(L, 1));
+    if (!atomic_exchange(&trackQueued, true)) dispatch_async_f(queue, NULL, trackNow);
+    return 0;
+}
+
+// finish(to, velocity): the slide begun springs on to `to` (1 all the way,
+// 0 back), starting at `velocity` (of the way along per second), and goes.
+static int l_finish(lua_State *L) {
+    double to = luaL_checknumber(L, 1), velocity = luaL_optnumber(L, 2, 0);
+    dispatch_async(queue, ^{ settle(to, velocity); });
+    return 0;
+}
+
 static void releaseAll(void) {
     generation++;
+    plane = nil;
     if (wid) {
         clearLayers();
         orderWindow(false);
@@ -631,6 +719,9 @@ int luaopen_wm_native_slide(lua_State *L) {
         { "forget", l_forget },
         { "wallpaper", l_wallpaper },
         { "run", l_run },
+        { "begin", l_begin },
+        { "track", l_track },
+        { "finish", l_finish },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);

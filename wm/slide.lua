@@ -13,6 +13,10 @@
 -- time; coming, one of the workspace they cover, to slide over (their own
 -- windows are already in place beneath).
 --
+-- A swipe (wm/swipe.lua) drags the slide with the fingers: one capture as
+-- it starts, and the switch itself only once the fingers lift past halfway
+-- (or flick), the spring carrying on from their speed.
+--
 -- Needs Screen Recording permission for Hammerspoon.
 
 local M = {}
@@ -37,6 +41,11 @@ local EDGES = {
     bottom = { 0, 1 }, top = { 0, -1 }, right = { 1, 0 }, left = { -1, 0 },
     horizontal = { 1, 0 }, vertical = { 0, 1 },
 }
+
+-- A swipe's slide while the fingers are down, and until when the switch
+-- it ends in is already shown.
+local pan = nil
+local panShownUntil = 0
 
 local function signature(ids)
     local list = {}
@@ -86,6 +95,10 @@ end
 -- before the windows move: it waits for the capture.
 function M.switch(screen, from, to, outIds, inIds, dir)
     if not native or not screen then return end
+    if hs.timer.secondsSinceEpoch() < panShownUntil then
+        panShownUntil = 0
+        return
+    end
     local dx, dy = toward(S.cfg.slide.workspaces, dir)
     if not dx then return end
     local took = from and take(from, outIds, screen)
@@ -119,6 +132,42 @@ function M.hideScratchpad(screen, n, ids)
     local dx, dy = toward(S.cfg.slide.scratchpads, -1)
     if not dx then return end
     if take(n, ids, screen) then native.run(slide(screen, { out = n, dx = dx, dy = dy })) end
+end
+
+-- Whether swipes can drag a slide.
+function M.canPan()
+    return native and toward(S.cfg.slide.workspaces, 1) ~= nil
+end
+
+-- A swipe on `screen` starts from workspace `from` (showing `outIds`)
+-- towards `to` (with `inIds`), `dir` as for M.switch: the slide goes up,
+-- unmoved. True if it shows anything.
+function M.beginPan(screen, from, to, outIds, inIds, dir)
+    pan = nil
+    if not M.canPan() or not screen then return false end
+    local dx, dy = toward(S.cfg.slide.workspaces, dir)
+    local took = take(from, outIds, screen)
+    local into = current(to, inIds, screen) and to or nil
+    if not took and not into then return false end
+    -- Always over the wallpaper: the windows leaving are still beneath.
+    if native.begin(slide(screen, { out = took and from or nil, into = into, dx = dx, dy = dy, backdrop = true })) then
+        pan = true
+    end
+    return pan == true
+end
+
+-- The swipe's slide is `progress` of the way along (0 to 1).
+function M.trackPan(progress)
+    if pan then native.track(progress) end
+end
+
+-- The fingers lifted: the slide springs on and the switch follows straight
+-- after (`commit`), or it springs back. `velocity` is in progress per second.
+function M.endPan(commit, velocity)
+    if not pan then return end
+    pan = nil
+    native.finish(commit and 1 or 0, velocity or 0)
+    if commit then panShownUntil = hs.timer.secondsSinceEpoch() + 0.5 end
 end
 
 -- Workspace `n` is gone: its picture with it.

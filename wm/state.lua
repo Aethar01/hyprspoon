@@ -68,10 +68,14 @@ S.defaults = {
     },
 
     -- Trackpad swipe between workspaces (next/previous on the display under
-    -- the pointer). `distance` is how far the fingers travel sideways, as a
-    -- fraction of the trackpad's width. Set to false to disable.
+    -- the pointer). With slides and `follow`, the workspaces move with the
+    -- fingers, `span` of the trackpad's width moving a whole one; else it
+    -- switches once the fingers travel `distance`. Both are fractions of
+    -- the trackpad's width. Set to false to disable.
     swipe = {
         fingers = 3,
+        follow = true,
+        span = 0.35,
         distance = 0.12,
     },
 

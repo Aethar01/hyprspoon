@@ -569,8 +569,9 @@ function M.gotoWorkspace(n)
     switchTo(n, uuid)
 end
 
--- Previous/next workspace on the display the pointer is on (no wrap-around).
-function M.gotoWorkspaceRelative(delta)
+-- The display the pointer is on, its numbered workspace, and the one
+-- `delta` along from it (no wrap-around: nil past either end).
+local function neighbor(delta)
     refresh()
     local uuid = pointerUUID()
     local list = {}
@@ -580,12 +581,25 @@ function M.gotoWorkspaceRelative(delta)
     table.sort(list)
     local current = under[uuid] or active[uuid]
     for i, n in ipairs(list) do
-        if n == current then
-            local target = list[i + delta]
-            if target then M.gotoWorkspace(target) end
-            return
-        end
+        if n == current then return uuid, current, list[i + delta] end
     end
+    return uuid, current, nil
+end
+
+-- Previous/next workspace on the display the pointer is on.
+function M.gotoWorkspaceRelative(delta)
+    local _, _, target = neighbor(delta)
+    if target then M.gotoWorkspace(target) end
+end
+
+-- For a swipe towards the workspace `delta` along on the pointer's
+-- display: that display, its workspace, the one along, and each one's
+-- windows; nil past either end.
+function M.neighbor(delta)
+    local uuid, from, to = neighbor(delta)
+    if not to then return nil end
+    claimAll()
+    return connected[uuid], from, to, windowsOf(from), windowsOf(to)
 end
 
 -- Move the focused window to a workspace and follow it there, like
