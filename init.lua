@@ -292,6 +292,12 @@ for dir, step in pairs(resizeSteps) do
 	bindRepeat(SUPER_CMD, resizeVimKeys[dir], fn)
 end
 
+-- Ctrl+Option+arrows: open the next new window on that side of the focused
+-- tile (again to cancel).
+for _, dir in ipairs({ "left", "right", "up", "down" }) do
+	hs.hotkey.bind({ "ctrl", "alt" }, dir, function() wm.preselect(dir) end)
+end
+
 -- Ctrl+Option+H/L: previous/next workspace on this display (also a
 -- three-finger swipe; see `swipe` in wm/state.lua).
 hs.hotkey.bind({ "ctrl", "alt" }, "h", function() wm.gotoWorkspaceRelative(-1) end)

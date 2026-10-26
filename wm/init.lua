@@ -75,6 +75,7 @@ local M = {
     focus = Actions.focus,
     focusFloat = Actions.focusFloat,
     mirror = Actions.mirror,
+    preselect = Actions.preselect,
     rotate = Actions.rotate,
     gotoWorkspace = Spaces.gotoWorkspace,
     gotoWorkspaceRelative = Spaces.gotoWorkspaceRelative,

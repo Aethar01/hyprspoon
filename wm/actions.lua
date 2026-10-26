@@ -309,6 +309,15 @@ function M.balance()
     Layout.tileNow(false, Tree.keyUUID(key))
 end
 
+-- Open the next new window on the focused tile's side in a direction
+-- ("left"/"right"/"up"/"down"), instead of where the pointer says; the
+-- same again cancels.
+function M.preselect(direction)
+    local win = Focus.currentWindow()
+    local sides = { left = "left", right = "right", up = "top", down = "bottom" }
+    if win and sides[direction] then Layout.preselect(win, sides[direction]) end
+end
+
 -- Turn the workspace's layout a quarter clockwise.
 function M.rotate()
     local key = currentKey()
