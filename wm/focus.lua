@@ -9,6 +9,7 @@ local Tree = require("wm.tree")
 local Spaces = require("wm.spaces")
 local Border = require("wm.border")
 local Ffm = require("wm.ffm")
+local Layout = require("wm.layout")
 
 -- ---------------------------------------------------------------------------
 -- Internal focus
@@ -46,6 +47,7 @@ local function noteFocus(win)
     Util.winByID[id] = Util.winByID[id] or win
     S.ffmFocusedID = id
     Border.focused(win)
+    Layout.focused(id)
 end
 
 -- The window focused last, if macOS focused `win` because that one is

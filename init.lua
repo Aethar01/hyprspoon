@@ -98,8 +98,9 @@ end)
 -- SUPER+F: native macOS full screen
 hs.hotkey.bind(SUPER, "f", wm.toggleFullScreen)
 
--- SUPER+Shift+F: maximize without creating a fullscreen Space.
-hs.hotkey.bind(SUPER_SHIFT, "f", wm.maximize)
+-- SUPER+Shift+F: maximize without creating a fullscreen Space (again to
+-- go back; a tile also goes back when another tile takes focus).
+hs.hotkey.bind(SUPER_SHIFT, "f", wm.toggleMaximize)
 
 -- SUPER+B: toggle BSP tiling (persists across reloads).
 hs.hotkey.bind(SUPER, "b", wm.toggleTiling)

@@ -50,11 +50,30 @@ function M.toggleFullScreen()
     if win then win:toggleFullScreen() end
 end
 
--- Fill the screen without creating a fullscreen Space.
-function M.maximize()
+-- Floating windows' frames from before they were maximized.
+local unmaximizedFrames = {}
+
+-- Fill the screen without creating a fullscreen Space, or go back. A tiled
+-- window covers the other tiles until it's toggled back or another tile
+-- takes focus (see Layout.toggleMaximized); a float fills the tiling area.
+function M.toggleMaximize()
     local win = Focus.currentWindow()
-    if win then
-        win:maximize(0)
+    if not win or Layout.toggleMaximized(win) then return end
+
+    local id, screen = win:id(), win:screen()
+    if not id or not screen then return end
+    local gap = S.cfg.tiling.outerGap
+    local sf = screen:frame()
+    local full = { x = sf.x + gap, y = sf.y + gap, w = sf.w - 2 * gap, h = sf.h - 2 * gap }
+    local f = win:frame()
+    local before = unmaximizedFrames[id]
+    if before and math.abs(f.x - full.x) <= 1 and math.abs(f.y - full.y) <= 1
+       and math.abs(f.w - full.w) <= 1 and math.abs(f.h - full.h) <= 1 then
+        unmaximizedFrames[id] = nil
+        Util.setFrame(win, before, S.cfg.tiling.animationDuration)
+    else
+        unmaximizedFrames[id] = { x = f.x, y = f.y, w = f.w, h = f.h }
+        Util.setFrame(win, full, S.cfg.tiling.animationDuration)
     end
 end
 

@@ -15,6 +15,7 @@ package.loaded["wm.border"] = M
 local S = require("wm.state")
 local Util = require("wm.util")
 local Spaces = require("wm.spaces")
+local Tree = require("wm.tree")
 
 -- The native module, loaded and styled by M.start(); false if unavailable.
 local native = false
@@ -23,7 +24,7 @@ local function onShow()
     local ids = {}
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        if id and not Spaces.isHidden(id) then ids[#ids + 1] = id end
+        if id and not Spaces.isHidden(id) and not Tree.behindMaximized(id) then ids[#ids + 1] = id end
     end
     return ids
 end

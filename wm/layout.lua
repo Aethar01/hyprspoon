@@ -10,6 +10,7 @@ local Float = require("wm.float")
 local Focus = require("wm.focus")
 local Discover = require("wm.discover")
 local Spaces = require("wm.spaces")
+local Border = require("wm.border")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -271,7 +272,7 @@ local function verifyLayout(win, rect, rectKey, animating)
             if not S.tilingEnabled or not S.running.windowFilter or win:id() ~= id
                or S.autoFloat[id] or S.dragState or hs.mouse.getButtons().left
                or S.lastMouseTime > pending.started
-               or not leaf or not leaf.rect or not framesMatch(leaf.rect, rect) then
+               or not leaf or not leaf.rect or not framesMatch(leaf.fullRect or leaf.rect, rect) then
                 Discover.layoutChecks[id] = nil
                 return
             end
@@ -300,13 +301,21 @@ local function verifyLayout(win, rect, rectKey, animating)
     check(1)
 end
 
-local function applyTree(node, rect, byID)
+-- `full` is { id =, rect = } for the workspace's maximized window: it gets
+-- the whole area, while its tile (`rect`) is kept for navigation and for
+-- coming back to.
+local function applyTree(node, rect, byID, full)
     if not node then return end
 
     -- Remembered so resizing knows each split's and tile's size.
     node.rect = rect
 
     if Tree.isLeaf(node) then
+        node.fullRect = nil
+        if full and full.id == node.windowID then
+            node.fullRect = full.rect
+            rect = full.rect
+        end
         local win = byID[node.windowID]
         if win then
             local id = node.windowID
@@ -364,8 +373,8 @@ local function applyTree(node, rect, byID)
             rect.h
         )
 
-        applyTree(node.a, aRect, byID)
-        applyTree(node.b, bRect, byID)
+        applyTree(node.a, aRect, byID, full)
+        applyTree(node.b, bRect, byID, full)
     else
         local usable = math.max(1, rect.h - gap)
         local first = math.floor(usable * ratio)
@@ -378,8 +387,8 @@ local function applyTree(node, rect, byID)
             usable - first
         )
 
-        applyTree(node.a, aRect, byID)
-        applyTree(node.b, bRect, byID)
+        applyTree(node.a, aRect, byID, full)
+        applyTree(node.b, bRect, byID, full)
     end
 end
 
@@ -415,7 +424,12 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                 changed = true
                 signatures[key] = signature
                 local tree, byID = reconcileTree(key, windows)
-                applyTree(tree, usableFrame, byID)
+                local maxID = S.maximized[key]
+                if maxID and not byID[maxID] then
+                    S.maximized[key], maxID = nil, nil
+                    Border.sync()
+                end
+                applyTree(tree, usableFrame, byID, maxID and { id = maxID, rect = usableFrame } or nil)
             end
         end
     end
@@ -564,6 +578,33 @@ local function locate(win)
     return path, leaf, key
 end
 
+-- Fill the workspace's tiling area with tiled window `win`, over the other
+-- tiles, or put it back in its tile. False if it isn't tiled.
+local function toggleMaximized(win)
+    local id = win:id()
+    local _, _, key = locate(win)
+    if not key then return false end
+    S.maximized[key] = S.maximized[key] ~= id and id or nil
+    Border.sync()
+    tileNow(false, Tree.keyUUID(key))
+    -- Above the tiles of its own app too.
+    if S.maximized[key] then Util.focusWindow(win, true) end
+    Focus.invalidateWindowCache()
+    return true
+end
+
+-- Focus went to `id`: another tile of a workspace with a maximized window
+-- puts that window back in its tile, so the focused one can be seen.
+local function focused(id)
+    if not S.tilingEnabled or next(S.maximized) == nil or not id or S.autoFloat[id] then return end
+    local _, _, key = Tree.findByID(id)
+    local maxID = key and S.maximized[key]
+    if not maxID or maxID == id then return end
+    S.maximized[key] = nil
+    Border.sync()
+    tileNow(false, Tree.keyUUID(key))
+end
+
 -- Cancels the pending retile and recheck (reload, shutdown).
 local function stop()
     if retileTimer then retileTimer:stop() end
@@ -581,5 +622,7 @@ M.scheduleRetile = scheduleRetile
 M.scheduleRecheck = scheduleRecheck
 M.restoreFloatingFrames = restoreFloatingFrames
 M.locate = locate
+M.toggleMaximized = toggleMaximized
+M.focused = focused
 
 return M
