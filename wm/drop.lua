@@ -62,7 +62,7 @@ local function beginDrag(win)
     local byScreen = Discover.windowsByScreen()
     for _, s in ipairs(hs.screen.allScreens()) do
         local sKey = Tree.keyForScreen(s)
-        for _, w in ipairs(byScreen[s:getUUID()] or {}) do
+        for _, w in ipairs(not S.untiled[sKey] and byScreen[s:getUUID()] or {}) do
             if w:id() ~= win:id() then
                 table.insert(targets, { win = w, frame = Tree.rectFor(w:id()) or w:frame(), key = sKey })
             end

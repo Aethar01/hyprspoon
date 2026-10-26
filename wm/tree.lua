@@ -22,6 +22,7 @@ local Spaces -- required last: it loads modules that read M.bootTime at load
 local TREES_KEY = "bspTrees"
 local TREES_BOOT_KEY = "bspTreesBoot"
 local MAXIMIZED_KEY = "bspMaximized"
+local UNTILED_KEY = "bspUntiledWorkspaces"
 local bootTime = tonumber(
     (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 
@@ -32,6 +33,9 @@ S.trees = {}
 -- Tree key -> the window filling that workspace's whole tiling area, over
 -- the other tiles (which keep their places underneath).
 S.maximized = {}
+-- Tree keys of workspaces whose windows float while tiling is on. Their
+-- trees are kept (and ignored) for when tiling comes back.
+S.untiled = {}
 do
     local savedBoot = hs.settings.get(TREES_BOOT_KEY)
     if type(savedBoot) == "number" and math.abs(savedBoot - bootTime) < 120 then
@@ -40,6 +44,9 @@ do
         end
         for key, id in pairs(hs.settings.get(MAXIMIZED_KEY) or {}) do
             if key:match("^ws%d+$") then S.maximized[key] = id end
+        end
+        for key in pairs(hs.settings.get(UNTILED_KEY) or {}) do
+            if key:match("^ws%d+$") then S.untiled[key] = true end
         end
     end
 end
@@ -65,13 +72,15 @@ local function saveTreesNow()
     for key, tree in pairs(S.trees) do
         out[key] = stripTree(tree)
     end
-    local maximized = {}
+    local maximized, untiled = {}, {}
     for key, id in pairs(S.maximized) do maximized[key] = id end
-    local encoded = hs.json.encode({ trees = out, maximized = maximized })
+    for key in pairs(S.untiled) do untiled[key] = true end
+    local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled })
     if encoded == savedTrees then return end
     savedTrees = encoded
     hs.settings.set(TREES_KEY, out)
     hs.settings.set(MAXIMIZED_KEY, maximized)
+    hs.settings.set(UNTILED_KEY, untiled)
     hs.settings.set(TREES_BOOT_KEY, bootTime)
 end
 
@@ -294,18 +303,20 @@ S.keyIndex = {}
 -- Where a window sits in the trees, by id (no accessibility calls): the path
 -- of splits above it, its leaf and its tree key. If a stale tree still holds
 -- it (e.g. an emptied display that was never reconciled), the tree for an
--- active Space wins.
+-- active Space wins. Workspaces with tiling off have no tiles.
 local function findByID(windowID)
     if not windowID then return nil end
     local cachedKey = S.keyIndex[windowID]
-    if cachedKey and S.trees[cachedKey] then
+    if cachedKey and S.trees[cachedKey] and not S.untiled[cachedKey] then
         local path, leaf = ancestors(S.trees[cachedKey], windowID)
         if path then return path, leaf, cachedKey end
     end
     local found = {}
     for key, tree in pairs(S.trees) do
-        local path, leaf = ancestors(tree, windowID)
-        if path then found[#found + 1] = { path = path, leaf = leaf, key = key } end
+        if not S.untiled[key] then
+            local path, leaf = ancestors(tree, windowID)
+            if path then found[#found + 1] = { path = path, leaf = leaf, key = key } end
+        end
     end
     local f = found[1]
     if #found > 1 then
@@ -412,6 +423,32 @@ local function balance(node)
     balance(node.b)
 end
 
+-- The layout turned a quarter clockwise: left/right splits become
+-- top/bottom ones, and top/bottom ones right/left.
+local function rotate(node)
+    if not node or isLeaf(node) then return end
+    if node.split == "vertical" then
+        node.split = "horizontal"
+    else
+        node.split = "vertical"
+        node.a, node.b = node.b, node.a
+        node.ratio = 1 - (node.ratio or 0.5)
+    end
+    rotate(node.a)
+    rotate(node.b)
+end
+
+-- The layout mirrored left to right.
+local function mirror(node)
+    if not node or isLeaf(node) then return end
+    if node.split == "vertical" then
+        node.a, node.b = node.b, node.a
+        node.ratio = 1 - (node.ratio or 0.5)
+    end
+    mirror(node.a)
+    mirror(node.b)
+end
+
 -- Flushes a pending debounced save (reload, shutdown).
 local function stop()
     if saveTimer then
@@ -445,6 +482,8 @@ M.findByID = findByID
 M.boundingSplit = boundingSplit
 M.moveSplit = moveSplit
 M.balance = balance
+M.rotate = rotate
+M.mirror = mirror
 
 Spaces = require("wm.spaces")
 

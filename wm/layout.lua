@@ -410,8 +410,8 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
     for _, screen in ipairs(hs.screen.allScreens()) do
         local windows = byScreen[screen:getUUID()] or {}
 
-        if #windows > 0 then
-            local key = Tree.keyForScreen(screen)
+        local key = #windows > 0 and Tree.keyForScreen(screen)
+        if key and not S.untiled[key] then
             local usableFrame = inset(screen:frame(), S.cfg.tiling.outerGap)
 
             local ids = {}
@@ -605,6 +605,35 @@ local function focused(id)
     tileNow(false, Tree.keyUUID(key))
 end
 
+-- Turns tiling off or back on for one workspace. Its windows go back to
+-- the frames they had before they were tiled, and its tree is kept for
+-- when tiling comes back.
+local function toggleWorkspaceTiling(key)
+    if S.untiled[key] then
+        S.untiled[key] = nil
+        S.keyIndex = {}
+        scheduleRetile(true)
+        return true
+    end
+    S.untiled[key] = true
+    S.maximized[key] = nil
+    S.keyIndex = {}
+    signatures[key] = nil
+    for id in pairs(Tree.collectIDs(S.trees[key])) do
+        Discover.cancelLayoutCheck(id)
+        local win, frame = Util.winByID[id], S.floatingFrames[id]
+        S.floatingFrames[id], S.applied[id] = nil, nil
+        if frame and win and win:id() == id and not Spaces.isHidden(id) then
+            S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE + S.cfg.tiling.animationDuration
+            Util.setFrame(win, frame, S.cfg.tiling.animationDuration)
+        end
+    end
+    Tree.saveTrees()
+    Border.sync()
+    Focus.invalidateWindowCache()
+    return false
+end
+
 -- Cancels the pending retile and recheck (reload, shutdown).
 local function stop()
     if retileTimer then retileTimer:stop() end
@@ -624,5 +653,6 @@ M.restoreFloatingFrames = restoreFloatingFrames
 M.locate = locate
 M.toggleMaximized = toggleMaximized
 M.focused = focused
+M.toggleWorkspaceTiling = toggleWorkspaceTiling
 
 return M

@@ -184,6 +184,7 @@ local function forgetEmpty()
             home[n] = nil
             S.trees["ws" .. n] = nil
             S.maximized["ws" .. n] = nil
+            S.untiled["ws" .. n] = nil
         end
     end
 end

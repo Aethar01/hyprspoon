@@ -309,6 +309,34 @@ function M.balance()
     Layout.tileNow(false, Tree.keyUUID(key))
 end
 
+-- Turn the workspace's layout a quarter clockwise.
+function M.rotate()
+    local key = currentKey()
+    if not key or not S.trees[key] then return end
+    Tree.rotate(S.trees[key])
+    Layout.tileNow(false, Tree.keyUUID(key))
+end
+
+-- Mirror the workspace's layout left to right.
+function M.mirror()
+    local key = currentKey()
+    if not key or not S.trees[key] then return end
+    Tree.mirror(S.trees[key])
+    Layout.tileNow(false, Tree.keyUUID(key))
+end
+
+-- Tiling on or off for the workspace showing where the focused window (or
+-- the pointer) is, leaving the other workspaces as they are.
+function M.toggleWorkspaceTiling()
+    if not S.tilingEnabled then return end
+    local win = Focus.currentWindow()
+    local screen = (win and win:screen()) or hs.mouse.getCurrentScreen()
+    if not screen then return end
+    local key = Tree.keyForScreen(screen)
+    local on = Layout.toggleWorkspaceTiling(key)
+    hs.alert.show(string.format("Workspace %s tiling %s", key:match("%d+"), on and "on" or "off"))
+end
+
 -- Resize the focused window by a percentage of its own size, e.g.
 -- resize(10, 0) grows width by 10%. Tiled windows move the split bordering
 -- them in the key's direction instead (see Resize.resizePercent).

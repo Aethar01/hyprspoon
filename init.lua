@@ -109,6 +109,9 @@ hs.hotkey.bind(SUPER_SHIFT, "f", wm.toggleMaximize)
 -- SUPER+B: toggle BSP tiling (persists across reloads).
 hs.hotkey.bind(SUPER, "b", wm.toggleTiling)
 
+-- SUPER+Shift+B: toggle tiling for just this workspace (persists too).
+hs.hotkey.bind(SUPER_SHIFT, "b", wm.toggleWorkspaceTiling)
+
 -- SUPER+S: toggle floating for the focused window.
 hs.hotkey.bind(SUPER, "s", wm.toggleFloat)
 
@@ -120,6 +123,11 @@ hs.hotkey.bind(SUPER, "y", wm.toggleSplit)
 
 -- SUPER+=: split every tile of the workspace evenly again.
 hs.hotkey.bind(SUPER, "=", wm.balance)
+
+-- SUPER+R: turn the workspace's layout a quarter clockwise;
+-- SUPER+Shift+R: mirror it left to right.
+hs.hotkey.bind(SUPER, "r", wm.rotate)
+hs.hotkey.bind(SUPER_SHIFT, "r", wm.mirror)
 
 -- SUPER+Return: always open a fresh Ghostty window on the current Space and
 -- screen, regardless of where existing Ghostty windows live.
