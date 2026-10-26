@@ -35,6 +35,7 @@
 #include <mach/mach.h>
 #include <math.h>
 #include <os/lock.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +64,8 @@
     X(CGEventRef, SLEventCreateNextEvent, (int))                                       \
     X(CGError, SLSRegisterNotifyProc, (void *, uint32_t, void *))                      \
     X(CGError, SLSRemoveNotifyProc, (void *, uint32_t, void *))                        \
+    X(CGError, SLSRegisterConnectionNotifyProc, (int, void *, uint32_t, void *))       \
+    X(CGError, SLSRemoveConnectionNotifyProc, (int, void *, uint32_t, void *))         \
     X(CGError, SLSRequestNotificationsForWindows, (int, uint32_t *, int))              \
     X(CGError, SLSNewWindowWithOpaqueShapeAndContext, (int, int, CFTypeRef, CFTypeRef,  \
                                                        int, uint64_t *, float, float,  \
@@ -141,6 +144,7 @@ typedef struct {
 static Ring rings[MAX_RINGS];
 static int ringCount = 0;
 static uint32_t active = 0; // the focused window, ringed or not
+static bool overview = false; // Mission Control or Exposé is up: no rings
 
 // Everything above, and the ring windows, belong to `queue` (and its own
 // connection, drawCid). Hammerspoon's main connection (mainCid) is only for
@@ -350,7 +354,7 @@ static bool fillsDisplay(CGRect bounds) {
 }
 
 static void order(CFTypeRef t, Ring *ring) {
-    bool show = !ring->hidden && !ring->fills && !ring->resizing;
+    bool show = !overview && !ring->hidden && !ring->fills && !ring->resizing;
     if (show) {
         int64_t level = 0;
         SLSGetWindowLevel(drawCid, ring->target, &level);
@@ -553,6 +557,86 @@ static bool systemResizing(Ring *ring) {
 }
 
 // ---------------------------------------------------------------------------
+// Mission Control and Exposé
+// ---------------------------------------------------------------------------
+
+// Rings drawn by CoreAnimation show above everything, so they'd hang over
+// Mission Control's and Exposé's thumbnails. Neither says when it's up (the
+// Dock's accessibility notifications for it no longer come on macOS 27,
+// where the WindowManager process draws it), but it's the only thing that
+// puts WindowManager windows above level 14. Windows coming and
+// going are the cue to look (one WindowServer query, ~0.2ms): every 0.1s
+// for half a second after, since its windows are made before they're
+// shown, and while it's up, since they're put away rather than closed.
+
+static dispatch_source_t overviewCheck = NULL;
+static bool overviewCheckRunning = false;
+static atomic_bool overviewCheckQueued = false;
+static int overviewFollowUps = 0; // checks left after the last cue
+
+static bool overviewShowing(void) {
+    CFArrayRef list = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!list) return false;
+    bool found = false;
+    for (CFIndex i = 0; i < CFArrayGetCount(list) && !found; i++) {
+        CFDictionaryRef info = CFArrayGetValueAtIndex(list, i);
+        CFStringRef owner = CFDictionaryGetValue(info, kCGWindowOwnerName);
+        if (!owner || CFStringCompare(owner, CFSTR("WindowManager"), 0) != kCFCompareEqualTo) continue;
+        int32_t layer = 0;
+        double alpha = 1;
+        CFNumberRef n = CFDictionaryGetValue(info, kCGWindowLayer);
+        if (n) CFNumberGetValue(n, kCFNumberSInt32Type, &layer);
+        n = CFDictionaryGetValue(info, kCGWindowAlpha);
+        if (n) CFNumberGetValue(n, kCFNumberDoubleType, &alpha);
+        // 19 for Exposé and Mission Control, 17 for Mission Control's
+        // thumbnails; its 14 backdrop lingers a second or two after it.
+        found = layer > 14 && alpha > 0;
+    }
+    CFRelease(list);
+    return found;
+}
+
+static void checkOverview(void *unused) {
+    (void)unused;
+    if (atomic_exchange(&overviewCheckQueued, false)) overviewFollowUps = 5;
+    else if (overviewFollowUps > 0) overviewFollowUps--;
+    bool showing = overviewShowing();
+    bool keepLooking = showing || overviewFollowUps > 0;
+    if (keepLooking && !overviewCheckRunning) {
+        if (!overviewCheck) {
+            overviewCheck = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+            dispatch_source_set_timer(overviewCheck, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 10),
+                NSEC_PER_SEC / 10, NSEC_PER_SEC / 100);
+            dispatch_source_set_event_handler_f(overviewCheck, checkOverview);
+        }
+        dispatch_resume(overviewCheck);
+        overviewCheckRunning = true;
+    } else if (!keepLooking && overviewCheckRunning) {
+        dispatch_suspend(overviewCheck);
+        overviewCheckRunning = false;
+    }
+    if (showing == overview) return;
+    overview = showing;
+    // Back from it, each ring goes where its window is now.
+    if (!showing) {
+        for (int i = 0; i < ringCount; i++) {
+            if (rings[i].target) place(&rings[i], false);
+        }
+    }
+    restackAll();
+}
+
+// A window was created or destroyed anywhere (main thread).
+static void onWindowCreatedOrDestroyed(uint32_t event, void *data, size_t length, int cid) {
+    (void)event;
+    (void)data;
+    (void)length;
+    (void)cid;
+    if (queue && !atomic_exchange(&overviewCheckQueued, true)) dispatch_async_f(queue, NULL, checkOverview);
+}
+
+// ---------------------------------------------------------------------------
 // Blending between the colours
 // ---------------------------------------------------------------------------
 
@@ -713,10 +797,24 @@ static const uint32_t events[] = { SL_EVENT_WINDOW_CLOSE, SL_EVENT_WINDOW_MOVE, 
     SL_EVENT_WINDOW_REORDER, SL_EVENT_WINDOW_LEVEL, SL_EVENT_WINDOW_UNHIDE, SL_EVENT_WINDOW_HIDE };
 #define EVENT_COUNT (sizeof(events) / sizeof(events[0]))
 
+// Only what was registered may be removed: SkyLight aborts otherwise.
+static const uint32_t connectionEvents[] = { SL_EVENT_WINDOW_CREATE, SL_EVENT_WINDOW_DESTROY };
+#define CONNECTION_EVENT_COUNT (sizeof(connectionEvents) / sizeof(connectionEvents[0]))
+static bool connectionRegistered[CONNECTION_EVENT_COUNT];
+
 static void registerEvents(bool on) {
     for (size_t i = 0; i < EVENT_COUNT; i++) {
         if (on) SLSRegisterNotifyProc((void *)onWindowEvent, events[i], NULL);
         else SLSRemoveNotifyProc((void *)onWindowEvent, events[i], NULL);
+    }
+    for (size_t i = 0; i < CONNECTION_EVENT_COUNT; i++) {
+        if (on) {
+            connectionRegistered[i] = SLSRegisterConnectionNotifyProc(mainCid, (void *)onWindowCreatedOrDestroyed,
+                connectionEvents[i], NULL) == kCGErrorSuccess;
+        } else if (connectionRegistered[i]) {
+            SLSRemoveConnectionNotifyProc(mainCid, (void *)onWindowCreatedOrDestroyed, connectionEvents[i], NULL);
+            connectionRegistered[i] = false;
+        }
     }
 }
 
@@ -791,6 +889,16 @@ static int l_watch(lua_State *L) {
     int count = luaWindowIds(L, 1, wids, 512);
     SLSRequestNotificationsForWindows(mainCid, wids, count);
     return 0;
+}
+
+// overview(): whether Mission Control or Exposé is taken to be up (the
+// rings hidden), and whether WindowServer reports windows coming and going.
+static int l_overview(lua_State *L) {
+    __block bool up = false;
+    dispatch_sync(queue, ^{ up = overview; });
+    lua_pushboolean(L, up);
+    lua_pushboolean(L, connectionRegistered[0] && connectionRegistered[1]);
+    return 2;
 }
 
 // active(): the focused window, or nil.
@@ -874,6 +982,14 @@ static int l_gc(lua_State *L) {
     (void)L;
     registerEvents(false);
     dispatch_sync(queue, ^{
+        if (overviewCheck) {
+            if (!overviewCheckRunning) dispatch_resume(overviewCheck);
+            dispatch_source_cancel(overviewCheck);
+            dispatch_release(overviewCheck);
+            overviewCheck = NULL;
+            overviewCheckRunning = false;
+        }
+        overview = false;
         if (releaseCheck) {
             if (!releaseCheckRunning) dispatch_resume(releaseCheck); // can't cancel a suspended source
             dispatch_source_cancel(releaseCheck);
@@ -924,6 +1040,7 @@ int luaopen_wm_native_border(lua_State *L) {
         { "set", l_set },
         { "focus", l_focus },
         { "active", l_active },
+        { "overview", l_overview },
         { "watch", l_watch },
         { "previewer", l_previewer },
         { "style", l_style },
