@@ -37,6 +37,7 @@
 --   bar       workspace numbers in the menu bar, and the row they're drawn as
 --   hud       workspace pop-up and corner badge on the displays
 --   border    rings around the windows, like Hyprland's borders
+--   slide     workspaces sliding in and out as they switch
 --   overview  every workspace at a glance, in place of Mission Control
 --   actions   the hotkey actions
 --   init      (this file) the public API, setup and teardown
@@ -48,6 +49,7 @@
 --   hover     the window under the pointer, from a native event tap
 --   frames    accessibility frame changes, animations and modifier-drags on
 --             a background queue per app
+--   slide     the workspace slides, animated by WindowServer
 --
 -- Modules require each other freely (cycles are harmless: each registers
 -- itself in package.loaded before requiring anything) and call each other
@@ -69,6 +71,7 @@ local Swipe = require("wm.swipe")
 local Bar = require("wm.bar")
 local Hud = require("wm.hud")
 local Border = require("wm.border")
+local Slide = require("wm.slide")
 local Overview = require("wm.overview")
 
 -- The public API.
@@ -431,6 +434,7 @@ function M.setup(opts)
 
     Bar.start()
     Hud.start()
+    Slide.start()
     Spaces.start()
     Border.start()
     Util.watchWindows()

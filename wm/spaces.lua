@@ -13,6 +13,7 @@ local Bar = require("wm.bar")
 local Hud = require("wm.hud")
 local Border = require("wm.border")
 local Restore = require("wm.restore")
+local Slide = require("wm.slide")
 
 -- ---------------------------------------------------------------------------
 -- Workspaces
@@ -218,6 +219,7 @@ local function forgetEmpty()
     for n in pairs(home) do
         if not used[n] then
             home[n] = nil
+            Slide.forget(n)
             S.trees["ws" .. n] = nil
             S.maximized["ws" .. n] = nil
             S.untiled["ws" .. n] = nil
@@ -444,6 +446,15 @@ local function focusWorkspace(n, warp, skip)
     end
 end
 
+-- The windows of workspace `n`.
+local function windowsOf(n)
+    local ids = {}
+    for id, m in pairs(of) do
+        if m == n then ids[#ids + 1] = id end
+    end
+    return ids
+end
+
 -- Show workspace `n` on display `uuid` and focus it.
 local function switchTo(n, uuid)
     local pointer = pointerUUID()
@@ -452,6 +463,9 @@ local function switchTo(n, uuid)
         if previous <= NAMED_BASE then lastNumbered = previous end
     end
     if active[uuid] ~= n then
+        local left = active[uuid]
+        Slide.switch(connected[uuid], left, n, left and windowsOf(left) or {}, windowsOf(n),
+            (left and n < left) and -1 or 1)
         active[uuid] = n
         home[n] = uuid
         refresh()
@@ -729,6 +743,7 @@ end
 -- Displays came or went: workspaces of a missing display move to the
 -- primary one, and every parked window goes to its (possibly new) corner.
 function M.screensChanged()
+    Slide.reset()
     refresh()
     sync(true)
 end

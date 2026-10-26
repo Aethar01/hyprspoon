@@ -43,6 +43,12 @@ S.defaults = {
     -- Workspaces with names (e.g. for scratchpads), after 1 to 10.
     namedWorkspaces = { "A", "S", "D" },
 
+    -- Workspaces slide in and out as they switch, like Hyprland's, on a
+    -- spring (Hyprland's mass, stiffness and dampening). Set to false to
+    -- switch without. Needs wm.native.slide (make -C wm/native) and Screen
+    -- Recording permission; costs one ~40ms capture per switch.
+    slide = { mass = 0.6, stiffness = 800, damping = 38 },
+
     -- Trackpad swipe between workspaces (next/previous on the display under
     -- the pointer). `distance` is how far the fingers travel sideways, as a
     -- fraction of the trackpad's width. Set to false to disable.
