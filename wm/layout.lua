@@ -498,6 +498,14 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
         local key = #windows > 0 and Tree.keyForScreen(screen)
         if key and not S.untiled[key] then
             local usableFrame = inset(screen:frame(), S.cfg.tiling.outerGap)
+            local scale = Spaces.layoutScale(key)
+            if scale and scale < 1 then
+                usableFrame = hs.geometry.rect(
+                    usableFrame.x + usableFrame.w * (1 - scale) / 2,
+                    usableFrame.y + usableFrame.h * (1 - scale) / 2,
+                    usableFrame.w * scale,
+                    usableFrame.h * scale)
+            end
 
             local ids = {}
             for i, win in ipairs(windows) do ids[i] = win:id() end

@@ -40,8 +40,12 @@ S.defaults = {
         badge = { show = "hiddenMenuBar", corner = "bottomRight", margin = 6, size = 12, all = false },
     },
 
-    -- Workspaces with names (e.g. for scratchpads), after 1 to 10.
+    -- Workspaces with names, after 1 to 10: scratchpads, shown over the
+    -- workspace on the display (see wm/spaces.lua).
     namedWorkspaces = { "A", "S", "D" },
+    -- The share of the display's area a scratchpad is laid out in, centred
+    -- (Hyprland's special_scale_factor).
+    scratchpadScale = 0.95,
 
     -- Workspaces slide in and out as they switch, like Hyprland's, on a
     -- spring (Hyprland's mass, stiffness and dampening). Set to false to
