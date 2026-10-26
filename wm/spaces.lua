@@ -13,6 +13,7 @@ local Bar = require("wm.bar")
 local Hud = require("wm.hud")
 local Border = require("wm.border")
 local Float = require("wm.float")
+local Restore = require("wm.restore")
 
 -- ---------------------------------------------------------------------------
 -- Workspaces
@@ -54,6 +55,7 @@ local active = {} -- screen UUID -> workspace number it shows
 local home = {}   -- workspace number -> screen UUID it lives on
 local of = {}     -- window id -> workspace number
 local parked = {} -- window id -> its frame before it was parked
+local info = {}   -- window id -> { app = bundle id, title = } for wm/restore.lua
 local pins = {}   -- window id -> until when its workspace ignores its display
 
 -- Derived by refresh() from the above and the connected displays.
@@ -87,10 +89,13 @@ local saveTimer = nil
 
 local function saveNow()
     if saveTimer then saveTimer:stop() saveTimer = nil end
-    local out = { boot = Tree.bootTime, active = {}, home = {}, of = {}, parked = {} }
+    local out = { boot = Tree.bootTime, active = {}, home = {}, of = {}, parked = {}, info = {} }
     for uuid, n in pairs(active) do out.active[uuid] = n end
     for n, uuid in pairs(home) do out.home[tostring(n)] = uuid end
-    for id, n in pairs(of) do out.of[tostring(id)] = n end
+    for id, n in pairs(of) do
+        out.of[tostring(id)] = n
+        out.info[tostring(id)] = info[id]
+    end
     for id, f in pairs(parked) do out.parked[tostring(id)] = f end
     hs.settings.set(STATE_KEY, out)
 end
@@ -105,12 +110,17 @@ local function save()
 end
 
 local function loadState()
-    active, home, of, parked, pins = {}, {}, {}, {}, {}
+    active, home, of, parked, pins, info = {}, {}, {}, {}, {}, {}
     local saved = hs.settings.get(STATE_KEY)
     if type(saved) ~= "table" or type(saved.boot) ~= "number"
        or math.abs(saved.boot - Tree.bootTime) >= 120 then
+        -- After a restart each display shows the workspace it showed before.
+        for uuid, n in pairs(Restore.savedActive()) do
+            active[uuid], home[tonumber(n)] = tonumber(n), uuid
+        end
         return
     end
+    for id, d in pairs(saved.info or {}) do info[tonumber(id)] = d end
     for uuid, n in pairs(saved.active or {}) do active[uuid] = tonumber(n) end
     for n, uuid in pairs(saved.home or {}) do home[tonumber(n)] = uuid end
     for id, n in pairs(saved.of or {}) do of[tonumber(id)] = tonumber(n) end
@@ -314,16 +324,29 @@ local function claim(win, uuid)
     local id = win:id()
     local n = of[id]
     if not connected[uuid] or not active[uuid] then refresh() end
-    -- A rule's workspace (see S.cfg.rules), the first time it's seen.
-    local rule = not n and Util.rulesFor(win)
-    local wanted = rule and (rule.workspace == "scratchpad" and SCRATCH or math.tointeger(rule.workspace))
+    -- A rule's workspace (see S.cfg.rules), else the one it had before a
+    -- restart (see wm/restore.lua), the first time it's seen.
+    if not info[id] then
+        local app = win:application()
+        info[id] = { app = app and app:bundleID() }
+    end
+    local rule, wanted = nil, nil
+    if not n then
+        rule = Util.rulesFor(win)
+        wanted = rule.workspace == "scratchpad" and SCRATCH or math.tointeger(rule.workspace)
+        if not wanted then
+            wanted = Restore.match(win, info[id].app)
+            rule = { silent = true }
+        end
+    end
     if wanted and wanted >= 0 and wanted ~= active[uuid] then
         of[id] = wanted
         if wanted == SCRATCH then
             S.autoFloat[id] = true
             rule = { silent = true }
         elseif not home[wanted] then
-            home[wanted] = uuid
+            local before = Restore.savedHome(wanted)
+            home[wanted] = (before and connected[before]) and before or uuid
         end
         local to = shown[wanted]
         if to and to ~= uuid then
@@ -720,7 +743,7 @@ end
 -- A window closed, or left for a full-screen Space or the Dock.
 function M.forget(id)
     if not id or (of[id] == nil and parked[id] == nil) then return end
-    of[id], parked[id], pins[id] = nil, nil, nil
+    of[id], parked[id], pins[id], info[id] = nil, nil, nil, nil
     save()
 end
 
@@ -740,6 +763,22 @@ end
 function M.uuidForKey(key)
     local n = key and tonumber(key:match("^ws(%d+)$"))
     return n and displayOf(n)
+end
+
+-- Notes every window's title for matching windows after a restart (see
+-- wm/restore.lua). Accessibility calls, so only on the way out.
+function M.rememberTitles()
+    for _, win in ipairs(Util.managedWindows()) do
+        local id = win:id()
+        if id and of[id] then
+            if not info[id] then
+                local app = win:application()
+                info[id] = { app = app and app:bundleID() }
+            end
+            info[id].title = win:title()
+        end
+    end
+    saveNow()
 end
 
 -- Brings every parked window back where it was, keeping the workspaces so

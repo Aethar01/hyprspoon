@@ -32,6 +32,7 @@
 --   mouse     modifier + drag anywhere on a window
 --   ffm       focus follows mouse
 --   spaces    numbered workspaces, parking the windows of hidden ones
+--   restore   layouts and workspaces back after a restart
 --   swipe     trackpad swipes between workspaces
 --   bar       workspace numbers in the menu bar, and the row they're drawn as
 --   hud       workspace pop-up and corner badge on the displays
@@ -159,6 +160,7 @@ function M.setup(opts)
         shutdownHooked = true
         local previous = hs.shutdownCallback
         hs.shutdownCallback = function()
+            Spaces.rememberTitles()
             Spaces.unparkAll()
             M.stop()
             if previous then previous() end

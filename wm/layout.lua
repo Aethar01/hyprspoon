@@ -12,6 +12,7 @@ local Discover = require("wm.discover")
 local Spaces = require("wm.spaces")
 local Border = require("wm.border")
 local Drop = require("wm.drop")
+local Restore = require("wm.restore")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -204,7 +205,7 @@ local function reconcileTree(key, windows)
         end
     end
 
-    local tree = Tree.prune(previous, valid)
+    local tree = Restore.rebuild(key, Tree.prune(previous, valid), valid)
     local present = Tree.collectIDs(tree)
 
     for _, win in ipairs(windows) do
