@@ -1,0 +1,235 @@
+// wm/native/hover.c: The window under the pointer, for focus follows mouse.
+//
+// Loaded by wm/ffm.lua as wm.native.hover (build: make -C wm/native).
+//
+// A listen-only event tap watches the pointer move and finds the window
+// under it in the snapshot wm/focus.lua builds, calling Lua only when that
+// window changes. Without a current snapshot (windows moved, appeared or
+// changed focus since) every move goes to Lua, which builds one and hands
+// it over.
+
+#include <ApplicationServices/ApplicationServices.h>
+#include <string.h>
+
+#include "luacall.h"
+
+typedef struct {
+    uint32_t id;
+    pid_t pid;
+    CGRect frame;
+    bool floating;
+} Entry;
+
+#define MAX_ENTRIES 256
+#define MAX_UNMANAGED 32
+static Entry entries[MAX_ENTRIES]; // front to back
+static int entryCount = 0;
+static CGRect unmanaged[MAX_UNMANAGED]; // pointer here focuses nothing (PiP)
+static int unmanagedCount = 0;
+static bool haveSnapshot = false;
+static CFAbsoluteTime expires = 0;
+
+static uint32_t last = 0; // the window last reported under the pointer
+static int64_t warpMarker = 0;
+static LuaCallback onMove = LUA_CALLBACK_NONE;
+static CFMachPortRef tap = NULL;
+static CFRunLoopSourceRef tapSource = NULL;
+
+// Matches Util.pointInFrame: the right and bottom edges are outside.
+static bool inside(CGPoint p, CGRect r) {
+    return p.x >= r.origin.x && p.x < r.origin.x + r.size.width
+        && p.y >= r.origin.y && p.y < r.origin.y + r.size.height;
+}
+
+// Focus.snapshotEntryAt: the topmost window under the point, except that a
+// float under it wins over a tile of another app; nothing over PiP.
+static uint32_t windowAt(CGPoint p) {
+    for (int i = 0; i < unmanagedCount; i++) {
+        if (inside(p, unmanaged[i])) return 0;
+    }
+    Entry *top = NULL;
+    for (int i = 0; i < entryCount; i++) {
+        if (inside(p, entries[i].frame)) {
+            top = &entries[i];
+            break;
+        }
+    }
+    if (!top || top->floating) return top ? top->id : 0;
+    for (int i = 0; i < entryCount; i++) {
+        if (entries[i].floating && inside(p, entries[i].frame) && entries[i].pid != top->pid) {
+            return entries[i].id;
+        }
+    }
+    return top->id;
+}
+
+static void report(CGPoint p) {
+    if (!luaCallbackPush(&onMove)) return;
+    lua_pushnumber(onMove.L, p.x);
+    lua_pushnumber(onMove.L, p.y);
+    luaCallbackCall(&onMove, 2);
+}
+
+static CGEventRef onEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context) {
+    (void)proxy;
+    (void)context;
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (tap) CGEventTapEnable(tap, true);
+        return event;
+    }
+    if (type != kCGEventMouseMoved) return event;
+    // Keyboard warps chose their window already.
+    if (warpMarker && CGEventGetIntegerValueField(event, kCGEventSourceUserData) == warpMarker) {
+        return event;
+    }
+    CGPoint p = CGEventGetLocation(event);
+    if (!haveSnapshot || CFAbsoluteTimeGetCurrent() > expires) {
+        haveSnapshot = false;
+        report(p);
+        // Lua usually hands a snapshot over while handling it.
+        if (haveSnapshot) last = windowAt(p);
+        return event;
+    }
+    uint32_t id = windowAt(p);
+    if (id != last) {
+        last = id;
+        report(p);
+    }
+    return event;
+}
+
+static void stop(void) {
+    if (tap) {
+        CGEventTapEnable(tap, false);
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), tapSource, kCFRunLoopCommonModes);
+        CFRelease(tapSource);
+        CFMachPortInvalidate(tap);
+        CFRelease(tap);
+        tap = NULL;
+        tapSource = NULL;
+    }
+    luaCallbackClear(&onMove);
+    haveSnapshot = false;
+    last = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Lua API
+// ---------------------------------------------------------------------------
+
+// start(onMove, warpMarker): calls onMove(x, y) when the pointer moves onto
+// another window (or off them), or on every move while there's no
+// snapshot. Moves posted with `warpMarker` as their source user data are
+// skipped. False if the tap can't be made (no accessibility permission).
+static int l_start(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    stop();
+    warpMarker = luaL_optinteger(L, 2, 0);
+    tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly,
+        CGEventMaskBit(kCGEventMouseMoved), onEvent, NULL);
+    if (!tap) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
+    tapSource = CFMachPortCreateRunLoopSource(NULL, tap, 0);
+    CFRunLoopAddSource(CFRunLoopGetMain(), tapSource, kCFRunLoopCommonModes);
+    CGEventTapEnable(tap, true);
+    luaCallbackSet(&onMove, L, 1);
+    lua_pushboolean(L, true);
+    return 1;
+}
+
+static CGRect readRect(lua_State *L, int index) {
+    CGRect r = CGRectZero;
+    lua_getfield(L, index, "x");
+    r.origin.x = lua_tonumber(L, -1);
+    lua_getfield(L, index, "y");
+    r.origin.y = lua_tonumber(L, -1);
+    lua_getfield(L, index, "w");
+    r.size.width = lua_tonumber(L, -1);
+    lua_getfield(L, index, "h");
+    r.size.height = lua_tonumber(L, -1);
+    lua_pop(L, 4);
+    return r;
+}
+
+// snapshot(entries, unmanaged, ttl): the windows front to back, each
+// { id =, pid =, floating =, frame = {x, y, w, h} }, the frames over which
+// nothing is focused, and how many seconds the snapshot holds.
+static int l_snapshot(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    entryCount = 0;
+    lua_Integer n = luaL_len(L, 1);
+    for (lua_Integer i = 1; i <= n && entryCount < MAX_ENTRIES; i++) {
+        lua_rawgeti(L, 1, i);
+        Entry *e = &entries[entryCount++];
+        lua_getfield(L, -1, "id");
+        e->id = (uint32_t)lua_tointeger(L, -1);
+        lua_getfield(L, -2, "pid");
+        e->pid = (pid_t)lua_tointeger(L, -1);
+        lua_getfield(L, -3, "floating");
+        e->floating = lua_toboolean(L, -1);
+        lua_getfield(L, -4, "frame");
+        e->frame = lua_istable(L, -1) ? readRect(L, lua_gettop(L)) : CGRectZero;
+        lua_pop(L, 5);
+    }
+    unmanagedCount = 0;
+    if (lua_istable(L, 2)) {
+        n = luaL_len(L, 2);
+        for (lua_Integer i = 1; i <= n && unmanagedCount < MAX_UNMANAGED; i++) {
+            lua_rawgeti(L, 2, i);
+            unmanaged[unmanagedCount++] = readRect(L, lua_gettop(L));
+            lua_pop(L, 1);
+        }
+    }
+    expires = CFAbsoluteTimeGetCurrent() + luaL_optnumber(L, 3, 1);
+    haveSnapshot = true;
+    return 0;
+}
+
+// invalidate(): the snapshot is out of date; send every move to Lua again.
+static int l_invalidate(lua_State *L) {
+    (void)L;
+    haveSnapshot = false;
+    return 0;
+}
+
+// forget(): report the window under the pointer on the next move even if
+// it's the one reported last.
+static int l_forget(lua_State *L) {
+    (void)L;
+    last = 0;
+    return 0;
+}
+
+static int l_stop(lua_State *L) {
+    (void)L;
+    stop();
+    return 0;
+}
+
+static int l_gc(lua_State *L) {
+    (void)L;
+    stop();
+    return 0;
+}
+
+int luaopen_wm_native_hover(lua_State *L) {
+    static const luaL_Reg funcs[] = {
+        { "start", l_start },
+        { "snapshot", l_snapshot },
+        { "invalidate", l_invalidate },
+        { "forget", l_forget },
+        { "stop", l_stop },
+        { NULL, NULL },
+    };
+    luaL_newlib(L, funcs);
+
+    lua_newuserdata(L, 1);
+    lua_newtable(L);
+    lua_pushcfunction(L, l_gc);
+    lua_setfield(L, -2, "__gc");
+    lua_setmetatable(L, -2);
+    lua_setfield(L, -2, "_sentinel");
+    return 1;
+}

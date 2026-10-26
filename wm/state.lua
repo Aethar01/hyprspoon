@@ -48,6 +48,21 @@ S.defaults = {
         distance = 0.12,
     },
 
+    -- Rings around the windows on show, `width` points outside their edges,
+    -- in the gap between tiles: the focused window's `active`, the others'
+    -- `inactive` (false for none). Colours are "#rrggbb" or hs.drawing.color
+    -- tables. `radius` is the corner radius for windows whose own macOS
+    -- doesn't report (it does from macOS 26); `fade` is seconds to
+    -- blend between the colours as focus moves (0 snaps). Set to false to
+    -- disable. Needs wm.native.border (make -C wm/native).
+    border = {
+        active = "#6c99ba",
+        inactive = { hex = "#595959", alpha = 0xaa / 255 },
+        width = 3,
+        radius = 12,
+        fade = 0.15,
+    },
+
     -- App names whose windows are never watched or tiled (palettes, overlays,
     -- anything noisy). Fewer watched windows means fewer events to process.
     ignoreApps = {},

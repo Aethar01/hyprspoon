@@ -335,21 +335,53 @@ local function boundingSplit(path, split, branch)
     return nil
 end
 
--- Move the split bordering `edge` so the tile edge lands at `pos`.
+local function clampRatio(ratio)
+    return math.max(S.cfg.tiling.minRatio, math.min(S.cfg.tiling.maxRatio, ratio))
+end
+
+-- `node`'s extent along the moved split's axis becomes `start`..`start +
+-- size`: its own splits across that axis stay where they are on screen
+-- (their ratios change instead), as far as the ratio limits allow. Splits
+-- the other way just pass the extent on. Positions as Layout's applyTree
+-- lays them out, from the rects it last gave each node.
+local function keepSplits(node, horizontal, start, size)
+    if not node or isLeaf(node) or not node.rect then return end
+    local gap = S.cfg.tiling.innerGap
+    if (node.split == "vertical") ~= horizontal then
+        keepSplits(node.a, horizontal, start, size)
+        keepSplits(node.b, horizontal, start, size)
+        return
+    end
+    local oldStart = horizontal and node.rect.x or node.rect.y
+    local oldSize = horizontal and node.rect.w or node.rect.h
+    local line = oldStart + math.floor(math.max(1, oldSize - gap) * clampRatio(node.ratio or 0.5))
+    local usable = math.max(1, size - gap)
+    -- Half a point over, so the layout's floor lands on the same pixel.
+    node.ratio = clampRatio((line - start + 0.5) / usable)
+    local first = math.floor(usable * node.ratio)
+    keepSplits(node.a, horizontal, start, first)
+    keepSplits(node.b, horizontal, start + first + gap, usable - first)
+end
+
+-- Move the split bordering `edge` so the tile edge lands at `pos`. Only
+-- that edge moves: the splits inside the subtrees on either side stay put.
 local function moveSplit(node, edge, pos)
     local horizontal = node.split == "vertical"
     local origin = horizontal and node.rect.x or node.rect.y
     local size = horizontal and node.rect.w or node.rect.h
-    local usable = math.max(1, size - S.cfg.tiling.innerGap)
+    local gap = S.cfg.tiling.innerGap
+    local usable = math.max(1, size - gap)
 
     -- The "a" tile ends at the split line; the "b" tile starts one gap later.
     local first = pos - origin
     if edge == "left" or edge == "top" then
-        first = first - S.cfg.tiling.innerGap
+        first = first - gap
     end
 
-    node.ratio = math.max(S.cfg.tiling.minRatio,
-        math.min(S.cfg.tiling.maxRatio, first / usable))
+    node.ratio = clampRatio((first + 0.5) / usable)
+    first = math.floor(usable * node.ratio)
+    keepSplits(node.a, horizontal, origin, first)
+    keepSplits(node.b, horizontal, origin + first + gap, usable - first)
 end
 
 

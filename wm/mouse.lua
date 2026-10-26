@@ -4,9 +4,11 @@ local M = {}
 package.loaded["wm.mouse"] = M
 
 local S = require("wm.state")
+local Util = require("wm.util")
 local Focus = require("wm.focus")
 local Resize = require("wm.resize")
 local Drop = require("wm.drop")
+local Border = require("wm.border")
 
 -- ---------------------------------------------------------------------------
 -- Mouse: modifier + drag anywhere on a window
@@ -18,11 +20,26 @@ local function modsMatch(flags, mods)
     return mods and flags:containExactly(mods)
 end
 
+-- Drag events reach Lua only during one of our drags that wm.native.frames
+-- isn't following (it isn't built, or its tap couldn't be made).
+local dragTap = nil
+local onMouseEvent
+
+local function followInLua(on)
+    if on and not dragTap then
+        dragTap = hs.eventtap.new({ mouseTypes.leftMouseDragged, mouseTypes.rightMouseDragged },
+            function(event) return onMouseEvent(event) end):start()
+    elseif not on and dragTap then
+        dragTap:stop()
+        dragTap = nil
+    end
+end
+
 local function beginMouseDrag(mode, point)
     local win = Focus.windowUnderPoint(point, true)
     if not win then return false end
 
-    win:focus()
+    Util.focusWindow(win)
     -- Resizes are paced to the display's refresh rate (see onMouseEvent).
     local screen = win:screen()
     local display = screen and screen:currentMode()
@@ -40,6 +57,34 @@ local function beginMouseDrag(mode, point)
     else
         Resize.beginResize(win, point)
     end
+
+    -- wm.native.frames follows the pointer from here, off the main thread;
+    -- the drags below are then never seen here.
+    local frames = Util.native("frames")
+    if frames then
+        local f = S.dragState.frame
+        local xBranch, yBranch = Resize.resizeBranches()
+        S.dragState.native = frames.dragBegin({
+            pid = win:pid(),
+            wid = win:id(),
+            mode = mode,
+            frame = { x = f.x, y = f.y, w = f.w, h = f.h },
+            point = { x = point.x, y = point.y },
+            xBranch = xBranch,
+            yBranch = yBranch,
+            minW = S.cfg.minWidth,
+            minH = S.cfg.minHeight,
+            onMove = mode == "move" and function(x, y) Drop.updateDrag({ x = x, y = y }) end or nil,
+            -- The ring keeps up with the pointer; the app fills it in as
+            -- fast as it can.
+            preview = Border.previewer(),
+            interval = S.dragState.interval,
+        })
+        -- The window's own reports of each frame would only keep the main
+        -- thread busy mid-drag; it's looked at once when the drag ends.
+        if S.dragState.native and S.running.events then S.running.events.mute(win:id()) end
+    end
+    if not S.dragState.native then followInLua(true) end
     return true
 end
 
@@ -64,7 +109,7 @@ local function applyDrag(point)
     end
 end
 
-local function onMouseEvent(event)
+function onMouseEvent(event)
     local eventType = event:getType()
     S.lastMouseTime = hs.timer.secondsSinceEpoch()
 
@@ -92,6 +137,7 @@ local function onMouseEvent(event)
     elseif S.dragState
        and (eventType == mouseTypes.leftMouseDragged
             or eventType == mouseTypes.rightMouseDragged) then
+        if S.dragState.native then return true end
         -- A move is one cheap position call, so it follows every event.
         if S.dragState.mode == "move" then
             applyDrag(point)
@@ -122,9 +168,16 @@ local function onMouseEvent(event)
             or eventType == mouseTypes.rightMouseUp) then
         local win = S.dragState.win
         local mode = S.dragState.mode
-        if S.dragState.trailing then S.dragState.trailing:stop() end
-        applyDrag(point)  -- the pacing may have held back the last movement
+        if S.dragState.native then
+            -- Waits for the app to take the last frame.
+            Util.native("frames").dragEnd(point.x, point.y)
+            if S.running.events then S.running.events.mute(nil) end
+        else
+            if S.dragState.trailing then S.dragState.trailing:stop() end
+            applyDrag(point)  -- the pacing may have held back the last movement
+        end
         S.dragState = nil
+        followInLua(false)
         if mode == "move" and win and Drop.finishDrag(win, point) then
             return true
         end
@@ -138,6 +191,11 @@ local function onMouseEvent(event)
     end
 
     return false
+end
+
+-- Stops following a drag in Lua (reload, shutdown).
+function M.stop()
+    followInLua(false)
 end
 
 M.mouseTypes = mouseTypes

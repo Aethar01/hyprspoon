@@ -256,12 +256,14 @@ end
 -- Accessibility setters can return before an app applies the frame, or be
 -- ignored during startup. Cache only observed success and retry a bounded
 -- number of times; minimum-size constraints must not create a retry loop.
-local function verifyLayout(win, rect, rectKey)
+-- `animating` is how long the window is still easing towards `rect` (with
+-- wm.native.frames it reports the frames on the way, not the end).
+local function verifyLayout(win, rect, rectKey, animating)
     local id = win:id()
     Discover.cancelLayoutCheck(id)
     local pending = { key = rectKey, started = hs.timer.secondsSinceEpoch() }
     Discover.layoutChecks[id] = pending
-    local delays = { 0.15, 0.35, 0.7 }
+    local delays = { 0.15 + (animating or 0), 0.35, 0.7 }
     local function check(step)
         pending.timer = hs.timer.doAfter(delays[step], function()
             if Discover.layoutChecks[id] ~= pending then return end
@@ -286,7 +288,7 @@ local function verifyLayout(win, rect, rectKey)
                     return
                 end
                 S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
-                win:setFrame(rect, 0)
+                Util.setFrame(win, rect, 0)
                 Focus.invalidateWindowCache()
                 check(step + 1)
             else
@@ -319,10 +321,14 @@ local function applyTree(node, rect, byID)
             local moved = math.abs(f.x - rect.x) > 1 or math.abs(f.y - rect.y) > 1
             local resized = math.abs(f.w - rect.w) > 1 or math.abs(f.h - rect.h) > 1
             -- setFrame is size, position, size; one call is enough when only
-            -- one of them changes. Only setFrame animates.
+            -- one of them changes. Only setFrame animates. wm.native.frames
+            -- makes the same choice itself, off the main thread.
             local duration = S.cfg.tiling.animationDuration
             if S.dragState or hs.mouse.getButtons().left then duration = 0 end
-            if duration > 0 and (moved or resized) then
+            local native = Util.native("frames")
+            if native and (moved or resized) then
+                Util.setFrame(win, rect, duration)
+            elseif duration > 0 and (moved or resized) then
                 win:setFrame(rect, duration)
             elseif moved and resized then
                 win:setFrame(rect, 0)
@@ -333,7 +339,7 @@ local function applyTree(node, rect, byID)
             end
             if moved or resized then
                 S.applied[id] = nil
-                verifyLayout(win, hs.geometry.copy(rect), rectKey)
+                verifyLayout(win, hs.geometry.copy(rect), rectKey, native and duration or 0)
             else
                 S.applied[id] = rectKey
             end

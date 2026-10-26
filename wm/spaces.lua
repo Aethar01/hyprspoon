@@ -11,6 +11,7 @@ local Discover = require("wm.discover")
 local Layout = require("wm.layout")
 local Bar = require("wm.bar")
 local Hud = require("wm.hud")
+local Border = require("wm.border")
 
 -- ---------------------------------------------------------------------------
 -- Workspaces
@@ -241,6 +242,7 @@ local function park(win, n)
     S.applied[id] = nil
     S.windowInfo[id] = nil
     settle()
+    Border.forget(id)
     win:setTopLeft(parkPoint(displayOf(n), frame))
 end
 
@@ -251,6 +253,7 @@ local function unpark(win)
     local id = win:id()
     local frame = parked[id]
     parked[id] = nil
+    Border.sync()
     S.applied[id] = nil
     S.windowInfo[id] = nil
     if not frame or (S.tilingEnabled and not S.autoFloat[id] and Tree.findByID(id)) then return end
