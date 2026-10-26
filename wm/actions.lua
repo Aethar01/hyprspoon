@@ -212,9 +212,19 @@ function M.swap(direction)
     end
     if not other then return end
 
-    local _, _, keyA = Layout.locate(win)
-    local _, _, keyB = Layout.locate(other)
-    if keyA or keyB then
+    local _, leafA, keyA = Layout.locate(win)
+    local _, leafB, keyB = Layout.locate(other)
+    if keyA and keyB and keyA ~= keyB then
+        -- Tiles on two displays trade places, and workspaces.
+        leafA.windowID, leafB.windowID = other:id(), win:id()
+        S.keyIndex = {}
+        S.applied[win:id()], S.applied[other:id()] = nil, nil
+        Spaces.exchange(win:id(), other:id())
+        Layout.tileNow(false)
+        Focus.focus(win)
+        Util.warpToWindow(win)
+        return
+    elseif keyA or keyB then
         -- Only swap within one layout; frame swaps would be undone by the
         -- next retile.
         if keyA == keyB then

@@ -341,6 +341,16 @@ local function claimAll()
     end
 end
 
+-- Windows `a` and `b` trade workspaces (they're trading places across
+-- displays), each keeping its new one while it gets there.
+function M.exchange(a, b)
+    local until_ = hs.timer.secondsSinceEpoch() + 1
+    of[a], of[b] = of[b], of[a]
+    pins[a], pins[b] = until_, until_
+    S.windowInfo[a], S.windowInfo[b] = nil, nil
+    save()
+end
+
 -- ---------------------------------------------------------------------------
 -- Switching
 -- ---------------------------------------------------------------------------
