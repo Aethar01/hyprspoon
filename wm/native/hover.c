@@ -9,6 +9,7 @@
 // it over.
 
 #include <ApplicationServices/ApplicationServices.h>
+#include <libproc.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -208,10 +209,25 @@ static int number(CFDictionaryRef info, CFStringRef key, CFNumberType type, void
     return n && CFNumberGetValue(n, type, out);
 }
 
+// Whether `pid` is Notification Centre. While a banner shows it keeps a
+// transparent, click-through window over the whole screen, above the
+// windows (layer 21), which would otherwise pass for a popup everywhere.
+// By path: its window's owner name is localized. Not UserNotificationCenter,
+// whose dialogs are real.
+static bool isNotificationCenter(pid_t pid) {
+    static pid_t known = 0;
+    if (pid == known) return true;
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(pid, path, sizeof path) <= 0 || !strstr(path, "/NotificationCenter.app/")) return false;
+    known = pid;
+    return true;
+}
+
 // topAt(x, y): the frontmost window on screen under the point, as its id,
 // its owner's pid and its level (0 for normal windows, 101 for menus).
-// Skips Hammerspoon's own (rings, highlights), invisible ones and the
-// cursor's. Nothing if there's none. One WindowServer query, ~1ms.
+// Skips Hammerspoon's own (rings, highlights), invisible ones, the
+// cursor's and Notification Centre's. Nothing if there's none. One
+// WindowServer query, ~1ms.
 static int l_topAt(lua_State *L) {
     CGPoint p = { luaL_checknumber(L, 1), luaL_checknumber(L, 2) };
     CFArrayRef list = CGWindowListCopyWindowInfo(
@@ -231,6 +247,7 @@ static int l_topAt(lua_State *L) {
         number(info, kCGWindowNumber, kCFNumberSInt32Type, &id);
         if (alpha <= 0 || layer >= kCGScreenSaverWindowLevel) continue;
         if (!b || !CGRectMakeWithDictionaryRepresentation(b, &bounds) || !inside(p, bounds)) continue;
+        if (layer > 0 && isNotificationCenter(pid)) continue;
         lua_pushinteger(L, id);
         lua_pushinteger(L, pid);
         lua_pushinteger(L, layer);
