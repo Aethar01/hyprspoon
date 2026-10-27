@@ -1,4 +1,4 @@
--- Run with: lua tests/wm_regression.lua
+-- Run with: lua tests/regression_test.lua
 -- Exercise the production helpers with deterministic accessibility/timer mocks.
 local sources = {}
 local function read(name)
