@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 (2026-10-27)
+
+- Fixed focus follows mouse doing nothing on macOS 27, where the Dock keeps
+  an invisible window over each display that was mistaken for an open menu.
+  Rebuild the native modules (`make -C hyprspoon/native`) after updating.
+
 ## 0.1.3 (2026-10-27)
 
 - Fixed the picture of a workspace slide staying over the screen after

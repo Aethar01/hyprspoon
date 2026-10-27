@@ -223,6 +223,14 @@ static bool isNotificationCenter(pid_t pid) {
     return true;
 }
 
+// Whether `bounds` spans the whole display under `p`.
+static bool coversDisplay(CGPoint p, CGRect bounds) {
+    CGDirectDisplayID display;
+    uint32_t count = 0;
+    if (CGGetDisplaysWithPoint(p, 1, &display, &count) != kCGErrorSuccess || count == 0) return false;
+    return CGRectContainsRect(bounds, CGDisplayBounds(display));
+}
+
 // topAt(x, y): the frontmost window on screen under the point, as its id,
 // its owner's pid and its level (0 for normal windows, 101 for menus).
 // Skips Hammerspoon's own (rings, highlights), invisible ones, the
@@ -248,6 +256,9 @@ static int l_topAt(lua_State *L) {
         if (alpha <= 0 || layer >= kCGScreenSaverWindowLevel) continue;
         if (!b || !CGRectMakeWithDictionaryRepresentation(b, &bounds) || !inside(p, bounds)) continue;
         if (layer > 0 && isNotificationCenter(pid)) continue;
+        // The Dock keeps an invisible window over each whole display (macOS 27):
+        // not a menu, and it would stop every window from taking focus.
+        if (layer > 0 && coversDisplay(p, bounds)) continue;
         lua_pushinteger(L, id);
         lua_pushinteger(L, pid);
         lua_pushinteger(L, layer);
