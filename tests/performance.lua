@@ -8,7 +8,7 @@ local M = {}
 -- Find internal helpers without adding profiling overhead to production.
 -- Returns { upvalues = { name = fn }, modules = { Name = module table } }:
 -- module-local functions that no module exports (e.g. neighbourInDirection in
--- wm/actions.lua) are reached by walking upvalues from the exported functions
+-- hyprspoon/actions.lua) are reached by walking upvalues from the exported functions
 -- of every loaded wm.* module.
 local function internals()
     local upvalues, modules, seen = {}, {}, {}
@@ -25,7 +25,7 @@ local function internals()
         end
     end
     for name, module in pairs(package.loaded) do
-        local short = type(name) == 'string' and name:match('^wm%.(.+)$')
+        local short = type(name) == 'string' and name:match('^hyprspoon%.(.+)$')
         if short and type(module) == 'table' then
             modules[short:sub(1, 1):upper() .. short:sub(2)] = module
             for _, fn in pairs(module) do
@@ -39,12 +39,12 @@ end
 function M.run(rounds, outPath)
     assert(not M.timer, 'benchmark already running')
     rounds = rounds or 20
-    local wm = require('wm')
+    local wm = require('hyprspoon')
     assert(wm.isTiling(), 'enable tiling before benchmarking')
     local found = internals()
     local m, up = found.modules, found.upvalues
     assert(m.Layout and m.Discover and m.Focus and m.Ffm and m.State and m.Util,
-        'wm modules are not loaded')
+        'hyprspoon modules are not loaded')
     local S, Util = m.State, m.Util
     assert(up.neighbourInDirection, 'neighbourInDirection not reachable from exports')
     local cases = {}

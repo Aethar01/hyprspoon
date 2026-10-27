@@ -1,5 +1,5 @@
 -- Run with: lua tests/restore_test.lua
--- Unit tests for wm/restore.lua: matching windows after a restart and
+-- Unit tests for hyprspoon/restore.lua: matching windows after a restart and
 -- rebuilding their layout, with a stubbed `hs` holding the last boot's state.
 package.path = "./?.lua;" .. package.path
 
@@ -8,13 +8,13 @@ os.time = function() return NOW end
 
 -- Saved by the boot before (kern.boottime 500; this boot's is 1000).
 local settings = {
-    bspTreesBoot = 500,
-    bspTrees = {
+    ["hyprspoon.treesBoot"] = 500,
+    ["hyprspoon.trees"] = {
         ws1 = { split = "vertical", ratio = 0.3,
             a = { windowID = 11 },
             b = { split = "horizontal", ratio = 0.6, a = { windowID = 12 }, b = { windowID = 13 } } },
     },
-    wmWorkspaces = {
+    ["hyprspoon.workspaces"] = {
         boot = 500,
         active = { DISPLAY = 1 },
         home = { ["1"] = "DISPLAY", ["2"] = "DISPLAY" },
@@ -37,13 +37,13 @@ hs = {
     timer = { doAfter = function() return { stop = function() end } end },
     screen = { allScreens = function() return {} end },
 }
-package.loaded["wm.util"] = {}
-package.loaded["wm.spaces"] = {}
+package.loaded["hyprspoon.util"] = {}
+package.loaded["hyprspoon.spaces"] = {}
 
-local S = require("wm.state")
+local S = require("hyprspoon.state")
 S.cfg = { tiling = { innerGap = 0, minRatio = 0.2, maxRatio = 0.8 } }
-local Tree = require("wm.tree")
-local Restore = require("wm.restore")
+local Tree = require("hyprspoon.tree")
+local Restore = require("hyprspoon.restore")
 
 local function win(id, title)
     return { id = function() return id end, title = function() return title end }
@@ -81,6 +81,6 @@ assert(same == tree)
 -- Time's up: nothing more is matched or rebuilt.
 NOW = NOW + 200
 assert(Restore.match(win(106, "editor"), "term") == nil)
-assert(settings.wmRestore == nil, "the saved state is cleared")
+assert(settings["hyprspoon.restore"] == nil, "the saved state is cleared")
 
 print("Restore tests passed")

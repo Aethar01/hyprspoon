@@ -3,7 +3,7 @@
 local sources = {}
 local function read(name)
     if not sources[name] then
-        local file = assert(io.open("wm/" .. name .. ".lua"))
+        local file = assert(io.open("hyprspoon/" .. name .. ".lua"))
         sources[name] = file:read("*a")
         file:close()
         assert(load(sources[name]))
@@ -11,7 +11,7 @@ local function read(name)
     return sources[name]
 end
 
--- Snippet of wm/<name>.lua from the line starting `first` up to `last`.
+-- Snippet of hyprspoon/<name>.lua from the line starting `first` up to `last`.
 local function extract(name, first, last)
     local source = read(name)
     local start = assert(source:find(first, 1, true))
@@ -78,7 +78,7 @@ local title = "test"
 local win = { id = function() return 1 end, screen = function() return nil end,
     title = function() return title end,
     application = function() return { name = function() return "test" end } end }
--- savedFloats is a file-local in wm/float.lua; provide it with a setter.
+-- savedFloats is a file-local in hyprspoon/float.lua; provide it with a setter.
 local shouldFloat, setSavedFloats = assert(load("local savedFloats = {}\n"
     .. extract("float", "local function appName(win)", "local function rememberFloat(win)")
     .. extract("float", "local function shouldFloat(win)", "local function raiseFloatingNow()")
@@ -243,7 +243,7 @@ hiddenIDs[2] = nil
 S.running.pipFilter = { getWindows = function()
     return {{ frame = function() return { x = 50, y = 50, w = 100, h = 100 } end }}
 end }
-env.windowSnapshot = snapshot -- file-local in wm/focus.lua
+env.windowSnapshot = snapshot -- file-local in hyprspoon/focus.lua
 Util.pointInFrame = function(p, f)
     return p.x >= f.x and p.x < f.x + f.w and p.y >= f.y and p.y < f.y + f.h
 end

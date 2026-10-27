@@ -1,5 +1,5 @@
 -- Run with: lua tests/tree_test.lua
--- Unit tests for wm/tree.lua, loaded as a module with a stubbed `hs` and
+-- Unit tests for hyprspoon/tree.lua, loaded as a module with a stubbed `hs` and
 -- stand-ins for the modules it reaches at runtime (util, spaces).
 package.path = "./?.lua;" .. package.path
 
@@ -15,21 +15,21 @@ hs = {
     screen = { allScreens = function() return {} end },
 }
 
-package.loaded["wm.util"] = {
+package.loaded["hyprspoon.util"] = {
     pointInFrame = function(p, f)
         return p.x >= f.x and p.x < f.x + f.w and p.y >= f.y and p.y < f.y + f.h
     end,
 }
-package.loaded["wm.spaces"] = {
+package.loaded["hyprspoon.spaces"] = {
     keyForUUID = function(uuid) return "ws" .. uuid end,
     uuidForKey = function(key) return key:match("%d+") end,
 }
 
-local S = require("wm.state")
+local S = require("hyprspoon.state")
 S.cfg = { tiling = { innerGap = 0, minRatio = 0.2, maxRatio = 0.8 } }
 S.autoFloat = {}
 S.tilingEnabled = true
-local Tree = require("wm.tree")
+local Tree = require("hyprspoon.tree")
 
 local function leaf(id) return Tree.leaf(id) end
 local function split(dir, a, b, ratio) return { split = dir, a = a, b = b, ratio = ratio or 0.5 } end

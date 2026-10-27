@@ -16,11 +16,11 @@ local SUPER_SHIFT = { "alt", "shift" }
 local SUPER_CMD   = { "alt", "cmd" } -- replacement for Hyprland SUPER+ALT
 
 -- Window manager (tiling, mouse move/resize, focus follows mouse,
--- workspaces). See wm/state.lua for all options and their defaults.
+-- workspaces). See hyprspoon/state.lua for all options and their defaults.
 -- Global, so the `hs` tool can drive it like hyprctl, e.g.
 --   hs -c 'wm.gotoWorkspace(3)'
 --   hs -c 'return hs.json.encode(wm.workspaces())'
-wm                = require("wm")
+wm                = require("hyprspoon")
 
 wm.setup({
 	focusFollowsMouse = true,
@@ -38,7 +38,7 @@ wm.setup({
 		maxRatio = 0.80,
 		animationDuration = 0.2,
 	},
-	-- Hyprland-style window rules (see wm/state.lua), e.g.
+	-- Hyprland-style window rules (see hyprspoon/state.lua), e.g.
 	--   { app = "1Password", float = true },
 	--   { app = "Slack", workspace = 4, silent = true },
 	rules = {},
@@ -299,7 +299,7 @@ for _, dir in ipairs({ "left", "right", "up", "down" }) do
 end
 
 -- Ctrl+Option+H/L: previous/next workspace on this display (also a
--- three-finger swipe; see `swipe` in wm/state.lua).
+-- three-finger swipe; see `swipe` in hyprspoon/state.lua).
 hs.hotkey.bind({ "ctrl", "alt" }, "h", function() wm.gotoWorkspaceRelative(-1) end)
 hs.hotkey.bind({ "ctrl", "alt" }, "l", function() wm.gotoWorkspaceRelative(1) end)
 
@@ -524,14 +524,14 @@ end
 -- Config reload watcher + startup notification
 -- ---------------------------------------------------------------------------
 
--- Config files and rebuilt native modules (`make -C wm/native` writes them
+-- Config files and rebuilt native modules (`make -C hyprspoon/native` writes them
 -- one at a time, hence the wait), but not the tests.
 local configDir = hs.configdir .. "/"
 local reloadSoon = hs.timer.delayed.new(0.3, hs.reload)
 configWatcher = hs.pathwatcher.new(configDir, function(files)
 	for _, file in ipairs(files) do
 		local rel = file:sub(#configDir + 1)
-		if not rel:match("^tests/") and (rel:match("%.lua$") or rel:match("^wm/native/.*%.so$")) then
+		if not rel:match("^tests/") and (rel:match("%.lua$") or rel:match("^hyprspoon/native/.*%.so$")) then
 			reloadSoon:start()
 			return
 		end
