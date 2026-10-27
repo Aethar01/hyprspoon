@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 (2026-10-27)
+
+- Fixed Hammerspoon hanging or crashing when it reloads just after a
+  workspace slide.
+- Removed the code that read state saved by versions before 0.1.0.
+
 ## 0.1.1 (2026-10-27)
 
 - Native modules still marked as quarantined (a release zip unzipped
