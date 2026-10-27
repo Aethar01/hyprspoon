@@ -5,7 +5,7 @@ package.loaded["hyprspoon.state"] = S
 
 S.defaults = {
     -- Focus the window under the pointer as it moves.
-    focusFollowsMouse = true,
+    focusFollowsMouse = false,
     debug = false, -- log tab/tile decisions to the Hammerspoon console
     reassertFocus = true, -- undo macOS moving focus right after we set it
 
