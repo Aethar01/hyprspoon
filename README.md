@@ -78,26 +78,147 @@ reloads). See [`examples/init.lua`](examples/init.lua) for a fuller config.
 
 ## Configuration
 
-Pass options to `start()`. Only the ones you change are needed. Every option
-and its default is documented in [`hyprspoon/state.lua`](hyprspoon/state.lua).
-The main ones:
+Pass options to `start()`. Only the ones you change are needed: nested
+tables merge with the defaults, so `border = { active = "#ff6600" }` keeps
+the other border settings. Lists (modifier lists, `namedWorkspaces`,
+`rules`, `ignoreApps`) replace the default list whole.
 
-| Option | Default | |
+```lua
+spoon.hyprspoon:start({
+    focusFollowsMouse = true,
+    tiling = { outerGap = 12, innerGap = 6 },
+    border = { active = "#ff6600" },
+    slide = { workspaces = "vertical" },
+    rules = { { app = "1Password", float = true } },
+})
+```
+
+Defaults are in [`hyprspoon/state.lua`](hyprspoon/state.lua).
+
+### General
+
+| Option | Default | Description |
 |---|---|---|
-| `focusFollowsMouse` | `false` | Focus the window under the pointer |
-| `mouse.move` / `mouse.resize` / `mouse.rightResize` | `{"alt"}` / `{"alt","cmd"}` / `{"alt"}` | Modifiers for dragging anywhere on a window |
-| `tiling.outerGap` / `tiling.innerGap` | `10` / `5` | Gaps in points |
-| `tiling.animationDuration` | `0` | Seconds to animate retiles over |
-| `border.active` / `border.inactive` | `"#6c99ba"` / `{ hex = "#595959", alpha = 0xaa / 255 }` | Ring colours, `"#rrggbb"` or `hs.drawing.color` tables (`inactive = false` for none); `border = false` to disable |
-| `border.width` / `border.fade` | `3` / `0.15` | Ring width in points; seconds to blend between the colours |
-| `slide.workspaces` / `slide.scratchpads` | `"horizontal"` / `"bottom"` | How workspaces slide (`"horizontal"`, `"vertical"`) and the edge scratchpads come from (`"bottom"`, `"top"`, `"left"`, `"right"`), or `false`; `slide = false` to disable |
-| `slide.mass` / `slide.stiffness` / `slide.damping` | `0.6` / `800` / `38` | The slide's spring |
-| `swipe.fingers` | `3` | Trackpad swipe between workspaces; `swipe = false` to disable |
-| `namedWorkspaces` | `{"A","S","D"}` | Scratchpads shown over the current workspace |
-| `rules` | `{}` | e.g. `{ app = "1Password", float = true }`, `{ app = "Slack", workspace = 4, silent = true }` |
-| `ignoreApps` | `{}` | Apps whose windows are never managed |
-| `indicators.menuBar` | `true` | Workspace numbers in the menu bar |
-| `indicators.popup.show` / `indicators.badge.show` | `"hiddenMenuBar"` / `"hiddenMenuBar"` | A pop-up on switching and a corner badge: `"hiddenMenuBar"` (displays whose menu bar auto-hides), `"always"` or `false` |
+| `focusFollowsMouse` | `false` | Focus the window under the pointer as it moves |
+| `reassertFocus` | `true` | Undo macOS moving focus away right after hyprspoon sets it |
+| `axTimeout` | `1` | Seconds to wait on an unresponsive app's accessibility API before giving up on a call |
+| `minWidth` / `minHeight` | `240` / `140` | Smallest size mouse and keyboard resizes shrink a window to, in points |
+| `debug` | `false` | Log tiling decisions to the Hammerspoon console |
+
+### Tiling (`tiling`)
+
+| Option | Default | Description |
+|---|---|---|
+| `tiling.outerGap` | `10` | Gap between tiles and the screen edge, in points |
+| `tiling.innerGap` | `5` | Gap between tiles, in points |
+| `tiling.minRatio` / `tiling.maxRatio` | `0.20` / `0.80` | How far a split can be moved towards either side |
+| `tiling.animationDuration` | `0` | Seconds to animate retiles over; `0` snaps. Mouse drags always snap |
+| `tiling.dropColor` | `{ red = 0.35, green = 0.6, blue = 1 }` | Colour of the highlight where a dragged tile will land |
+
+### Mouse (`mouse`)
+
+Modifiers held while dragging anywhere on a window, as lists of
+`"alt"`, `"cmd"`, `"ctrl"`, `"shift"`. Set one to `false` to disable it.
+
+| Option | Default | Description |
+|---|---|---|
+| `mouse.move` | `{"alt"}` | Left-drag to move (dropping into the tiling layout) |
+| `mouse.resize` | `{"alt", "cmd"}` | Left-drag to resize |
+| `mouse.rightResize` | `{"alt"}` | Right-drag to resize |
+
+### Workspaces
+
+| Option | Default | Description |
+|---|---|---|
+| `namedWorkspaces` | `{"A", "S", "D"}` | Named workspaces after 1 to 10: scratchpads, shown over the workspace beneath |
+| `scratchpadScale` | `0.95` | Share of the display's area a scratchpad is laid out in, centred |
+
+### Borders (`border`)
+
+Rings around the windows on show, drawn in the gap outside their edges.
+Colours are `"#rrggbb"` strings or `hs.drawing.color` tables. Set
+`border = false` to disable. Needs the native `border` module.
+
+| Option | Default | Description |
+|---|---|---|
+| `border.active` | `"#6c99ba"` | Colour of the focused window's ring |
+| `border.inactive` | `{ hex = "#595959", alpha = 0xaa / 255 }` | Colour of the other windows' rings; `false` for none |
+| `border.width` | `3` | Ring width in points |
+| `border.radius` | `12` | Corner radius for windows whose own isn't reported (macOS reports it from 26) |
+| `border.fade` | `0.15` | Seconds to blend between the colours as focus moves; `0` snaps |
+
+### Slides (`slide`)
+
+Workspaces slide in and out on a spring as they switch. Set `slide = false`
+to switch without. Needs the native `slide` module and Screen Recording
+permission, and costs one ~40ms capture per switch.
+
+| Option | Default | Description |
+|---|---|---|
+| `slide.workspaces` | `"horizontal"` | Numbered workspaces: `"horizontal"` (the next comes from the right), `"vertical"` (from below), or `false` |
+| `slide.scratchpads` | `"bottom"` | Edge scratchpads come from and go back to: `"bottom"`, `"top"`, `"left"`, `"right"`, or `false` |
+| `slide.mass` / `slide.stiffness` / `slide.damping` | `0.6` / `800` / `38` | The spring, as Hyprland's mass, stiffness and dampening |
+| `slide.wallpaperRefresh` | `false` | Seconds before the wallpaper slid over is taken again, for wallpapers that change; `false` only on reload and display changes |
+
+### Swipe (`swipe`)
+
+Trackpad swipe to the next or previous workspace on the display under the
+pointer. Distances are fractions of the trackpad's width. Set
+`swipe = false` to disable.
+
+| Option | Default | Description |
+|---|---|---|
+| `swipe.fingers` | `3` | Number of fingers |
+| `swipe.follow` | `true` | With slides on, the workspaces move with the fingers |
+| `swipe.span` | `0.35` | With `follow`, how far the fingers move a whole workspace |
+| `swipe.distance` | `0.12` | Without `follow`, how far the fingers travel before it switches |
+
+### Indicators (`indicators`)
+
+Workspace numbers: 1 to `alwaysShow`, and any other in use, with the
+current one highlighted. `show` for the pop-up and badge is
+`"hiddenMenuBar"` (only on displays whose menu bar auto-hides), `"always"`,
+or `false`.
+
+| Option | Default | Description |
+|---|---|---|
+| `indicators.alwaysShow` | `5` | Workspaces shown even when empty |
+| `indicators.menuBar` | `true` | Show them in the menu bar |
+| `indicators.popup.show` | `"hiddenMenuBar"` | Pop-up on the display that switched |
+| `indicators.popup.duration` | `0.8` | Seconds before the pop-up fades |
+| `indicators.popup.size` | `28` | Pop-up number size in points |
+| `indicators.badge.show` | `"hiddenMenuBar"` | Badge kept in a corner of the display |
+| `indicators.badge.corner` | `"bottomRight"` | `"topLeft"`, `"topRight"`, `"bottomLeft"` or `"bottomRight"` |
+| `indicators.badge.margin` | `6` | Points from the display's edges |
+| `indicators.badge.size` | `12` | Badge number size in points |
+| `indicators.badge.all` | `false` | Show every workspace's number, not just the display's own |
+
+### Rules and ignored apps
+
+| Option | Default | Description |
+|---|---|---|
+| `rules` | `{}` | Per-window rules, like Hyprland's windowrules (below) |
+| `ignoreApps` | `{}` | App names whose windows are never watched or tiled, e.g. `{"Raycast"}` |
+
+Each rule matches on `app` (the app's name) and/or `title` (a Lua
+pattern), and sets any of:
+
+| Field | Description |
+|---|---|
+| `float` | `true` to float the window, `false` to tile it even if it would float |
+| `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
+| `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
+
+Rules are read once per window, when it first appears; later matching rules
+win.
+
+```lua
+rules = {
+    { app = "1Password", float = true },
+    { app = "Slack", workspace = 4, silent = true },
+    { app = "Finder", title = "^Copy", float = true },
+}
+```
 
 ## Default keymap
 
