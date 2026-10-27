@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 (2026-10-27)
+
+- Native modules still marked as quarantined (a release zip unzipped
+  without clearing the flag) are skipped with the command to fix it in the
+  console, instead of holding Hammerspoon up for seconds each while macOS
+  refuses them.
+
 ## 0.1.0 (2026-10-27)
 
 First public release.
