@@ -126,25 +126,6 @@ S.defaults = {
 
 S.cfg = nil
 
--- Saved state from before the keys were prefixed moves to the new ones.
-for old, new in pairs({
-    bspTilingEnabled = "hyprspoon.tiling",
-    bspManualFloats = "hyprspoon.floats",
-    wmRestore = "hyprspoon.restore",
-    wmWorkspaces = "hyprspoon.workspaces",
-    bspTrees = "hyprspoon.trees",
-    bspTreesBoot = "hyprspoon.treesBoot",
-    bspMaximized = "hyprspoon.maximized",
-    bspUntiledWorkspaces = "hyprspoon.untiled",
-    bspFilled = "hyprspoon.filled",
-}) do
-    local value = hs.settings.get(old)
-    if value ~= nil then
-        if hs.settings.get(new) == nil then hs.settings.set(new, value) end
-        hs.settings.clear(old)
-    end
-end
-
 -- Tiling on/off persists across reloads.
 S.SETTINGS_KEY = "hyprspoon.tiling"
 S.tilingEnabled = hs.settings.get(S.SETTINGS_KEY) == true

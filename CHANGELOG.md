@@ -19,5 +19,3 @@ First public release.
 - Layouts and workspaces restored after reloads and restarts.
 - Packaged as a Spoon with `start`, `stop`, `bindHotkeys` and
   `defaultHotkeys`.
-- Saved state moved to `hyprspoon.`-prefixed keys; state under the old
-  keys is migrated on first start.
