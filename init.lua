@@ -125,6 +125,115 @@ local M = {
 }
 
 -- ---------------------------------------------------------------------------
+-- Hotkeys
+-- ---------------------------------------------------------------------------
+
+local DIRECTIONS = { Left = "left", Right = "right", Up = "up", Down = "down" }
+local RESIZE_STEPS = { Left = { -10, 0 }, Right = { 10, 0 }, Up = { 0, -10 }, Down = { 0, 10 } }
+
+-- Every action bindHotkeys knows, by name.
+local function hotkeyActions()
+    local actions = {}
+    for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
+        "toggleWorkspaceTiling", "toggleFloat", "focusFloat", "toggleSplit", "balance",
+        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace" }) do
+        actions[name] = M[name]
+    end
+    for suffix, dir in pairs(DIRECTIONS) do
+        actions["focus" .. suffix] = function() M.focus(dir) end
+        actions["swap" .. suffix] = function() M.swap(dir) end
+        actions["preselect" .. suffix] = function() M.preselect(dir) end
+        local step = RESIZE_STEPS[suffix]
+        actions["resize" .. suffix] = function() M.resize(step[1], step[2]) end
+    end
+    actions.previousWorkspace = function() M.gotoWorkspaceRelative(-1) end
+    actions.nextWorkspace = function() M.gotoWorkspaceRelative(1) end
+    local workspaces = {}
+    for i = 1, 10 do workspaces[#workspaces + 1] = i end
+    for _, name in ipairs((S.cfg or S.defaults).namedWorkspaces or {}) do
+        workspaces[#workspaces + 1] = name
+    end
+    for _, n in ipairs(workspaces) do
+        -- Named workspaces toggle: again to go back to where you were.
+        actions["workspace" .. n] = type(n) == "number"
+            and function() M.gotoWorkspace(n) end
+            or function() M.toggleWorkspace(n) end
+        actions["moveToWorkspace" .. n] = function() M.moveToWorkspace(n) end
+        actions["moveToWorkspaceSilent" .. n] = function() M.moveToWorkspaceSilent(n) end
+    end
+    for suffix, delta in pairs({ Prev = -1, Next = 1 }) do
+        actions["focusDisplay" .. suffix] = function() M.focusDisplay(delta) end
+        actions["moveToDisplay" .. suffix] = function() M.moveToDisplay(delta) end
+        actions["moveWorkspaceToDisplay" .. suffix] = function() M.moveWorkspaceToDisplay(delta) end
+    end
+    return actions
+end
+
+-- A keymap like Hyprland's default, with Option as SUPER. Pass it (or a
+-- copy with changes) to bindHotkeys.
+M.defaultHotkeys = (function()
+    local super, superShift, superCmd, ctrlSuper =
+        { "alt" }, { "alt", "shift" }, { "alt", "cmd" }, { "ctrl", "alt" }
+    local map = {
+        closeWindow = { super, "w" },
+        toggleFill = { super, "f" },
+        toggleMaximize = { superShift, "f" },
+        toggleTiling = { super, "b" },
+        toggleWorkspaceTiling = { superShift, "b" },
+        toggleFloat = { super, "t" },
+        focusFloat = { super, "g" },
+        toggleSplit = { super, "y" },
+        balance = { super, "=" },
+        rotate = { super, "r" },
+        mirror = { superShift, "r" },
+        toggleOverview = { super, "tab" },
+        gotoPreviousWorkspace = { super, "`" },
+        previousWorkspace = { ctrlSuper, "h" },
+        nextWorkspace = { ctrlSuper, "l" },
+    }
+    for suffix, key in pairs({ Left = "h", Down = "j", Up = "k", Right = "l" }) do
+        map["focus" .. suffix] = { super, key }
+        map["swap" .. suffix] = { superShift, key }
+        map["resize" .. suffix] = { super, suffix:lower() }
+        map["preselect" .. suffix] = { ctrlSuper, suffix:lower() }
+    end
+    for i = 1, 10 do
+        local key = tostring(i % 10)
+        map["workspace" .. i] = { super, key }
+        map["moveToWorkspace" .. i] = { superShift, key }
+        map["moveToWorkspaceSilent" .. i] = { ctrlSuper, key }
+    end
+    for _, name in ipairs(S.defaults.namedWorkspaces) do
+        local key = name:lower()
+        map["workspace" .. name] = { super, key }
+        map["moveToWorkspace" .. name] = { superShift, key }
+        map["moveToWorkspaceSilent" .. name] = { ctrlSuper, key }
+    end
+    for suffix, key in pairs({ Prev = ",", Next = "." }) do
+        map["focusDisplay" .. suffix] = { super, key }
+        map["moveToDisplay" .. suffix] = { superShift, key }
+        map["moveWorkspaceToDisplay" .. suffix] = { ctrlSuper, key }
+    end
+    return map
+end)()
+
+-- Binds `mapping` (action name -> { mods, key }, as in defaultHotkeys),
+-- replacing whatever an earlier call bound. Resizes repeat while held.
+-- Call after start() so named workspaces from its options are known.
+function M:bindHotkeys(mapping)
+    for _, hotkey in ipairs(self.hotkeys or {}) do hotkey:delete() end
+    self.hotkeys = {}
+    local actions = hotkeyActions()
+    for name, spec in pairs(mapping) do
+        local fn = actions[name]
+        if not fn then error("hyprspoon: no hotkey action named " .. tostring(name), 2) end
+        local repeatFn = name:match("^resize") and fn or nil
+        self.hotkeys[#self.hotkeys + 1] = hs.hotkey.bind(spec[1], spec[2], fn, nil, repeatFn)
+    end
+    return self
+end
+
+-- ---------------------------------------------------------------------------
 -- Setup
 -- ---------------------------------------------------------------------------
 
