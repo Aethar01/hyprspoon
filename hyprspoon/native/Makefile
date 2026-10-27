@@ -1,8 +1,12 @@
 # Builds the native modules (hyprspoon.native.*) against Hammerspoon's own Lua
 # headers; Lua's symbols are resolved from Hammerspoon when they load.
 # A reload picks up a rebuilt module.
+#
+# Override the paths if Hammerspoon lives elsewhere, e.g.
+#   make HS_APP=~/Applications/Hammerspoon.app
 
-HS_HEADERS = /Applications/Hammerspoon.app/Contents/Frameworks/LuaSkin.framework/Headers
+HS_APP ?= /Applications/Hammerspoon.app
+HS_HEADERS ?= $(HS_APP)/Contents/Frameworks/LuaSkin.framework/Headers
 CFLAGS = -std=c11 -O2 -Wall -Wextra -arch arm64 -arch x86_64 -I$(HS_HEADERS)
 LDFLAGS = -bundle -undefined dynamic_lookup -framework CoreFoundation -framework CoreGraphics \
 	-framework ApplicationServices -framework Carbon
