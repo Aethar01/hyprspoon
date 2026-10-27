@@ -96,10 +96,13 @@ static int cid = 0;
 static dispatch_source_t drain = NULL;
 static mach_port_t drainPort = MACH_PORT_NULL;
 
-// Calls finish() once a slide has settled, its context the slide's
-// generation. A timer rather than dispatch_after: l_gc must be able to
-// cancel it, or a reload unloads the library before it fires into it.
+// Calls finish() once a slide has settled, the slide's generation in
+// `settling` (not the source's context: a handler set with
+// dispatch_source_set_event_handler_f is given the context as it was when
+// the handler was set). A timer rather than dispatch_after: l_gc must be
+// able to cancel it, or a reload unloads the library before it fires into it.
 static dispatch_source_t settled = NULL;
+static unsigned settling = 0;
 
 static void drainEvents(void *unused) {
     (void)unused;
@@ -428,9 +431,9 @@ static CALayer *plane = nil;
 static CGPoint travel = { 0, 0 };
 static double springMass = 1, springStiffness = 800, springDamping = 50;
 
-static void finish(void *data) {
-    unsigned which = (unsigned)(uintptr_t)data;
-    if (which != generation) return;
+static void finish(void *unused) {
+    (void)unused;
+    if (settling != generation) return;
     clearLayers();
     plane = nil;
     orderWindow(false);
@@ -523,7 +526,7 @@ static void settle(double to, double velocity) {
         duration = spring.duration;
     }
     commitChanges();
-    dispatch_set_context(settled, (void *)(uintptr_t)generation);
+    settling = generation;
     dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)),
         DISPATCH_TIME_FOREVER, 0);
 }
