@@ -141,13 +141,11 @@ local function loadState()
         end
         return
     end
-    for id, d in pairs(saved.info or {}) do info[tonumber(id)] = d end
+    for id, d in pairs(saved.info) do info[tonumber(id)] = d end
     for uuid, n in pairs(saved.active or {}) do active[uuid] = tonumber(n) end
-    for uuid, n in pairs(saved.under or {}) do under[uuid] = tonumber(n) end
+    for uuid, n in pairs(saved.under) do under[uuid] = tonumber(n) end
     for n, uuid in pairs(saved.home or {}) do home[tonumber(n)] = uuid end
-    for id, n in pairs(saved.of or {}) do
-        if tonumber(n) and tonumber(n) >= 1 then of[tonumber(id)] = tonumber(n) end
-    end
+    for id, n in pairs(saved.of or {}) do of[tonumber(id)] = tonumber(n) end
     for id, f in pairs(saved.parked or {}) do
         parked[tonumber(id)] = { x = f.x, y = f.y, w = f.w, h = f.h }
     end

@@ -28,8 +28,7 @@ local bootTime = tonumber(
     (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 
 -- Window IDs are only meaningful within one boot; after a restart they can be
--- reused by unrelated windows, so saved trees are discarded. So are trees
--- from before workspaces were our own (keyed by display and macOS Space).
+-- reused by unrelated windows, so saved trees are discarded.
 S.trees = {}
 -- Tree key -> the window filling that workspace's whole tiling area, over
 -- the other tiles (which keep their places underneath).
@@ -43,18 +42,10 @@ S.untiled = {}
 do
     local savedBoot = hs.settings.get(TREES_BOOT_KEY)
     if type(savedBoot) == "number" and math.abs(savedBoot - bootTime) < 120 then
-        for key, tree in pairs(hs.settings.get(TREES_KEY) or {}) do
-            if key:match("^ws%d+$") then S.trees[key] = tree end
-        end
-        for key, id in pairs(hs.settings.get(MAXIMIZED_KEY) or {}) do
-            if key:match("^ws%d+$") then S.maximized[key] = id end
-        end
-        for key in pairs(hs.settings.get(UNTILED_KEY) or {}) do
-            if key:match("^ws%d+$") then S.untiled[key] = true end
-        end
-        for key in pairs(hs.settings.get(FILLED_KEY) or {}) do
-            if key:match("^ws%d+$") then S.filled[key] = true end
-        end
+        S.trees = hs.settings.get(TREES_KEY) or {}
+        S.maximized = hs.settings.get(MAXIMIZED_KEY) or {}
+        S.untiled = hs.settings.get(UNTILED_KEY) or {}
+        S.filled = hs.settings.get(FILLED_KEY) or {}
     end
 end
 

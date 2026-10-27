@@ -50,11 +50,9 @@ do
         local ws = hs.settings.get("hyprspoon.workspaces")
         if type(treesBoot) == "number" and math.abs(treesBoot - boot) >= 120
            and type(ws) == "table" and type(ws.info) == "table" and next(ws.info) then
-            saved = { boot = boot, untilTime = os.time() + GRACE, trees = {}, windows = {},
+            saved = { boot = boot, untilTime = os.time() + GRACE, windows = {},
+                trees = hs.settings.get("hyprspoon.trees") or {},
                 active = ws.active or {}, home = ws.home or {}, claimed = {} }
-            for key, tree in pairs(hs.settings.get("hyprspoon.trees") or {}) do
-                if type(key) == "string" and key:match("^ws%d+$") then saved.trees[key] = tree end
-            end
             for id, d in pairs(ws.info) do
                 if type(d) == "table" and d.app then
                     saved.windows[tostring(id)] = { app = d.app, title = d.title,
