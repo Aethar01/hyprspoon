@@ -995,7 +995,7 @@ end
 M.isHidden = isHidden
 M.claim = claim
 
--- Loaded with the module rather than in start(): if setup fails partway,
+-- Loaded with the module rather than in start(): if start() fails partway,
 -- the window events it already subscribed to still claim windows and save,
 -- and doing that over empty state would put every window on one workspace
 -- and overwrite the saved one.

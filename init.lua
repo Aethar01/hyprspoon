@@ -1,569 +1,469 @@
--- ~/.hammerspoon/init.lua
+--- === hyprspoon ===
+---
+--- A Hyprland-inspired tiling window manager for Hammerspoon:
+---   * toggleable BSP tiling (per workspace), with drag-and-drop and
+---     split resizing by mouse, keyboard, or native window edges
+---   * modifier + drag anywhere on a window to move/resize it
+---   * focus follows mouse, with cursor warping on keyboard focus changes
+---   * directional focus/swap/resize and numbered workspaces of its own,
+---     switched by hotkey or trackpad swipe
+---
+--- Download: https://github.com/Aethar01/hyprspoon/releases/latest
+---
+--- Usage (~/.hammerspoon/init.lua):
+---
+---   hs.loadSpoon("hyprspoon")
+---   spoon.hyprspoon:start({ ...options, see `S.defaults` in hyprspoon/state.lua... })
+---   spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.defaultHotkeys)
+---
+--- Nothing happens on load; start() starts the event taps and watchers.
+--- Mouse bindings are configured in start()'s options because they're
+--- eventtaps rather than hotkeys.
+
+-- Modules (all under hyprspoon/):
+--   state     configuration defaults and state shared between the modules
+--   util      logging, window classification, focus records, pointer warping
+--   tree      BSP tree structure, persistence and per-workspace keys
+--   float     automatic and manual floating windows, kept above the tiles
+--   focus     internal focus tracking and the window snapshot for hit testing
+--   discover  finding the manageable windows on each screen
+--   layout    laying the trees out onto windows, and scheduling retiles
+--   resize    resizing tiles by keyboard, mouse or native window edges
+--   drop      dragging a tile onto another to move it in the layout
+--   mouse     modifier + drag anywhere on a window
+--   ffm       focus follows mouse
+--   spaces    numbered workspaces, parking the windows of hidden ones
+--   restore   layouts and workspaces back after a restart
+--   swipe     trackpad swipes between workspaces
+--   bar       workspace numbers in the menu bar, and the row they're drawn as
+--   hud       workspace pop-up and corner badge on the displays
+--   border    rings around the windows, like Hyprland's borders
+--   slide     workspaces sliding in and out as they switch
+--   overview  every workspace at a glance, in place of Mission Control
+--   actions   the hotkey actions
+--   init      (this file) the Spoon: the public API, start and stop
 --
--- Hyprland-inspired Hammerspoon config for macOS.
--- Primary modifier ("SUPER") is Option.
+-- Native modules (hyprspoon/native/*.c, built with `make -C hyprspoon/native`), each
+-- optional: without one, the Lua path it replaces carries on.
+--   border    the rings, drawn and moved by WindowServer
+--   events    window moves and resizes as WindowServer reports them
+--   hover     the window under the pointer, from a native event tap
+--   frames    accessibility frame changes, animations and modifier-drags on
+--             a background queue per app
+--   slide     the workspace slides, animated by WindowServer
 --
--- Linux/Hyprland-specific pieces intentionally omitted:
---   monitor declarations, VRR/HDR, systemd/dbus, Wayland env vars,
---   hyprctl, awww, waybar/qs, dunst, clipse, playerctl/MPD,
---   Hyprland groups/special workspaces/tags and compositor-only rules.
+-- Modules require each other freely (cycles are harmless: each registers
+-- itself in package.loaded before requiring anything) and call each other
+-- only at runtime, never while loading.
 
--- Lets the `hs` command-line tool talk to this config.
-require("hs.ipc")
-
-local SUPER       = { "alt" }
-local SUPER_SHIFT = { "alt", "shift" }
-local SUPER_CMD   = { "alt", "cmd" } -- replacement for Hyprland SUPER+ALT
-
--- Window manager (tiling, mouse move/resize, focus follows mouse,
--- workspaces). See hyprspoon/state.lua for all options and their defaults.
--- Global, so the `hs` tool can drive it like hyprctl, e.g.
---   hs -c 'wm.gotoWorkspace(3)'
---   hs -c 'return hs.json.encode(wm.workspaces())'
-wm                = require("hyprspoon")
-
-wm.setup({
-	focusFollowsMouse = true,
-	minWidth = 240,
-	minHeight = 140,
-	mouse = {
-		move = SUPER,        -- Option + left-drag
-		resize = SUPER_CMD,  -- Option+Command + left-drag
-		rightResize = SUPER, -- Option + right-drag
-	},
-	tiling = {
-		outerGap = 15,
-		innerGap = 10,
-		minRatio = 0.20,
-		maxRatio = 0.80,
-		animationDuration = 0.2,
-	},
-	-- Hyprland-style window rules (see hyprspoon/state.lua), e.g.
-	--   { app = "1Password", float = true },
-	--   { app = "Slack", workspace = 4, silent = true },
-	rules = {},
-	-- Which workspace is showing. The pop-up and badge are for displays
-	-- whose menu bar auto-hides; set `show = "always"` or false to change.
-	indicators = {
-		alwaysShow = 5,
-		menuBar = true,
-		popup = { show = "hiddenMenuBar", duration = 0.8 },
-		badge = { show = false, corner = "bottomRight", all = false },
-	},
-	-- Hyprland's borders: active rgba(6C99BAff), inactive rgba(595959aa),
-	-- blending as focus moves. Set to false to turn them off.
-	border = {
-		active = "#6c99ba",
-		inactive = { hex = "#595959", alpha = 0xaa / 255 },
-		width = 3,   -- points, outside the window edges
-		radius = 12, -- corner radius when macOS doesn't report a window's own
-		fade = 0.15, -- seconds
-	},
-})
-
--- ---------------------------------------------------------------------------
--- Helpers
--- ---------------------------------------------------------------------------
-
-local function bindRepeat(mods, key, fn)
-	hs.hotkey.bind(mods, key, fn, nil, fn)
-end
-
-local function appNewWindow(name)
-	local app = hs.application.get(name)
-	if app then
-		app:activate()
-		hs.timer.doAfter(0.05, function()
-			hs.eventtap.keyStroke({ "cmd" }, "n", 0, app)
-		end)
-	else
-		hs.application.launchOrFocus(name)
-	end
-end
-
--- Control whatever app owns macOS Now Playing (MPD watcher, browsers, etc.).
--- Synthetic media-key events never reached it, so go through MediaRemote.
-local function media(cmd)
-	hs.task.new("/opt/homebrew/bin/media-control", nil, { cmd }):start()
-end
-
--- ---------------------------------------------------------------------------
--- Core window controls
--- ---------------------------------------------------------------------------
-
--- SUPER+W: close focused window
-hs.hotkey.bind(SUPER, "w", wm.closeWindow)
-
--- Hyprland SUPER+ALT+R -> Option+Command+R: reload Hammerspoon
-hs.hotkey.bind(SUPER_CMD, "r", function()
-	hs.reload()
-end)
-
--- SUPER+F: full screen on this desktop, no gaps or ring (again to go back;
--- a tile also goes back when another tile takes focus). Native macOS full
--- screen, with its own Space, is still the green button or Ctrl+Cmd+F.
-hs.hotkey.bind(SUPER, "f", wm.toggleFill)
-
--- SUPER+Shift+F: maximize inside the gaps, the same way.
-hs.hotkey.bind(SUPER_SHIFT, "f", wm.toggleMaximize)
-
--- SUPER+B: toggle BSP tiling (persists across reloads).
-hs.hotkey.bind(SUPER, "b", wm.toggleTiling)
-
--- SUPER+Shift+B: toggle tiling for just this workspace (persists too).
-hs.hotkey.bind(SUPER_SHIFT, "b", wm.toggleWorkspaceTiling)
-
--- SUPER+T: toggle floating for the focused window.
-hs.hotkey.bind(SUPER, "t", wm.toggleFloat)
-
--- SUPER+G: cycle focus through floating windows (reaches covered ones).
-hs.hotkey.bind(SUPER, "g", wm.focusFloat)
-
--- SUPER+Y: flip the focused window's split (horizontal <-> vertical).
-hs.hotkey.bind(SUPER, "y", wm.toggleSplit)
-
--- SUPER+=: split every tile of the workspace evenly again.
-hs.hotkey.bind(SUPER, "=", wm.balance)
-
--- SUPER+R: turn the workspace's layout a quarter clockwise;
--- SUPER+Shift+R: mirror it left to right.
-hs.hotkey.bind(SUPER, "r", wm.rotate)
-hs.hotkey.bind(SUPER_SHIFT, "r", wm.mirror)
-
--- SUPER+Return: always open a fresh Ghostty window on the current Space and
--- screen, regardless of where existing Ghostty windows live.
---
--- Activating Ghostty and sending Cmd+N jumps to its last-used window first
--- (e.g. a fullscreen Space on another display). Ghostty's AppleScript
--- `new window` avoids that, but Ghostty makes a new window fullscreen
--- whenever its last-focused window is fullscreen. In that case spawn a
--- separate, throwaway Ghostty instance instead; it quits when its last window
--- closes so instances don't pile up.
-local ghosttyPoller = nil
-
-local function ghosttyNewWindow()
-	local app = hs.application.get("Ghostty")
-	if not app then
-		hs.application.launchOrFocus("Ghostty")
-		return
-	end
-
-	local prev = hs.window.focusedWindow()
-	local targetScreen = (prev and prev:screen()) or hs.mouse.getCurrentScreen()
-
-	local existing = {}
-	local anyFullscreen = false
-	for _, w in ipairs(app:allWindows()) do
-		existing[w:id()] = true
-		if w:isFullScreen() then anyFullscreen = true end
-	end
-
-	local lastGhostty = app:focusedWindow()
-	local parentFullscreen
-	if lastGhostty then
-		parentFullscreen = lastGhostty:isFullScreen()
-	else
-		parentFullscreen = anyFullscreen
-	end
-
-	if parentFullscreen then
-		hs.task.new("/usr/bin/open", nil, {
-			"-na", "Ghostty", "--args",
-			"--quit-after-last-window-closed=true",
-			"--window-save-state=never",
-		}):start()
-	else
-		local ok = hs.osascript.applescript('tell application "Ghostty" to new window')
-		if not ok then
-			appNewWindow("Ghostty")
-			return
-		end
-	end
-
-	-- Wait for the new window to take focus, then pull it onto the screen we
-	-- were working on (Ghostty cascades from wherever its last window was).
-	local deadline = hs.timer.secondsSinceEpoch() + 3
-	if ghosttyPoller then ghosttyPoller:stop() end
-	ghosttyPoller = hs.timer.doEvery(0.05, function()
-		local win = hs.window.focusedWindow()
-		local winApp = win and win:application()
-		local isNew = win
-			and winApp and winApp:name() == "Ghostty"
-			and not existing[win:id()]
-
-		if isNew or hs.timer.secondsSinceEpoch() > deadline then
-			ghosttyPoller:stop()
-			ghosttyPoller = nil
-			if not isNew then return end
-			if targetScreen and win:screen():id() ~= targetScreen:id() then
-				win:moveToScreen(targetScreen, false, true, 0)
-			end
-			win:focus()
-		end
-	end)
-end
-
-hs.hotkey.bind(SUPER, "return", ghosttyNewWindow)
-
--- SUPER+E: Finder
-hs.hotkey.bind(SUPER, "e", function()
-	hs.application.launchOrFocus("Finder")
-end)
-
--- SUPER+Space: macOS Spotlight (tofi-drun replacement).
--- hs.hotkey.bind(SUPER, "space", function()
---     hs.eventtap.keyStroke({"cmd"}, "space", 0)
--- end)
-
--- SUPER+Tab: an overview of every workspace (click a window or workspace
--- to go there, 1-0 to switch, Escape to close).
-hs.hotkey.bind(SUPER, "tab", wm.toggleOverview)
-
--- ---------------------------------------------------------------------------
--- Window manager keybindings
--- ---------------------------------------------------------------------------
-
-local directions = { h = "left", l = "right", k = "up", j = "down" }
-
--- Set once the clipboard chooser exists: moves its selection and returns true
--- when the chooser is open, so Command+J/K don't need to go through key events.
-local chooserMove = nil
-
-for key, dir in pairs(directions) do
-	-- SUPER+H/J/K/L: focus in a direction (warps the cursor).
-	hs.hotkey.bind(SUPER, key, function() wm.focus(dir) end)
-
-	-- SUPER+Shift+H/J/K/L: swap with the neighbour in that direction.
-	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.swap(dir) end)
-
-	-- Command+H/J/K/L: arrow keys, Command+Shift+H/J/K/L: Shift+arrows
-	-- (keyd's Alt layer on Linux; repeats while held). Flags are set
-	-- explicitly: otherwise the held Command leaks into the event and apps
-	-- (e.g. the clipboard chooser) see Command+Arrow instead of the arrow.
-	for _, shift in ipairs({ false, true }) do
-		bindRepeat(shift and { "cmd", "shift" } or { "cmd" }, key, function()
-			if not shift and chooserMove and chooserMove(dir) then return end
-			for _, isDown in ipairs({ true, false }) do
-				hs.eventtap.event.newKeyEvent(dir, isDown)
-					:setFlags(shift and { shift = true } or {}):post()
-			end
-		end)
-	end
-end
-
--- Command+0 / Command+4: start / end of line (keyd's Alt+0 / Alt+4).
--- Ghostty gets real Home/End; Cocoa text fields scroll on those instead of
--- moving the cursor, so everything else gets Command+Left/Right.
-local lineKeys = { ["0"] = { "home", "left" }, ["4"] = { "end", "right" } }
-
-for key, target in pairs(lineKeys) do
-	hs.hotkey.bind({ "cmd" }, key, function()
-		local app = hs.application.frontmostApplication()
-		if app and app:name() == "Ghostty" then
-			hs.eventtap.keyStroke({}, target[1], 0, app)
-		else
-			hs.eventtap.keyStroke({ "cmd" }, target[2], 0)
-		end
-	end)
-end
-
--- Ctrl+Command+H/J/K/L/0/4: send the real Command+key to the focused app
--- (native Cmd+L, Cmd+0 etc.). Posted straight to the app's process so it
--- bypasses the Command hotkeys above.
-for _, key in ipairs({ "h", "j", "k", "l", "0", "4" }) do
-	hs.hotkey.bind({ "ctrl", "cmd" }, key, function()
-		local app = hs.application.frontmostApplication()
-		if app then hs.eventtap.keyStroke({ "cmd" }, key, 0, app) end
-	end)
-end
-
--- Resize by 10% of the window's size: SUPER + arrows or
--- SUPER+ALT (Option+Command) + H/J/K/L. Floating windows grow with right/down
--- and shrink with left/up; tiled windows move the split bordering them in
--- the key's direction.
-local resizeSteps = {
-	right = { 10, 0 }, left = { -10, 0 }, down = { 0, 10 }, up = { 0, -10 },
-}
-local resizeVimKeys = { right = "l", left = "h", down = "j", up = "k" }
-
-for dir, step in pairs(resizeSteps) do
-	local fn = function() wm.resize(step[1], step[2]) end
-	bindRepeat(SUPER, dir, fn)
-	bindRepeat(SUPER_CMD, resizeVimKeys[dir], fn)
-end
-
--- Ctrl+Option+arrows: open the next new window on that side of the focused
--- tile (again to cancel).
-for _, dir in ipairs({ "left", "right", "up", "down" }) do
-	hs.hotkey.bind({ "ctrl", "alt" }, dir, function() wm.preselect(dir) end)
-end
-
--- Ctrl+Option+H/L: previous/next workspace on this display (also a
--- three-finger swipe; see `swipe` in hyprspoon/state.lua).
-hs.hotkey.bind({ "ctrl", "alt" }, "h", function() wm.gotoWorkspaceRelative(-1) end)
-hs.hotkey.bind({ "ctrl", "alt" }, "l", function() wm.gotoWorkspaceRelative(1) end)
-
--- SUPER+1..0: go to workspace; SUPER+Shift+1..0: move window there;
--- Ctrl+SUPER+1..0: move it there without following.
-for i = 1, 10 do
-	local key = tostring(i % 10)
-	hs.hotkey.bind(SUPER, key, function() wm.gotoWorkspace(i) end)
-	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.moveToWorkspace(i) end)
-	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveToWorkspaceSilent(i) end)
-end
-
--- Named workspaces A/S/D, as scratchpads: SUPER+A/S/D goes there, or
--- back to where you were; SUPER+Shift+A/S/D moves the window there;
--- Ctrl+SUPER+A/S/D moves it without following.
-for _, name in ipairs({ "A", "S", "D" }) do
-	local key = name:lower()
-	hs.hotkey.bind(SUPER, key, function() wm.toggleWorkspace(name) end)
-	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.moveToWorkspace(name) end)
-	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveToWorkspaceSilent(name) end)
-end
-
--- SUPER+`: back to the previous workspace.
-hs.hotkey.bind(SUPER, "`", wm.gotoPreviousWorkspace)
-
--- SUPER+,/.: focus the display to the left/right; SUPER+Shift+,/.: send
--- the window there; Ctrl+SUPER+,/.: send the whole workspace there.
-for key, delta in pairs({ [","] = -1, ["."] = 1 }) do
-	hs.hotkey.bind(SUPER, key, function() wm.focusDisplay(delta) end)
-	hs.hotkey.bind(SUPER_SHIFT, key, function() wm.moveToDisplay(delta) end)
-	hs.hotkey.bind({ "ctrl", "alt" }, key, function() wm.moveWorkspaceToDisplay(delta) end)
-end
-
--- ---------------------------------------------------------------------------
--- Clipboard history: SUPER+V
--- ---------------------------------------------------------------------------
---
--- Self-contained Hammerspoon replacement for clipse. Text entries only;
--- keeps the most recent 50 unique items, persisted across reloads and
--- restarts via hs.settings (stored in plain text in Hammerspoon's prefs).
---
--- Copies that password managers mark as concealed/transient (the
--- nspasteboard.org convention) are never recorded, so they don't end up
--- on disk. Very large copies are skipped too, to keep the prefs file small.
-
-local CLIPBOARD_LIMIT = 50
-local CLIPBOARD_MAX_CHARS = 100000
-local CLIPBOARD_SETTINGS_KEY = "clipboardHistory"
-
-local CLIPBOARD_IGNORED_TYPES = {
-	["org.nspasteboard.ConcealedType"] = true,
-	["org.nspasteboard.TransientType"] = true,
-	["org.nspasteboard.AutoGeneratedType"] = true,
-	["com.agilebits.onepassword"] = true,
-}
-
-local clipboardHistory = hs.settings.get(CLIPBOARD_SETTINGS_KEY) or {}
-
--- Saving rewrites the whole history into the preferences file, so it's
--- debounced and flushed on reload/quit.
-local clipboardSaveTimer = nil
-
-local function saveClipboardNow()
-	if clipboardSaveTimer then
-		clipboardSaveTimer:stop()
-		clipboardSaveTimer = nil
-	end
-	hs.settings.set(CLIPBOARD_SETTINGS_KEY, clipboardHistory)
-end
-
-local function saveClipboard()
-	if clipboardSaveTimer then clipboardSaveTimer:stop() end
-	clipboardSaveTimer = hs.timer.doAfter(2, saveClipboardNow)
-end
-
+-- The modules are found beside this file (hyprspoon/*.lua and
+-- hyprspoon/native/*.so).
 do
-	local previous = hs.shutdownCallback
-	hs.shutdownCallback = function()
-		if clipboardSaveTimer then saveClipboardNow() end
-		if previous then previous() end
-	end
+    local dir = debug.getinfo(1, "S").source:match("^@(.*/)") or "./"
+    package.path = dir .. "?.lua;" .. package.path
+    package.cpath = dir .. "?.so;" .. package.cpath
 end
 
-local function clipboardIsSensitive()
-	for _, uti in ipairs(hs.pasteboard.contentTypes() or {}) do
-		if CLIPBOARD_IGNORED_TYPES[uti] then return true end
-	end
-	return false
+local Actions = require("hyprspoon.actions")
+local S = require("hyprspoon.state")
+local Util = require("hyprspoon.util")
+local Tree = require("hyprspoon.tree")
+local Float = require("hyprspoon.float")
+local Focus = require("hyprspoon.focus")
+local Discover = require("hyprspoon.discover")
+local Layout = require("hyprspoon.layout")
+local Resize = require("hyprspoon.resize")
+local Mouse = require("hyprspoon.mouse")
+local Ffm = require("hyprspoon.ffm")
+local Spaces = require("hyprspoon.spaces")
+local Swipe = require("hyprspoon.swipe")
+local Bar = require("hyprspoon.bar")
+local Hud = require("hyprspoon.hud")
+local Border = require("hyprspoon.border")
+local Slide = require("hyprspoon.slide")
+local Overview = require("hyprspoon.overview")
+
+-- The public API. Actions are plain functions (no `self`), so they can be
+-- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
+local M = {
+    name = "hyprspoon",
+    version = "0.1.0",
+    author = "Aethar",
+    homepage = "https://github.com/Aethar01/hyprspoon",
+    license = "MIT - https://opensource.org/licenses/MIT",
+
+    balance = Actions.balance,
+    closeWindow = Actions.closeWindow,
+    focus = Actions.focus,
+    focusFloat = Actions.focusFloat,
+    mirror = Actions.mirror,
+    preselect = Actions.preselect,
+    rotate = Actions.rotate,
+    gotoWorkspace = Spaces.gotoWorkspace,
+    gotoWorkspaceRelative = Spaces.gotoWorkspaceRelative,
+    gotoPreviousWorkspace = Spaces.gotoPreviousWorkspace,
+    focusDisplay = Spaces.focusDisplay,
+    moveToDisplay = Spaces.moveToDisplay,
+    moveWorkspaceToDisplay = Spaces.moveWorkspaceToDisplay,
+    moveToWorkspaceSilent = Spaces.moveToWorkspaceSilent,
+    toggleWorkspace = Spaces.toggleWorkspace,
+    isTiling = Actions.isTiling,
+    moveToWorkspace = Spaces.moveToWorkspace,
+    resize = Actions.resize,
+    swap = Actions.swap,
+    toggleFloat = Actions.toggleFloat,
+    toggleFullScreen = Actions.toggleFullScreen,
+    toggleMaximize = Actions.toggleMaximize,
+    toggleFill = Actions.toggleFill,
+    toggleOverview = Overview.toggle,
+    toggleSplit = Actions.toggleSplit,
+    toggleTiling = Actions.toggleTiling,
+    toggleWorkspaceTiling = Actions.toggleWorkspaceTiling,
+    warpToFocusedWindow = Actions.warpToFocusedWindow,
+    warpToWindow = Actions.warpToWindow,
+    workspaces = Spaces.workspaces,
+}
+
+-- ---------------------------------------------------------------------------
+-- Setup
+-- ---------------------------------------------------------------------------
+
+local shutdownHooked = false
+
+-- Stops everything start() started (also run on reload and quit).
+function M.stop()
+    Discover.stop()
+    if S.running.mouseTap then S.running.mouseTap:stop() end
+    Mouse.stop()
+    if S.running.moveTap then S.running.moveTap:stop() end
+    if S.running.events then S.running.events.stop() end
+    if S.running.gestureTap then S.running.gestureTap:stop() end
+    if S.running.windowFilter then S.running.windowFilter:unsubscribeAll() end
+    if S.running.pipFilter then S.running.pipFilter:unsubscribeAll() end
+    if S.running.spaceWatcher then S.running.spaceWatcher:stop() end
+    if S.running.screenWatcher then S.running.screenWatcher:stop() end
+    if S.running.sessionWatcher then S.running.sessionWatcher:stop() end
+    if S.running.appearanceWatcher then S.running.appearanceWatcher:stop() end
+    if S.running.menuBarWatcher then S.running.menuBarWatcher:stop() end
+    for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
+    if S.running.ffmTimer then S.running.ffmTimer:stop() end
+    Layout.stop()
+    Spaces.stop()
+    Float.stop()
+    Resize.stop()
+    Focus.stop()
+    Ffm.stop()
+    Swipe.stop()
+    Bar.stop()
+    Hud.stop()
+    Overview.stop()
+    Border.stop()
+    Tree.stop() -- last: flushes a pending save after the layout has stopped
+    S.running = {}
 end
 
-local function addClipboard(text)
-	if type(text) ~= "string" or text == "" then return end
-	if #text > CLIPBOARD_MAX_CHARS or clipboardIsSensitive() then return end
+function M:start(opts)
+    M.stop()
+    Util.forgetManagedWindows()
+    S.cfg = Util.deepMerge(S.defaults, opts or {})
 
-	for i = #clipboardHistory, 1, -1 do
-		if clipboardHistory[i] == text then
-			table.remove(clipboardHistory, i)
-		end
-	end
+    hs.window.animationDuration = 0
 
-	table.insert(clipboardHistory, 1, text)
+    -- A hung app would otherwise block every accessibility call (and so the
+    -- whole layout) for the system default of several seconds.
+    hs.window.timeout(S.cfg.axTimeout)
 
-	while #clipboardHistory > CLIPBOARD_LIMIT do
-		table.remove(clipboardHistory)
-	end
+    -- Debounced tree saves must not be lost when Hammerspoon reloads or quits,
+    -- and quitting must not leave windows parked out of sight.
+    if not shutdownHooked then
+        shutdownHooked = true
+        local previous = hs.shutdownCallback
+        hs.shutdownCallback = function()
+            Spaces.rememberTitles()
+            Spaces.unparkAll()
+            M.stop()
+            if previous then previous() end
+        end
+    end
 
-	saveClipboard()
+    S.running.ffmTimer = hs.timer.delayed.new(Util.FFM_HOVER_DELAY, Ffm.ffmFocusPending)
+
+    -- Presses and releases only: drag events would run Lua, holding up the
+    -- session's input, for every left-drag anywhere (selecting text, the
+    -- system's own resizes). Our own drags get them from Mouse.
+    S.running.mouseTap = hs.eventtap.new({
+        Mouse.mouseTypes.leftMouseDown,
+        Mouse.mouseTypes.leftMouseUp,
+        Mouse.mouseTypes.rightMouseDown,
+        Mouse.mouseTypes.rightMouseUp,
+    }, Mouse.onMouseEvent):start()
+
+    Ffm.start()
+    S.running.sessionWatcher = hs.caffeinate.watcher.new(Ffm.onSessionEvent):start()
+
+    if S.cfg.swipe then
+        S.running.gestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture },
+            Swipe.onGesture):start()
+    end
+
+    local filter = hs.window.filter.new()
+    filter:setDefaultFilter({ allowRoles = Util.MANAGED_ROLES, visible = true })
+    filter:setOverrideFilter({ rejectTitles = Util.PIP_TITLES })
+    for _, app in ipairs(S.cfg.ignoreApps or {}) do
+        filter:rejectApp(app)
+    end
+    filter:setCurrentSpace(true)
+    S.running.windowFilter = filter
+
+    -- A separate read-only filter tracks PiP bounds for hover occlusion.
+    -- These windows never enter the tiling/floating/focus management filter.
+    local pipFilter = hs.window.filter.new(false)
+    pipFilter:setDefaultFilter({ allowTitles = Util.PIP_TITLES, visible = true, allowRoles = "*" })
+    pipFilter:setCurrentSpace(true)
+    pipFilter:subscribe({
+        hs.window.filter.windowAllowed,
+        hs.window.filter.windowRejected,
+        hs.window.filter.windowMoved,
+    }, Focus.invalidateWindowCache)
+    S.running.pipFilter = pipFilter
+
+    -- Track the last focused leaf so a newly-created window splits next to it.
+    filter:subscribe(hs.window.filter.windowFocused, function(win)
+        if win and Util.windowKind(win) == "ignored" then return end
+        if win then
+            local id = win:id()
+            local requested = id == S.requestedFocus
+            if requested then
+                S.requestedFocus = nil
+            elseif Focus.isEcho(id) then
+                Focus.invalidateWindowCache()
+                return
+            end
+            -- macOS's pick as the focused window closes goes to its sibling.
+            local gone = not requested and Focus.goneBefore(win)
+            if gone and Layout.handFocusBack(gone, win) then
+                Focus.invalidateWindowCache()
+                return
+            end
+            if Spaces.isHidden(id) then
+                Spaces.focusedParked(win)
+                return
+            end
+            local intent = S.intent
+            if intent and id == intent.id then
+                S.intent = nil
+            elseif intent and hs.timer.secondsSinceEpoch() - intent.time < Focus.REASSERT_WINDOW then
+                -- macOS moved focus right after our request: put it back.
+                S.intent = nil
+                local wanted = Util.winByID[intent.id]
+                if wanted and wanted:id() == intent.id then
+                    Util.focusWindow(wanted, true)
+                    Focus.invalidateWindowCache()
+                    return
+                end
+            end
+            -- A focused float raises itself above the tiles; the others only
+            -- need re-raising when a tile took focus.
+            if not S.autoFloat[id] then Float.raiseFloating() end
+            Focus.noteFocus(win)
+        end
+        Focus.invalidateWindowCache()
+    end)
+
+    filter:subscribe(hs.window.filter.windowUnfocused, Border.unfocused)
+
+    -- A window moved or resized (each step of our own animations too).
+    local function onWindowMoved(win)
+        -- A parked window that its app moved back into view.
+        if win and Spaces.isHidden(win:id()) then
+            if hs.timer.secondsSinceEpoch() > S.settleUntil then Spaces.place(win, true) end
+            return
+        end
+        -- Our own layout moves echo back here; only other moves (e.g. to
+        -- another display) can change which screen a window is on.
+        if win and hs.timer.secondsSinceEpoch() > S.settleUntil then
+            S.windowInfo[win:id()] = nil
+            S.applied[win:id()] = nil
+        end
+        Focus.invalidateWindowCache()
+        Float.raiseFloating()
+        Resize.onWindowMoved(win)
+    end
+
+    -- As WindowServer reports them with hyprspoon.native.events, else from the
+    -- filter, which holds each move back half a second. Only our windows.
+    local events = Util.native("events")
+    if events then
+        events.start(function(id)
+            local win = Util.winByID[id]
+            if not (win and win:id() == id) then
+                win = nil
+                for _, w in ipairs(Util.managedWindows()) do
+                    if w:id() == id then win = w break end
+                end
+            end
+            if win then onWindowMoved(win) end
+        end)
+        S.running.events = events
+    else
+        filter:subscribe(hs.window.filter.windowMoved, onWindowMoved)
+    end
+
+    -- Forget per-window state once a window is gone.
+    filter:subscribe(hs.window.filter.windowDestroyed, function(win)
+        Util.forgetManagedWindows()
+        local id = win and win:id()
+        if id then
+            Discover.cancelLayoutCheck(id)
+            S.fullscreen[id], S.offSpace[id], S.slots[id] = nil, nil, nil
+            for key, maxID in pairs(S.maximized) do
+                if maxID == id then S.maximized[key] = nil end
+            end
+            Spaces.forget(id)
+            Float.forgetFloat(id)
+            Util.windowKinds[id] = nil
+            Util.windowRules[id] = nil
+            S.floatingFrames[id] = nil
+            Util.winByID[id] = nil
+            S.windowInfo[id] = nil
+            S.applied[id] = nil
+            -- Kept briefly: the retile that notices the close still needs it
+            -- to tell whether this was the focused window.
+            hs.timer.doAfter(1, function()
+                for i = #Util.focusHistory, 1, -1 do
+                    if Util.focusHistory[i] == id then table.remove(Util.focusHistory, i) end
+                end
+                Util.focusTimes[id] = nil
+            end)
+        end
+    end)
+
+    -- Retile when the set of manageable windows changes.
+    filter:subscribe({
+        hs.window.filter.windowAllowed,
+        hs.window.filter.windowCreated,
+        hs.window.filter.windowVisible,
+        hs.window.filter.windowUnminimized,
+        hs.window.filter.windowUnfullscreened,
+        hs.window.filter.windowInCurrentSpace,
+    }, function(win, appName, event)
+        Util.dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
+        Util.forgetManagedWindows()
+        if win then
+            S.windowInfo[win:id()] = nil
+            if event == hs.window.filter.windowInCurrentSpace then S.offSpace[win:id()] = nil end
+            if event == hs.window.filter.windowUnfullscreened then S.fullscreen[win:id()] = nil end
+            -- Back from full screen with focus, so no focus event comes to
+            -- light its ring again (it arrives on the desktop's Space first).
+            if (event == hs.window.filter.windowInCurrentSpace
+                or event == hs.window.filter.windowUnfullscreened)
+               and Util.focusHistory[1] == win:id() and not win:isFullScreen() then
+                Border.focused(win)
+            end
+            -- Windows of a hidden app come back where they were: parked if
+            -- their workspace has been left since.
+            Spaces.place(win)
+        end
+        Discover.markDirty(win)
+        Focus.invalidateWindowCache()
+        -- Placed straight away so it doesn't sit where the app opened it;
+        -- the follow-up events for the same window coalesce behind this.
+        -- Only for windows that were just created: on a Space switch the new
+        -- Space's windows arrive (windowAllowed, windowInCurrentSpace) before
+        -- the filter's list has dropped the old Space's, and a pass then
+        -- would lay the old windows out in the new Space's tree.
+        local created = event == hs.window.filter.windowCreated
+        Layout.scheduleRetile(false, win and created and not Layout.mayBeTab(win))
+        Layout.scheduleRecheck()
+    end)
+
+    -- Windows going away: the remaining tiles can grow straight away.
+    filter:subscribe({
+        hs.window.filter.windowRejected,
+        hs.window.filter.windowDestroyed,
+        hs.window.filter.windowHidden,
+        hs.window.filter.windowMinimized,
+        hs.window.filter.windowFullscreened,
+        hs.window.filter.windowNotInCurrentSpace,
+    }, function(win, appName, event)
+        Util.dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
+        Util.forgetManagedWindows()
+        S.lastGoneTime = hs.timer.secondsSinceEpoch()
+        if win then
+            local id = win:id()
+            S.windowInfo[id] = nil
+            if event == hs.window.filter.windowFullscreened then S.fullscreen[id] = true end
+            if event == hs.window.filter.windowNotInCurrentSpace then
+                S.offSpace[id] = true
+                -- Going into full screen (already saying so) or coming out
+                -- of it: the other windows follow over the next second.
+                if S.fullscreen[id] or win:isFullScreen() then
+                    S.fullscreen[id] = true
+                    Layout.holdForSpaceMove()
+                end
+            end
+            if S.fullscreen[id] then Layout.setAside(id) end
+            -- Back from the Dock or full screen, a window joins the workspace
+            -- showing then.
+            if event == hs.window.filter.windowMinimized
+               or event == hs.window.filter.windowFullscreened then
+                Spaces.forget(id)
+            end
+            -- Not a tab swap: the new tab's focus moves the ring without a fade.
+            if event ~= hs.window.filter.windowNotInCurrentSpace then Border.forget(win:id()) end
+        end
+        Discover.markDirty(win)
+        Focus.invalidateWindowCache()
+        if event == hs.window.filter.windowNotInCurrentSpace then
+            -- Also how a tab swap looks, with the new tab arriving a moment
+            -- later: wait for it instead of treating this as a close.
+            Layout.scheduleRetile(false, false, Layout.BSP_TAB_SETTLE)
+        else
+            Layout.scheduleRetile(false, true)
+        end
+        Layout.scheduleRecheck()
+    end)
+
+    -- Any other change to the allowed set (the handlers above clear the list
+    -- themselves, since this pseudo-event arrives after them).
+    filter:subscribe(hs.window.filter.windowsChanged, Util.forgetManagedWindows)
+
+    -- Workspaces don't use Spaces, but full-screen windows still get their
+    -- own: the window list changes going in and out of one.
+    S.running.spaceWatcher = hs.spaces.watcher.new(function()
+        Util.forgetManagedWindows()
+        Focus.invalidateWindowCache()
+        Layout.spaceChanged()
+    end):start()
+
+    -- macOS moves windows off a removed display (and back onto a returning
+    -- one) a while after announcing the change, so look again once it has.
+    S.running.screenWatcher = hs.screen.watcher.new(function()
+        Spaces.screensChanged()
+        Layout.scheduleRetile(true)
+        for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
+        S.running.screenTimers = {}
+        for i, delay in ipairs({ 0.5, 1.5, 3 }) do
+            S.running.screenTimers[i] = hs.timer.doAfter(delay, function()
+                Spaces.screensChanged()
+                Layout.scheduleRetile(true)
+            end)
+        end
+    end):start()
+
+    Bar.start()
+    Hud.start()
+    Slide.start()
+    Spaces.start()
+    Border.start()
+    Util.watchWindows()
+    -- No focus event is coming for the window already focused.
+    local focused = Util.focusedWindow()
+    if focused and filter:isWindowAllowed(focused) and Util.windowKind(focused) ~= "ignored" then
+        Focus.noteFocus(focused)
+    end
+    Layout.scheduleRetile(true)
+    return M
 end
 
-local initialClipboard = hs.pasteboard.getContents()
-if initialClipboard then addClipboard(initialClipboard) end
-
-clipboardWatcher = hs.pasteboard.watcher.new(function(text)
-	addClipboard(text)
-end)
-
-local clipboardChooser = hs.chooser.new(function(choice)
-	if not choice then return end
-
-	hs.pasteboard.setContents(choice.value)
-	hs.timer.doAfter(0.08, function()
-		hs.eventtap.keyStroke({ "cmd" }, "v", 0)
-	end)
-end)
-
-clipboardChooser:placeholderText("Clipboard history")
-clipboardChooser:rows(10)
-clipboardChooser:searchSubText(true)
-clipboardChooser:choices(function()
-	local choices = {}
-
-	for _, text in ipairs(clipboardHistory) do
-		local oneLine = text:gsub("%s+", " ")
-		local preview = oneLine
-		if #preview > 100 then
-			preview = preview:sub(1, 100) .. "…"
-		end
-
-		table.insert(choices, {
-			text = preview,
-			subText = text,
-			value = text,
-		})
-	end
-
-	return choices
-end)
-
-chooserMove = function(dir)
-	if (dir ~= "up" and dir ~= "down") or not clipboardChooser:isVisible() then
-		return false
-	end
-	local row = clipboardChooser:selectedRow() or 1
-	row = row + (dir == "down" and 1 or -1)
-	clipboardChooser:selectedRow(math.max(1, math.min(#clipboardHistory, row)))
-	return true
-end
-
-hs.hotkey.bind(SUPER, "v", function()
-	clipboardChooser:refreshChoicesCallback()
-	clipboardChooser:show()
-end)
-
--- ---------------------------------------------------------------------------
--- Media controls
--- ---------------------------------------------------------------------------
---
--- Original MPD/playerctl shortcuts become macOS system media controls.
--- Physical volume/brightness/media keys are left to macOS directly.
-
-hs.hotkey.bind(SUPER, "z", function() media("previous-track") end)
-hs.hotkey.bind(SUPER, "x", function() media("toggle-play-pause") end)
-hs.hotkey.bind(SUPER, "c", function() media("next-track") end)
-
-hs.hotkey.bind(SUPER_CMD, "z", function() media("previous-track") end)
-hs.hotkey.bind(SUPER_CMD, "x", function() media("toggle-play-pause") end)
-hs.hotkey.bind(SUPER_CMD, "c", function() media("next-track") end)
-
--- ---------------------------------------------------------------------------
--- A few macOS-native replacements for useful one-off bindings
--- ---------------------------------------------------------------------------
-
--- SUPER+N: Notification Center.
-hs.hotkey.bind(SUPER, "n", function()
-	hs.eventtap.keyStroke({ "fn" }, "n", 0)
-end)
-
--- SUPER+M: Apps (Launchpad's replacement since macOS 26).
-hs.hotkey.bind(SUPER, "m", function()
-	hs.task.new("/usr/bin/open", nil, { "-a", "Apps" }):start()
-end)
-
--- SUPER+Command+V: open TextEdit as a lightweight "edit anywhere" fallback.
--- Change "TextEdit" to your preferred macOS editor if desired.
-hs.hotkey.bind(SUPER_CMD, "v", function()
-	hs.application.launchOrFocus("TextEdit")
-end)
-
--- SUPER+Command+Z: already media previous above, so no extra binding here.
-
--- ---------------------------------------------------------------------------
--- Hide the cursor while typing (Hyprland's cursor:hide_on_key_press)
--- ---------------------------------------------------------------------------
---
--- A small helper in ~/Projects/hide-cursor (build it with its build.sh).
--- It exits along with Hammerspoon; the old copy is killed on reload.
-
-local hideCursorPath = os.getenv("HOME") .. "/Projects/hide-cursor/hide-cursor"
-if hs.fs.attributes(hideCursorPath) then
-	-- Start the new copy only once the old one has been killed.
-	hs.task.new("/usr/bin/pkill", function()
-		hideCursorTask = hs.task.new(hideCursorPath, function(code, _, stderr)
-			if code ~= 0 then
-				print("hide-cursor exited " .. code .. ": " .. stderr)
-			end
-		end, { "--parent", tostring(hs.processInfo.processID) })
-		hideCursorTask:start()
-	end, { "-x", "hide-cursor" }):start()
-end
-
--- ---------------------------------------------------------------------------
--- Config reload watcher + startup notification
--- ---------------------------------------------------------------------------
-
--- Config files and rebuilt native modules (`make -C hyprspoon/native` writes them
--- one at a time, hence the wait), but not the tests.
-local configDir = hs.configdir .. "/"
-local reloadSoon = hs.timer.delayed.new(0.3, hs.reload)
-configWatcher = hs.pathwatcher.new(configDir, function(files)
-	for _, file in ipairs(files) do
-		local rel = file:sub(#configDir + 1)
-		if not rel:match("^tests/") and (rel:match("%.lua$") or rel:match("^hyprspoon/native/.*%.so$")) then
-			reloadSoon:start()
-			return
-		end
-	end
-end):start()
-
-hs.alert.show("Hammerspoon config loaded")
-
-
--- ---------------------------------------------------------------------------
--- Karabiner replacement
--- ---------------------------------------------------------------------------
--- Laptop-keyboard remaps (caps -> esc, fn <-> left ctrl) live in
--- ~/Library/LaunchAgents/local.hidutil.builtin-keyboard.plist (hidutil,
--- matched to the built-in keyboard only).
-
--- Ctrl+click -> Cmd+click.
-ctrlClickTap = hs.eventtap.new({
-	hs.eventtap.event.types.leftMouseDown,
-	hs.eventtap.event.types.leftMouseUp,
-	hs.eventtap.event.types.leftMouseDragged,
-}, function(event)
-	local t = event:getType()
-	if t == hs.eventtap.event.types.leftMouseDown then
-		local flags = event:getFlags()
-		ctrlClickActive = flags.ctrl and not (flags.cmd or flags.alt or flags.shift)
-	elseif not ctrlClickActive then
-		return false -- drags/releases of ordinary clicks: nothing to do
-	end
-	if ctrlClickActive then
-		event:setFlags({ cmd = true })
-		if t == hs.eventtap.event.types.leftMouseUp then ctrlClickActive = false end
-	end
-	return false
-end):start()
+return M

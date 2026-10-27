@@ -1,5 +1,5 @@
 -- Live, non-focus-changing benchmark. Run through Hammerspoon's hs CLI:
--- wmPerf = dofile(hs.configdir .. '/tests/performance.lua'); wmPerf.run(20, '/path/out.json')
+-- wmPerf = dofile(spoon.hyprspoon.spoonPath .. '/tests/performance.lua'); wmPerf.run(20, '/path/out.json')
 -- The result is written to the given path as JSON once wmPerf.done is true
 -- (and kept in wmPerf.result). Returning it through `hs -c` can hang.
 -- Each case runs once untimed first, so samples measure warm calls.
