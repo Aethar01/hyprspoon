@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua and Hammerspoon
+        run: brew install lua && brew install --cask hammerspoon
+      - name: Check syntax
+        run: luac -p init.lua hyprspoon/*.lua examples/*.lua tests/*.lua
+      - name: Unit tests
+        run: tests/run.sh
+      - name: Build native modules
+        run: make -C hyprspoon/native
