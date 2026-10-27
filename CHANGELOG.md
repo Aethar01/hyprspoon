@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 (2026-10-27)
+
+- Fixed the picture of a workspace slide staying over the screen after
+  every switch, so the windows looked frozen (a regression in 0.1.2).
+
 ## 0.1.2 (2026-10-27)
 
 - Fixed Hammerspoon hanging or crashing when it reloads just after a
