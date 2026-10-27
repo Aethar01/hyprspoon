@@ -40,14 +40,42 @@ S.defaults = {
         badge = { show = "hiddenMenuBar", corner = "bottomRight", margin = 6, size = 12, all = false },
     },
 
-    -- Workspaces with names (e.g. for scratchpads), after 1 to 10.
+    -- Workspaces with names, after 1 to 10: scratchpads, shown over the
+    -- workspace on the display (see wm/spaces.lua).
     namedWorkspaces = { "A", "S", "D" },
+    -- The share of the display's area a scratchpad is laid out in, centred
+    -- (Hyprland's special_scale_factor).
+    scratchpadScale = 0.95,
+
+    -- Workspaces slide in and out as they switch, like Hyprland's, on a
+    -- spring (Hyprland's mass, stiffness and dampening). Set to false to
+    -- switch without. Needs wm.native.slide (make -C wm/native) and Screen
+    -- Recording permission; costs one ~40ms capture per switch.
+    slide = {
+        mass = 0.6,
+        stiffness = 800,
+        damping = 38,
+        -- Numbered workspaces: "horizontal" (the next comes from the
+        -- right), "vertical" (from below), or false.
+        workspaces = "horizontal",
+        -- The edge scratchpads come from and go back to: "bottom", "top",
+        -- "left", "right", or false.
+        scratchpads = "bottom",
+        -- Seconds before the wallpaper slid over is taken again (once a
+        -- slide is over, in the background), for wallpapers that change;
+        -- false only on reload and display changes.
+        wallpaperRefresh = false,
+    },
 
     -- Trackpad swipe between workspaces (next/previous on the display under
-    -- the pointer). `distance` is how far the fingers travel sideways, as a
-    -- fraction of the trackpad's width. Set to false to disable.
+    -- the pointer). With slides and `follow`, the workspaces move with the
+    -- fingers, `span` of the trackpad's width moving a whole one; else it
+    -- switches once the fingers travel `distance`. Both are fractions of
+    -- the trackpad's width. Set to false to disable.
     swipe = {
         fingers = 3,
+        follow = true,
+        span = 0.35,
         distance = 0.12,
     },
 

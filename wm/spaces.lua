@@ -13,6 +13,7 @@ local Bar = require("wm.bar")
 local Hud = require("wm.hud")
 local Border = require("wm.border")
 local Restore = require("wm.restore")
+local Slide = require("wm.slide")
 
 -- ---------------------------------------------------------------------------
 -- Workspaces
@@ -39,9 +40,14 @@ local Restore = require("wm.restore")
 -- Use one macOS Desktop per display: the window filter only sees the
 -- current Desktop's windows.
 --
--- Besides 1 to 10 there are named workspaces (S.cfg.namedWorkspaces),
--- otherwise the same: used as scratchpads, toggled with the workspace they
--- were opened from.
+-- Besides 1 to 10 there are named workspaces (S.cfg.namedWorkspaces):
+-- scratchpads, like Hyprland's special workspaces. One shows on the
+-- pointer's display, over its numbered workspace rather than in its place,
+-- laid out in S.cfg.scratchpadScale of the area, and goes when toggled
+-- again, when the display switches workspace, or when a window beneath it
+-- gets focus (a click, Cmd-Tab): macOS would raise that window over it. The windows
+-- beneath stay where they are but count as hidden while it shows: they
+-- aren't laid out, ringed, or focused by the pointer.
 
 -- Window IDs are only meaningful within one boot, so the saved state is
 -- discarded after a restart (see Tree.bootTime).
@@ -67,10 +73,12 @@ local of = {}     -- window id -> workspace number
 local parked = {} -- window id -> its frame before it was parked
 local info = {}   -- window id -> { app = bundle id, title = } for wm/restore.lua
 local pins = {}   -- window id -> until when its workspace ignores its display
+local under = {}  -- screen UUID -> numbered workspace beneath the named one it shows
 
 -- Derived by refresh() from the above and the connected displays.
 local connected = {} -- screen UUID -> hs.screen
 local shown = {}     -- workspace number -> UUID of the display showing it
+local behind = {}    -- workspace number -> true while a scratchpad covers it
 local primaryUUID = nil
 
 -- When we last switched, and when a window last went away: macOS focusing a
@@ -101,8 +109,9 @@ local saveTimer = nil
 
 local function saveNow()
     if saveTimer then saveTimer:stop() saveTimer = nil end
-    local out = { boot = Tree.bootTime, active = {}, home = {}, of = {}, parked = {}, info = {} }
+    local out = { boot = Tree.bootTime, active = {}, under = {}, home = {}, of = {}, parked = {}, info = {} }
     for uuid, n in pairs(active) do out.active[uuid] = n end
+    for uuid, n in pairs(under) do out.under[uuid] = n end
     for n, uuid in pairs(home) do out.home[tostring(n)] = uuid end
     for id, n in pairs(of) do
         out.of[tostring(id)] = n
@@ -122,7 +131,7 @@ local function save()
 end
 
 local function loadState()
-    active, home, of, parked, pins, info = {}, {}, {}, {}, {}, {}
+    active, under, home, of, parked, pins, info = {}, {}, {}, {}, {}, {}, {}
     local saved = hs.settings.get(STATE_KEY)
     if type(saved) ~= "table" or type(saved.boot) ~= "number"
        or math.abs(saved.boot - Tree.bootTime) >= 120 then
@@ -134,6 +143,7 @@ local function loadState()
     end
     for id, d in pairs(saved.info or {}) do info[tonumber(id)] = d end
     for uuid, n in pairs(saved.active or {}) do active[uuid] = tonumber(n) end
+    for uuid, n in pairs(saved.under or {}) do under[uuid] = tonumber(n) end
     for n, uuid in pairs(saved.home or {}) do home[tonumber(n)] = uuid end
     for id, n in pairs(saved.of or {}) do
         if tonumber(n) and tonumber(n) >= 1 then of[tonumber(id)] = tonumber(n) end
@@ -192,9 +202,14 @@ local function refresh()
         end
     end
 
-    shown = {}
+    shown, behind = {}, {}
     for uuid, n in pairs(active) do
         if connected[uuid] and displayOf(n) == uuid then shown[n] = uuid end
+    end
+    for uuid, n in pairs(under) do
+        if connected[uuid] and displayOf(n) == uuid and active[uuid] ~= n and shown[active[uuid]] == uuid then
+            shown[n], behind[n] = uuid, true
+        end
     end
 end
 
@@ -203,10 +218,11 @@ local function pointerUUID()
     return screen and screen:getUUID() or primaryUUID
 end
 
--- True for a window parked on a workspace that isn't showing.
+-- True for a window parked on a workspace that isn't showing, or beneath
+-- a scratchpad.
 local function isHidden(id)
     local n = id and of[id]
-    return n ~= nil and shown[n] == nil
+    return n ~= nil and (shown[n] == nil or behind[n] == true)
 end
 
 -- Workspaces that are empty and not showing anywhere are forgotten, so the
@@ -215,9 +231,11 @@ local function forgetEmpty()
     local used = {}
     for _, n in pairs(of) do used[n] = true end
     for _, n in pairs(active) do used[n] = true end
+    for _, n in pairs(under) do used[n] = true end
     for n in pairs(home) do
         if not used[n] then
             home[n] = nil
+            Slide.forget(n)
             S.trees["ws" .. n] = nil
             S.maximized["ws" .. n] = nil
             S.untiled["ws" .. n] = nil
@@ -444,14 +462,94 @@ local function focusWorkspace(n, warp, skip)
     end
 end
 
--- Show workspace `n` on display `uuid` and focus it.
-local function switchTo(n, uuid)
-    local pointer = pointerUUID()
-    if active[pointer] and active[pointer] ~= n then
-        previous = active[pointer]
-        if previous <= NAMED_BASE then lastNumbered = previous end
+-- The windows of workspace `n`.
+local function windowsOf(n)
+    local ids = {}
+    for id, m in pairs(of) do
+        if m == n then ids[#ids + 1] = id end
+    end
+    return ids
+end
+
+-- Defined with the events below.
+local hideEmptyScratchpads
+
+-- Puts away the scratchpad showing on display `uuid`, back to the
+-- workspace beneath it (its windows are already in place); with `slide`,
+-- sliding it down.
+local function hideScratchpad(uuid, slide)
+    local base = under[uuid]
+    if not base then return end
+    if slide then Slide.hideScratchpad(connected[uuid], active[uuid], windowsOf(active[uuid])) end
+    under[uuid] = nil
+    active[uuid] = base
+    refresh()
+    lastSwitch = hs.timer.secondsSinceEpoch()
+    sync(false)
+end
+
+-- Shows scratchpad `n` over the workspace showing on display `uuid` (or
+-- in place of another scratchpad), its windows raised above it. One
+-- showing on another display comes away from it.
+local function showScratchpad(n, uuid)
+    for other, m in pairs(active) do
+        if m == n and other ~= uuid then hideScratchpad(other) end
     end
     if active[uuid] ~= n then
+        -- From another display's corner: its windows keep the scratchpad
+        -- while they're laid out here (unpark centres the floats).
+        if home[n] and home[n] ~= uuid then
+            local until_ = hs.timer.secondsSinceEpoch() + 1
+            for id, m in pairs(of) do
+                if m == n then
+                    pins[id] = until_
+                    S.windowInfo[id], S.applied[id] = nil, nil
+                end
+            end
+        end
+        local base = under[uuid] or (active[uuid] and active[uuid] <= NAMED_BASE and active[uuid]) or nil
+        if base then Slide.showScratchpad(connected[uuid], n, windowsOf(n), windowsOf(base)) end
+        under[uuid] = base
+        active[uuid] = n
+        home[n] = uuid
+        refresh()
+        lastSwitch = hs.timer.secondsSinceEpoch()
+        sync(false)
+    end
+    Layout.tileNow()
+    -- A maximized (or full-screen) window covers the rest: it alone is
+    -- raised, and focused. Otherwise least recently used first, so the one
+    -- used last ends on top. After focusing: a raise only goes above the
+    -- windows of the app in front when it's that app's own.
+    local wins, rank = {}, {}
+    local top = S.maximized["ws" .. n]
+    for _, win in ipairs(Util.managedWindows()) do
+        local id = win:id()
+        if of[id] == n and (not top or id == top) then wins[#wins + 1] = win end
+    end
+    for i, id in ipairs(Util.focusHistory) do rank[id] = rank[id] or i end
+    table.sort(wins, function(a, b) return (rank[a:id()] or math.huge) > (rank[b:id()] or math.huge) end)
+    if top and #wins == 1 and not S.spaceFocusWin then S.spaceFocusWin = wins[1] end
+    focusWorkspace(n, uuid ~= pointerUUID())
+    for _, win in ipairs(wins) do win:raise() end
+    Hud.switched(uuid)
+end
+
+-- Show workspace `n` on display `uuid` and focus it.
+local function switchTo(n, uuid)
+    if n > NAMED_BASE then return showScratchpad(n, uuid) end
+    local pointer = pointerUUID()
+    local current = under[pointer] or active[pointer]
+    if current and current ~= n then
+        previous = current
+        if previous <= NAMED_BASE then lastNumbered = previous end
+    end
+    -- Hyprland's hide_special_on_workspace_change.
+    hideScratchpad(uuid)
+    if active[uuid] ~= n then
+        local left = active[uuid]
+        Slide.switch(connected[uuid], left, n, left and windowsOf(left) or {}, windowsOf(n),
+            (left and n < left) and -1 or 1)
         active[uuid] = n
         home[n] = uuid
         refresh()
@@ -476,27 +574,43 @@ function M.gotoWorkspace(n)
     if not n then return end
     refresh()
     claimAll()
-    local uuid = targetDisplay(n, pointerUUID())
-    if active[uuid] == n and uuid == pointerUUID() then return end
+    -- Scratchpads come to the pointer, like Hyprland's special workspaces.
+    local uuid = n > NAMED_BASE and pointerUUID() or targetDisplay(n, pointerUUID())
+    if active[uuid] == n and not under[uuid] and uuid == pointerUUID() then return end
     switchTo(n, uuid)
 end
 
--- Previous/next workspace on the display the pointer is on (no wrap-around).
-function M.gotoWorkspaceRelative(delta)
+-- The display the pointer is on, its numbered workspace, and the one
+-- `delta` along from it (no wrap-around: nil past either end).
+local function neighbor(delta)
     refresh()
     local uuid = pointerUUID()
     local list = {}
     for n in pairs(home) do
-        if displayOf(n) == uuid then list[#list + 1] = n end
+        if displayOf(n) == uuid and n <= NAMED_BASE then list[#list + 1] = n end
     end
     table.sort(list)
+    local current = under[uuid] or active[uuid]
     for i, n in ipairs(list) do
-        if n == active[uuid] then
-            local target = list[i + delta]
-            if target then M.gotoWorkspace(target) end
-            return
-        end
+        if n == current then return uuid, current, list[i + delta] end
     end
+    return uuid, current, nil
+end
+
+-- Previous/next workspace on the display the pointer is on.
+function M.gotoWorkspaceRelative(delta)
+    local _, _, target = neighbor(delta)
+    if target then M.gotoWorkspace(target) end
+end
+
+-- For a swipe towards the workspace `delta` along on the pointer's
+-- display: that display, its workspace, the one along, and each one's
+-- windows; nil past either end.
+function M.neighbor(delta)
+    local uuid, from, to = neighbor(delta)
+    if not to then return nil end
+    claimAll()
+    return connected[uuid], from, to, windowsOf(from), windowsOf(to)
 end
 
 -- Move the focused window to a workspace and follow it there, like
@@ -512,7 +626,7 @@ function M.moveToWorkspace(n)
     local id = win:id()
     if of[id] == n then return end
     local from = (of[id] and shown[of[id]]) or pointerUUID()
-    local to = targetDisplay(n, from)
+    local to = n > NAMED_BASE and from or targetDisplay(n, from)
     of[id] = n
     save()
     if to ~= from then
@@ -554,16 +668,24 @@ function M.moveToWorkspaceSilent(n)
     save()
     Layout.tileNow()
     focusWorkspace(current or active[from], false, id)
+    hideEmptyScratchpads()
 end
 
 -- Workspace `n` (a number or a name) if the pointer's display isn't
--- showing it, else back: from a named workspace to the numbered one left
--- for it (named ones visited in between don't count), so they work as
--- scratchpads.
+-- showing it, else back. A scratchpad goes back to the workspace beneath
+-- it, or comes to the pointer's display from another.
 function M.toggleWorkspace(n)
     n = number(n)
     if not n then return end
     refresh()
+    local at = shown[n]
+    if n > NAMED_BASE and at == pointerUUID() and active[at] == n and under[at] then
+        hideScratchpad(at, true)
+        Layout.tileNow()
+        focusWorkspace(active[at], at ~= pointerUUID())
+        Hud.switched(at)
+        return
+    end
     local back = n > NAMED_BASE and lastNumbered or previous
     if active[pointerUUID()] == n and back then
         M.gotoWorkspace(back)
@@ -635,6 +757,8 @@ end
 function M.moveWorkspaceToDisplay(delta)
     local from, to = displayStep(delta)
     if not to then return end
+    hideScratchpad(from)
+    hideScratchpad(to)
     claimAll()
     local n = active[from]
     local replacement = nil
@@ -709,7 +833,18 @@ function M.focusedParked(win)
         return
     end
     S.spaceFocusWin = win
-    M.gotoWorkspace(of[win:id()])
+    local n = of[win:id()]
+    -- Beneath a scratchpad: that goes.
+    for uuid, base in pairs(under) do
+        if base == n and behind[n] then
+            hideScratchpad(uuid, true)
+            Layout.tileNow()
+            focusWorkspace(n, false)
+            Hud.switched(uuid)
+            return
+        end
+    end
+    M.gotoWorkspace(n)
 end
 
 -- Where a parked window goes back to (tiling turned off while it was parked).
@@ -719,16 +854,35 @@ function M.setParkedFrame(id, frame)
     save()
 end
 
+-- A scratchpad showing without windows goes, like Hyprland's.
+function hideEmptyScratchpads()
+    for uuid, base in pairs(under) do
+        local n = active[uuid]
+        local empty = true
+        for _, m in pairs(of) do
+            if m == n then empty = false break end
+        end
+        if empty then
+            hideScratchpad(uuid)
+            Layout.tileNow()
+            focusWorkspace(base, false)
+            Hud.switched(uuid)
+        end
+    end
+end
+
 -- A window closed, or left for a full-screen Space or the Dock.
 function M.forget(id)
     if not id or (of[id] == nil and parked[id] == nil) then return end
     of[id], parked[id], pins[id], info[id] = nil, nil, nil, nil
     save()
+    hideEmptyScratchpads()
 end
 
 -- Displays came or went: workspaces of a missing display move to the
 -- primary one, and every parked window goes to its (possibly new) corner.
 function M.screensChanged()
+    Slide.reset()
     refresh()
     sync(true)
 end
@@ -737,6 +891,14 @@ end
 function M.keyForUUID(uuid)
     if not connected[uuid] or not active[uuid] then refresh() end
     return "ws" .. tostring(active[uuid])
+end
+
+-- The share of the area a workspace's tiles are laid out in: less than
+-- the whole for a scratchpad, so the workspace beneath shows around it.
+function M.layoutScale(key)
+    local n = key and tonumber(key:match("^ws(%d+)$"))
+    if n and n > NAMED_BASE then return S.cfg.scratchpadScale end
+    return nil
 end
 
 function M.uuidForKey(key)
