@@ -88,13 +88,16 @@ The main ones:
 | `mouse.move` / `mouse.resize` / `mouse.rightResize` | `{"alt"}` / `{"alt","cmd"}` / `{"alt"}` | Modifiers for dragging anywhere on a window |
 | `tiling.outerGap` / `tiling.innerGap` | `10` / `5` | Gaps in points |
 | `tiling.animationDuration` | `0` | Seconds to animate retiles over |
-| `border` | blue / grey rings | Set to `false` to disable |
-| `slide` | horizontal spring | Set to `false` to switch workspaces without sliding |
+| `border.active` / `border.inactive` | `"#6c99ba"` / `{ hex = "#595959", alpha = 0xaa / 255 }` | Ring colours, `"#rrggbb"` or `hs.drawing.color` tables (`inactive = false` for none); `border = false` to disable |
+| `border.width` / `border.fade` | `3` / `0.15` | Ring width in points; seconds to blend between the colours |
+| `slide.workspaces` / `slide.scratchpads` | `"horizontal"` / `"bottom"` | How workspaces slide (`"horizontal"`, `"vertical"`) and the edge scratchpads come from (`"bottom"`, `"top"`, `"left"`, `"right"`), or `false`; `slide = false` to disable |
+| `slide.mass` / `slide.stiffness` / `slide.damping` | `0.6` / `800` / `38` | The slide's spring |
 | `swipe.fingers` | `3` | Trackpad swipe between workspaces; `swipe = false` to disable |
 | `namedWorkspaces` | `{"A","S","D"}` | Scratchpads shown over the current workspace |
 | `rules` | `{}` | e.g. `{ app = "1Password", float = true }`, `{ app = "Slack", workspace = 4, silent = true }` |
 | `ignoreApps` | `{}` | Apps whose windows are never managed |
-| `indicators` | menu bar | Workspace numbers in the menu bar, a pop-up and a corner badge |
+| `indicators.menuBar` | `true` | Workspace numbers in the menu bar |
+| `indicators.popup.show` / `indicators.badge.show` | `"hiddenMenuBar"` / `"hiddenMenuBar"` | A pop-up on switching and a corner badge: `"hiddenMenuBar"` (displays whose menu bar auto-hides), `"always"` or `false` |
 
 ## Default keymap
 
