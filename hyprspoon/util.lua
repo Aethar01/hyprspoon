@@ -175,6 +175,16 @@ local natives = {}
 
 local function native(name)
     if natives[name] == nil then
+        -- macOS refuses a downloaded module still marked as quarantined, but
+        -- only after holding Hammerspoon up for seconds while it checks, so
+        -- don't try.
+        local path = package.searchpath("hyprspoon.native." .. name, package.cpath)
+        if path and hs.fs.xattr.get(path, "com.apple.quarantine") then
+            print("hyprspoon: hyprspoon.native." .. name .. " not loaded: macOS has it quarantined. Run: "
+                .. "xattr -dr com.apple.quarantine " .. path:match("^(.*/)hyprspoon/native/"))
+            natives[name] = false
+            return nil
+        end
         local ok, mod = pcall(require, "hyprspoon.native." .. name)
         if not ok then
             print("hyprspoon: hyprspoon.native." .. name .. " not loaded (build with: make -C hyprspoon/native): " .. tostring(mod))
