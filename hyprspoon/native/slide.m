@@ -96,6 +96,11 @@ static int cid = 0;
 static dispatch_source_t drain = NULL;
 static mach_port_t drainPort = MACH_PORT_NULL;
 
+// Calls finish() once a slide has settled, its context the slide's
+// generation. A timer rather than dispatch_after: l_gc must be able to
+// cancel it, or a reload unloads the library before it fires into it.
+static dispatch_source_t settled = NULL;
+
 static void drainEvents(void *unused) {
     (void)unused;
     struct {
@@ -518,8 +523,9 @@ static void settle(double to, double velocity) {
         duration = spring.duration;
     }
     commitChanges();
-    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)), queue,
-        (void *)(uintptr_t)generation, finish);
+    dispatch_set_context(settled, (void *)(uintptr_t)generation);
+    dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(duration * NSEC_PER_SEC)),
+        DISPATCH_TIME_FOREVER, 0);
 }
 
 static void run(Slide s) {
@@ -704,10 +710,13 @@ static void releaseAll(void) {
 }
 
 // Collected with the Lua state (reload, quit), before Lua unloads the
-// library: the queue is drained, and a pending finish finds nothing to do.
+// library: the queue is drained, and a pending finish cancelled.
 static int l_gc(lua_State *L) {
     (void)L;
     dispatch_sync(queue, ^{
+        dispatch_source_cancel(settled);
+        dispatch_release(settled);
+        settled = NULL;
         releaseAll();
         if (drain) {
             dispatch_source_cancel(drain);
@@ -738,6 +747,10 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         dispatch_resume(drain);
         dispatch_async_f(queue, NULL, drainEvents);
     }
+    settled = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    dispatch_source_set_timer(settled, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler_f(settled, finish);
+    dispatch_resume(settled);
     memset(pictures, 0, sizeof(pictures));
     wallpaperCount = 0;
     wid = 0;
