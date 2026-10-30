@@ -282,6 +282,9 @@ local function settle()
     S.settleUntil = math.max(S.settleUntil, hs.timer.secondsSinceEpoch() + Layout.BSP_SETTLE)
 end
 
+-- Defined with the window events below; sync uses it after pruning dead IDs.
+local hideEmptyScratchpads
+
 -- Moves a window into its workspace's corner, remembering where it was the
 -- first time. Its tile is the frame when it has one (no accessibility read).
 -- Parking and unparking go through Util.setFrame like tiling does, so they
@@ -328,6 +331,27 @@ end
 -- Parks the windows of workspaces not showing and brings back the rest.
 -- Parked windows stay put unless `force` (displays changed, so corners did).
 local function sync(force)
+    -- A missed window-filter event can leave a dead window ID in `of` or
+    -- `parked`, keeping its workspace alive. Reconcile those IDs against
+    -- WindowServer whenever workspace state is synced.
+    local stale = {}
+    for id in pairs(of) do
+        if not hs.window.get(id) then stale[id] = true end
+    end
+    for id in pairs(parked) do
+        if not hs.window.get(id) then stale[id] = true end
+    end
+    if next(stale) then
+        for id in pairs(stale) do
+            of[id], parked[id], pins[id], info[id] = nil, nil, nil, nil
+            for key, maxID in pairs(S.maximized) do
+                if maxID == id then S.maximized[key] = nil end
+            end
+        end
+        save()
+        hideEmptyScratchpads()
+    end
+
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
         local n = of[id]
@@ -468,9 +492,6 @@ local function windowsOf(n)
     end
     return ids
 end
-
--- Defined with the events below.
-local hideEmptyScratchpads
 
 -- Puts away the scratchpad showing on display `uuid`, back to the
 -- workspace beneath it (its windows are already in place); with `slide`,
