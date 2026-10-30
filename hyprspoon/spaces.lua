@@ -333,13 +333,20 @@ end
 local function sync(force)
     -- A missed window-filter event can leave a dead window ID in `of` or
     -- `parked`, keeping its workspace alive. Reconcile those IDs against
-    -- WindowServer whenever workspace state is synced.
-    local stale = {}
-    for id in pairs(of) do
-        if not hs.window.get(id) then stale[id] = true end
+    -- WindowServer whenever workspace state is synced. One CGWindowList
+    -- query, not hs.window.get per ID: that walks every app's windows over
+    -- accessibility each time and stalls the slide animations.
+    local live, stale = {}, {}
+    for _, w in ipairs(hs.window.list(true) or {}) do
+        if w.kCGWindowNumber then live[w.kCGWindowNumber] = true end
     end
-    for id in pairs(parked) do
-        if not hs.window.get(id) then stale[id] = true end
+    if next(live) then
+        for id in pairs(of) do
+            if not live[id] then stale[id] = true end
+        end
+        for id in pairs(parked) do
+            if not live[id] then stale[id] = true end
+        end
     end
     if next(stale) then
         for id in pairs(stale) do
