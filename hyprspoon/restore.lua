@@ -52,7 +52,7 @@ do
            and type(ws) == "table" and type(ws.info) == "table" and next(ws.info) then
             saved = { boot = boot, untilTime = os.time() + GRACE, windows = {},
                 trees = hs.settings.get("hyprspoon.trees") or {},
-                active = ws.active or {}, home = ws.home or {}, claimed = {} }
+                active = ws.active or {}, claimed = {} }
             for id, d in pairs(ws.info) do
                 if type(d) == "table" and d.app then
                     saved.windows[tostring(id)] = { app = d.app, title = d.title,
@@ -72,11 +72,6 @@ end
 -- The display -> workspace number each display showed before the restart.
 function M.savedActive()
     return live() and saved.active or {}
-end
-
--- The display workspace `n` lived on before the restart, if known.
-function M.savedHome(n)
-    return live() and saved.home and saved.home[tostring(n)] or nil
 end
 
 -- A window seen for the first time: the workspace it had before the

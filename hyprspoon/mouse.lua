@@ -9,6 +9,8 @@ local Focus = require("hyprspoon.focus")
 local Resize = require("hyprspoon.resize")
 local Drop = require("hyprspoon.drop")
 local Border = require("hyprspoon.border")
+local Discover = require("hyprspoon.discover")
+local Spaces = require("hyprspoon.spaces")
 
 -- ---------------------------------------------------------------------------
 -- Mouse: modifier + drag anywhere on a window
@@ -178,14 +180,23 @@ function onMouseEvent(event)
         end
         S.dragState = nil
         followInLua(false)
-        if mode == "move" and win and Drop.finishDrag(win, point) then
-            return true
+        if mode == "move" and win then
+            -- Its own move reports were muted (or taken for ours) during the
+            -- drag, so which display it's on is looked up afresh.
+            S.windowInfo[win:id()], S.applied[win:id()] = nil, nil
+            if Drop.finishDrag(win, point) then return true end
         end
         if mode == "resize" and Resize.finishResize() then
             return true
         end
         if win then
             win:setFrameInScreenBounds(win:frame(), 0)
+            -- A float (or any window, with tiling off) dropped on another
+            -- display joins the workspace showing there.
+            if mode == "move" then
+                local info = Discover.windowInfoFor(win)
+                if info.uuid and not info.full then Spaces.claim(win, info.uuid) end
+            end
         end
         return true
     end

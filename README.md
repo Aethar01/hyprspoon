@@ -8,7 +8,9 @@ A Hyprland-inspired tiling window manager for macOS, as a
   resize splits with the mouse, the keyboard or the windows' own edges.
 - **Workspaces of its own**, numbered 1 to 10 plus named scratchpads, switched
   instantly by hotkey or a three-finger swipe. They don't use macOS
-  Spaces, so there's no Mission Control animation.
+  Spaces, so there's no Mission Control animation. Give displays their
+  own workspaces in the config; any other display (a projector, AirPlay)
+  gets one workspace of its own.
 - **Workspace slides** on a spring, like Hyprland's animations.
 - **Window borders** drawn by WindowServer, fading between the active and
   inactive colours.
@@ -130,8 +132,31 @@ Modifiers held while dragging anywhere on a window, as lists of
 
 | Option | Default | Description |
 |---|---|---|
+| `displays` | `{}` | Workspaces kept on particular displays, by display name or UUID (see below) |
 | `namedWorkspaces` | `{"A", "S", "D"}` | Named workspaces after 1 to 10: scratchpads, shown over the workspace beneath |
 | `scratchpadScale` | `0.95` | Share of the display's area a scratchpad is laid out in, centred |
+
+`displays` maps each display, by name or UUID, to its workspaces. A
+display shows the first of them when it connects:
+
+```lua
+displays = {
+    ["Built-in Retina Display"] = { 1, 2, 3 },
+    ["DELL U2723QE"] = { 4, 5, 6 },
+},
+```
+
+Workspaces of a display that isn't connected, and numbers not given to
+any display, live on the primary display (the one with the menu bar), so
+with one display everything is on it. Any other display that isn't
+listed, such as a projector or an AirPlay screen, gets one workspace of
+its own, named after the display rather than numbered; its windows join
+the primary display's workspace when it goes. Use UUIDs for two displays
+with the same name. To list them:
+
+```sh
+hs -c 'for _, s in ipairs(hs.screen.allScreens()) do print(s:name(), s:getUUID()) end'
+```
 
 ### Borders (`border`)
 
@@ -228,7 +253,7 @@ you can also build your own table from scratch.
 
 | Keys | Action |
 |---|---|
-| Option+H/J/K/L | Focus left/down/up/right |
+| Option+H/J/K/L | Focus left/down/up/right (past the last window, the display that way, even an empty one) |
 | Option+Shift+H/J/K/L | Move the window in that direction (`swapLeft` etc. swap instead, unbound) |
 | Option+arrows | Resize by 10% (repeats while held) |
 | Ctrl+Option+arrows | Open the next window on that side (again to cancel) |

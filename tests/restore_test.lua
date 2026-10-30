@@ -50,7 +50,7 @@ local function win(id, title)
 end
 
 assert(next(S.trees) == nil, "the old boot's trees aren't taken as this boot's")
-assert(Restore.savedActive().DISPLAY == 1 and Restore.savedHome(2) == "DISPLAY")
+assert(Restore.savedActive().DISPLAY == 1)
 
 -- The browser comes back first, then the terminal's windows with new
 -- titles except one: that one matches by title, the rest in old-id order.

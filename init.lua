@@ -87,7 +87,7 @@ local Overview = require("hyprspoon.overview")
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
 local M = {
     name = "hyprspoon",
-    version = "0.1.4",
+    version = "0.2.0",
     author = "Aethar",
     homepage = "https://github.com/Aethar01/hyprspoon",
     license = "MIT - https://opensource.org/licenses/MIT",
@@ -376,6 +376,7 @@ function M:start(opts)
             -- A focused float raises itself above the tiles; the others only
             -- need re-raising when a tile took focus.
             if not S.autoFloat[id] then Float.raiseFloating() end
+            Spaces.windowFocused(id)
             Focus.noteFocus(win)
         end
         Focus.invalidateWindowCache()

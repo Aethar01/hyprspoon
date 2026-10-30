@@ -1,12 +1,31 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-10-30)
 
 - Option+Shift+H/J/K/L now move the window, like Hyprland's movewindow:
   it leaves its tile and splits the one in that direction (on another
   display too), instead of trading places with it. The new `moveLeft`,
   `moveRight`, `moveUp` and `moveDown` actions do this; `swapLeft` etc.
   still exist, unbound.
+- New `displays` option to keep workspaces on particular displays, by
+  name or UUID. Other workspaces live on the primary display, and a
+  display that isn't listed (a projector, an AirPlay screen) gets one
+  workspace of its own, named after it. Switching to a workspace brings it
+  up on its own display, wherever the pointer is.
+- Ctrl+Super+, / . no longer move a workspace given to a display, or a
+  display's own.
+- An empty display can take focus, like Hyprland's focused monitor:
+  Option+H/J/K/L past the last window focuses the display that way even
+  with nothing on it (and works from one with nothing on it), and with
+  focus follows mouse the pointer coming onto it does. A window opening
+  then goes to that display.
+- Fixed Option+Shift+H/J/K/L not moving a tile to the display beside it
+  when the outer gap is wider than the inner one (and the move being
+  undone when it did). A float now goes on to that display once it's
+  against the edge.
+- Fixed dragging a window to another display with the modifier: it
+  snapped back to the display it came from (and a float kept its old
+  workspace).
 
 ## 0.1.4 (2026-10-27)
 

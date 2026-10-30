@@ -40,6 +40,15 @@ S.defaults = {
         badge = { show = "hiddenMenuBar", corner = "bottomRight", margin = 6, size = 12, all = false },
     },
 
+    -- Workspaces kept on particular displays, by the display's name (as
+    -- hs.screen:name() gives it) or UUID, e.g.
+    --   displays = { ["Built-in Retina Display"] = { 1, 2, 3 }, ["DELL U2723QE"] = { 4, 5, 6 } }
+    -- A display shows its first when it connects. Other numbered
+    -- workspaces, and those of displays not connected, live on the primary
+    -- display; any other display gets one workspace of its own, named
+    -- after it (see hyprspoon/spaces.lua).
+    displays = {},
+
     -- Workspaces with names, after 1 to 10: scratchpads, shown over the
     -- workspace on the display (see hyprspoon/spaces.lua).
     namedWorkspaces = { "A", "S", "D" },

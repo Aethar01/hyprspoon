@@ -22,9 +22,9 @@ local function entries()
     local numbers = {}
     for n = 1, always do numbers[#numbers + 1] = n end
     for n in pairs(byNumber) do
-        if n > always then numbers[#numbers + 1] = n end
+        if n > always or n < 0 then numbers[#numbers + 1] = n end
     end
-    table.sort(numbers)
+    table.sort(numbers, Spaces.before)
 
     local out = {}
     for i, n in ipairs(numbers) do

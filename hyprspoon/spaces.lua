@@ -26,11 +26,18 @@ local Slide = require("hyprspoon.slide")
 -- Control or the Space switch animation, and moving a window between
 -- workspaces is bookkeeping.
 --
--- Like Hyprland's: numbered, created on first use on the display under the
--- pointer, and forgotten once empty and no longer showing. Each display
--- shows one workspace; going to one showing on another display moves the
--- pointer there. While a display is disconnected its workspaces live on the
--- primary display.
+-- Like Hyprland's: numbered, created on first use, and forgotten once empty
+-- and no longer showing. Each display shows one workspace; going to one
+-- showing on another display moves the pointer there.
+--
+-- S.cfg.displays gives displays their workspaces, like Hyprland's
+-- workspace rules: those live on that display while it's connected. Every
+-- other numbered workspace, and those of displays not connected, live on
+-- the primary display. A display not in S.cfg.displays other than the
+-- primary (a projector, an AirPlay screen) gets one workspace of its own,
+-- unnumbered and shown by the display's name; numbered workspaces don't go
+-- there. When that display goes, its windows join the workspace showing
+-- on the primary display.
 --
 -- Windows join the workspace showing on their display when they first
 -- appear, and the one on their new display when they change display. They
@@ -54,7 +61,9 @@ local Slide = require("hyprspoon.slide")
 local STATE_KEY = "hyprspoon.workspaces"
 
 -- Named workspaces (S.cfg.namedWorkspaces, e.g. "A") are numbered 101 on,
--- after the numbered ones, and shown by name.
+-- after the numbered ones, and shown by name. A display's own workspace
+-- (one not in S.cfg.displays) is numbered -1, -2, ... and shown by the
+-- display's name.
 local NAMED_BASE = 100
 
 -- A workspace number from a number or a name; nil if it's neither.
@@ -80,11 +89,18 @@ local connected = {} -- screen UUID -> hs.screen
 local shown = {}     -- workspace number -> UUID of the display showing it
 local behind = {}    -- workspace number -> true while a scratchpad covers it
 local primaryUUID = nil
+local pinnedTo = {}  -- workspace number -> UUID of the connected display S.cfg.displays gives it
+local declared = {}  -- screen UUID -> its workspaces from S.cfg.displays, in order
 
 -- When we last switched, and when a window last went away: macOS focusing a
 -- parked window just after either is its own pick, not the user's.
 local lastSwitch = 0
 S.lastGoneTime = 0
+
+-- A display focused with nothing on it (an empty workspace), until a
+-- window takes focus. New windows open there, as Hyprland opens them on
+-- the focused monitor.
+local focusedEmpty = nil
 
 -- The workspace the pointer's display showed before the last switch, for
 -- going back to it, and the last numbered one left, for going back from a
@@ -177,10 +193,71 @@ local function displayOf(n)
     return primaryUUID
 end
 
-local function freeWorkspace()
+-- The display a workspace not showing belongs on: the one S.cfg.displays
+-- gives it, a display's own workspace's display, else the primary display.
+local function homeFor(n)
+    if n < 0 and connected[home[n]] then return home[n] end
+    return pinnedTo[n] or primaryUUID
+end
+
+-- Reads S.cfg.displays (display name or UUID -> workspace numbers) for the
+-- connected displays. A number given to two displays goes to the first.
+local function readDisplays(screens)
+    pinnedTo, declared = {}, {}
+    local cfg = S.cfg.displays or {}
+    for _, screen in ipairs(screens) do
+        local uuid = screen:getUUID()
+        local list = cfg[uuid] or cfg[screen:name() or ""]
+        if type(list) == "table" then
+            declared[uuid] = {}
+            for _, n in ipairs(list) do
+                n = math.tointeger(n)
+                if n and n >= 1 and n <= NAMED_BASE and not pinnedTo[n] then
+                    pinnedTo[n] = uuid
+                    table.insert(declared[uuid], n)
+                end
+            end
+        end
+    end
+end
+
+-- A new numbered workspace for display `uuid`: the lowest number neither
+-- in use nor given to another display.
+local function freeWorkspace(uuid)
     local n = 1
-    while home[n] do n = n + 1 end
+    while home[n] or (pinnedTo[n] and pinnedTo[n] ~= uuid) do n = n + 1 end
     return n
+end
+
+-- What display `uuid` shows when what it showed can't stay: the first of
+-- its workspaces in S.cfg.displays not showing elsewhere, else another of
+-- its own, else a new one. A display other than the primary that isn't in
+-- S.cfg.displays gets one of its own, unnumbered.
+local function pickFor(uuid)
+    local taken = {}
+    for other, m in pairs(active) do
+        if home[m] == other then taken[m] = true end
+    end
+    for _, n in ipairs(declared[uuid] or {}) do
+        if not taken[n] then return n end
+    end
+    local best = nil
+    for n, h in pairs(home) do
+        if h == uuid and n <= NAMED_BASE and not taken[n] and (not best or n < best) then best = n end
+    end
+    if best then return best end
+    if uuid == primaryUUID or declared[uuid] then return freeWorkspace(uuid) end
+    local n = -1
+    while home[n] do n = n - 1 end
+    return n
+end
+
+local function forgetWorkspace(n)
+    home[n] = nil
+    Slide.forget(n)
+    S.trees["ws" .. n] = nil
+    S.maximized["ws" .. n] = nil
+    S.untiled["ws" .. n] = nil
 end
 
 local function refresh()
@@ -188,15 +265,54 @@ local function refresh()
     local screens = orderedScreens()
     primaryUUID = screens[1] and screens[1]:getUUID()
     for _, screen in ipairs(screens) do connected[screen:getUUID()] = screen end
+    readDisplays(screens)
+
+    -- One showing on another display than the one it's given to (which
+    -- just connected) goes on showing there.
+    local moves = {}
+    for uuid, n in pairs(active) do
+        local to = connected[uuid] and pinnedTo[n]
+        if to and to ~= uuid then moves[to] = n end
+    end
+    for to, n in pairs(moves) do active[to], under[to] = n, nil end
+
+    -- Numbered workspaces go where they belong: to the display
+    -- S.cfg.displays gives them, else (unless showing) to the primary
+    -- display. Scratchpads come to the pointer wherever they live.
+    if primaryUUID then
+        for n, uuid in pairs(home) do
+            if n >= 1 and n <= NAMED_BASE then
+                local showing = connected[uuid] and (active[uuid] == n or under[uuid] == n)
+                home[n] = pinnedTo[n] or (showing and uuid) or primaryUUID
+            end
+        end
+    end
 
     -- Every display shows a workspace of its own. The one a display showed
-    -- may have been taken to another display while it was disconnected.
+    -- may have gone elsewhere while it was disconnected.
     for _, screen in ipairs(screens) do
         local uuid = screen:getUUID()
         local n = active[uuid]
         if not n or home[n] ~= uuid then
-            n = freeWorkspace()
+            n = pickFor(uuid)
             active[uuid], home[n] = n, uuid
+        end
+    end
+
+    -- A display's own workspace whose display has gone: its windows, which
+    -- macOS brings to the primary display, join the workspace showing there.
+    local into = primaryUUID and (under[primaryUUID] or active[primaryUUID])
+    local merged = false
+    if into then
+        for n, uuid in pairs(home) do
+            if n < 0 and not connected[uuid] then
+                for id, m in pairs(of) do
+                    if m == n then of[id], merged = into, true end
+                end
+                if active[uuid] == n then active[uuid] = nil end
+                if under[uuid] == n then under[uuid] = nil end
+                forgetWorkspace(n)
+            end
         end
     end
 
@@ -209,6 +325,7 @@ local function refresh()
             shown[n], behind[n] = uuid, true
         end
     end
+    if merged then save() end
 end
 
 local function pointerUUID()
@@ -231,13 +348,7 @@ local function forgetEmpty()
     for _, n in pairs(active) do used[n] = true end
     for _, n in pairs(under) do used[n] = true end
     for n in pairs(home) do
-        if not used[n] then
-            home[n] = nil
-            Slide.forget(n)
-            S.trees["ws" .. n] = nil
-            S.maximized["ws" .. n] = nil
-            S.untiled["ws" .. n] = nil
-        end
+        if not used[n] then forgetWorkspace(n) end
     end
 end
 
@@ -399,15 +510,13 @@ local function claim(win, uuid)
         wanted = number(rule.workspace)
         if not wanted then
             wanted = Restore.match(win, info[id].app)
+                or (connected[focusedEmpty] and active[focusedEmpty]) or nil
             rule = { silent = true }
         end
     end
-    if wanted and wanted >= 1 and wanted ~= active[uuid] then
+    if wanted and wanted ~= 0 and wanted ~= active[uuid] then
         of[id] = wanted
-        if not home[wanted] then
-            local before = Restore.savedHome(wanted)
-            home[wanted] = (before and connected[before]) and before or uuid
-        end
+        if not home[wanted] then home[wanted] = homeFor(wanted) end
         local to = shown[wanted]
         if to and to ~= uuid then
             pins[id] = hs.timer.secondsSinceEpoch() + 1
@@ -478,11 +587,16 @@ local function focusWorkspace(n, warp, skip)
     end
 
     if target then
+        focusedEmpty = nil
         Focus.focus(target)
         if warp then Util.warpToWindow(target) end
     else
         S.intent = nil
         hs.focus()
+        focusedEmpty = shown[n]
+        -- Nothing of ours has focus now: the pointer going back onto the
+        -- window that had it focuses it again.
+        S.ffmFocusedID, S.ffmLastWindow = nil, nil
         local screen = connected[shown[n]]
         if warp and screen then
             local f = screen:frame()
@@ -589,10 +703,10 @@ local function switchTo(n, uuid)
     Hud.switched(uuid)
 end
 
--- Where workspace `n` would show: where it's showing, its own display, or
--- (a new one) `fallback`.
-local function targetDisplay(n, fallback)
-    return shown[n] or (home[n] and displayOf(n)) or fallback
+-- Where workspace `n` would show: where it's showing, else where it
+-- belongs.
+local function targetDisplay(n)
+    return shown[n] or homeFor(n)
 end
 
 function M.gotoWorkspace(n)
@@ -601,7 +715,7 @@ function M.gotoWorkspace(n)
     refresh()
     claimAll()
     -- Scratchpads come to the pointer, like Hyprland's special workspaces.
-    local uuid = n > NAMED_BASE and pointerUUID() or targetDisplay(n, pointerUUID())
+    local uuid = n > NAMED_BASE and pointerUUID() or targetDisplay(n)
     if active[uuid] == n and not under[uuid] and uuid == pointerUUID() then return end
     switchTo(n, uuid)
 end
@@ -652,7 +766,7 @@ function M.moveToWorkspace(n)
     local id = win:id()
     if of[id] == n then return end
     local from = (of[id] and shown[of[id]]) or pointerUUID()
-    local to = n > NAMED_BASE and from or targetDisplay(n, from)
+    local to = n > NAMED_BASE and from or targetDisplay(n)
     of[id] = n
     save()
     if to ~= from then
@@ -679,7 +793,7 @@ function M.moveToWorkspaceSilent(n)
     local current = of[id]
     if current == n then return end
     local from = (current and shown[current]) or pointerUUID()
-    if not home[n] then home[n] = from end
+    if not home[n] then home[n] = homeFor(n) end
     of[id] = n
     if shown[n] then
         if shown[n] ~= from then
@@ -722,8 +836,18 @@ end
 
 -- The name a workspace is shown by.
 function M.label(n)
+    if n < 0 then
+        local screen = connected[home[n]]
+        return screen and screen:name() or "?"
+    end
     local name = n > NAMED_BASE and (S.cfg.namedWorkspaces or {})[n - NAMED_BASE]
     return name or tostring(n)
+end
+
+-- The order workspaces are listed in: by number, displays' own last.
+function M.before(a, b)
+    if (a < 0) ~= (b < 0) then return b < 0 end
+    return math.abs(a) < math.abs(b)
 end
 
 -- Back to the workspace shown before the last switch.
@@ -769,6 +893,72 @@ function M.focusDisplay(delta)
     if to then focusWorkspace(active[to], true) end
 end
 
+-- The display beside display `uuid` in `direction` ("left", "right", "up",
+-- "down"): the nearest one past that edge, then the one most in line.
+local function displayToward(uuid, direction)
+    local f = connected[uuid]:fullFrame()
+    local cx, cy = f.x + f.w / 2, f.y + f.h / 2
+    local best, bestKey = nil, nil
+    for other, screen in pairs(connected) do
+        if other ~= uuid then
+            local o = screen:fullFrame()
+            local gap, offset
+            if direction == "left" then gap = f.x - (o.x + o.w)
+            elseif direction == "right" then gap = o.x - (f.x + f.w)
+            elseif direction == "up" then gap = f.y - (o.y + o.h)
+            else gap = o.y - (f.y + f.h) end
+            if direction == "left" or direction == "right" then
+                offset = math.abs(o.y + o.h / 2 - cy)
+            else
+                offset = math.abs(o.x + o.w / 2 - cx)
+            end
+            local key = math.max(gap, 0) * 1e6 + offset
+            if gap >= -1 and (not bestKey or key < bestKey) then best, bestKey = other, key end
+        end
+    end
+    return best
+end
+
+function M.displayToward(uuid, direction)
+    refresh()
+    return connected[uuid] and displayToward(uuid, direction) or nil
+end
+
+-- Focus the display beside the focused one (else the pointer's) in
+-- `direction`, like Hyprland's movefocus past the last window: its
+-- workspace's last used window, or the display itself when that's empty.
+-- False if there's no display that way.
+function M.focusDisplayToward(direction)
+    refresh()
+    local win = Focus.currentWindow()
+    local n = win and of[win:id()]
+    local from = (n and shown[n]) or pointerUUID()
+    local to = from and displayToward(from, direction)
+    if not to then return false end
+    focusWorkspace(active[to], true)
+    return true
+end
+
+-- The pointer is over no window at `point`: a display showing an empty
+-- workspace takes focus as the pointer comes onto it (Hyprland focuses the
+-- monitor under the pointer).
+function M.pointerOverNothing(point)
+    -- Not over the menu bar: that shows the menus of the app in front.
+    local uuid = nil
+    for id, screen in pairs(connected) do
+        if Util.pointInFrame(point, screen:frame()) then uuid = id break end
+    end
+    local n = uuid and active[uuid]
+    if not n or focusedEmpty == uuid or M.hasWindows(n) then return end
+    focusWorkspace(n, false)
+end
+
+-- A window took focus: the empty display that had it doesn't any more. A
+-- new window that has no workspace yet is still on its way there.
+function M.windowFocused(id)
+    if of[id] ~= nil then focusedEmpty = nil end
+end
+
 -- Send the focused window to the workspace showing on the display `delta`
 -- places along, and follow it.
 function M.moveToDisplay(delta)
@@ -779,14 +969,17 @@ end
 -- Move the workspace showing on the focused display to the display `delta`
 -- places along (Hyprland's movecurrentworkspacetomonitor), windows and
 -- all. The display left behind shows another of its workspaces, or a new
--- one; the one it goes to keeps its own for later.
+-- one; the one it goes to keeps its own for later. Workspaces S.cfg.displays
+-- gives a display, and displays' own, stay put.
 function M.moveWorkspaceToDisplay(delta)
     local from, to = displayStep(delta)
     if not to then return end
+    local n = under[from] or active[from]
+    if n < 0 or pinnedTo[n] then return end
     hideScratchpad(from)
     hideScratchpad(to)
     claimAll()
-    local n = active[from]
+    n = active[from]
     local replacement = nil
     for m, uuid in pairs(home) do
         if uuid == from and m ~= n and not shown[m] and (not replacement or m < replacement) then
@@ -922,13 +1115,13 @@ end
 -- The share of the area a workspace's tiles are laid out in: less than
 -- the whole for a scratchpad, so the workspace beneath shows around it.
 function M.layoutScale(key)
-    local n = key and tonumber(key:match("^ws(%d+)$"))
+    local n = key and tonumber(key:match("^ws(%-?%d+)$"))
     if n and n > NAMED_BASE then return S.cfg.scratchpadScale end
     return nil
 end
 
 function M.uuidForKey(key)
-    local n = key and tonumber(key:match("^ws(%d+)$"))
+    local n = key and tonumber(key:match("^ws(%-?%d+)$"))
     return n and displayOf(n)
 end
 
@@ -967,7 +1160,7 @@ end
 function M.workspaces()
     local list = {}
     for n in pairs(home) do list[#list + 1] = { n = n, display = shown[n] } end
-    table.sort(list, function(a, b) return a.n < b.n end)
+    table.sort(list, function(a, b) return M.before(a.n, b.n) end)
     return list
 end
 
@@ -997,7 +1190,7 @@ function M.overview()
         end
     end
     for _, f in ipairs(floats) do table.insert(f[1].windows, f[2]) end
-    table.sort(list, function(a, b) return a.n < b.n end)
+    table.sort(list, function(a, b) return M.before(a.n, b.n) end)
     return list
 end
 

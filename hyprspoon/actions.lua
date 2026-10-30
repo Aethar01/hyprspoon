@@ -199,16 +199,17 @@ local function directionalCandidates()
 end
 
 -- Focus the nearest window in a direction ("left"/"right"/"up"/"down") and
--- warp the cursor to it.
+-- warp the cursor to it. Past the last one, the display that way takes
+-- focus, even with nothing on it (and from one with nothing on it).
 function M.focus(direction)
     local win = Focus.currentWindow()
-    if not win then return end
-
-    local target = neighbourInDirection(win, direction, true)
+    local target = win and neighbourInDirection(win, direction, true)
     if target then
         Focus.focus(target)
         Util.warpToWindow(target)
-    elseif win[focusMethods[direction]](win, directionalCandidates(), true, false) then
+    elseif Spaces.focusDisplayToward(direction) then
+        return
+    elseif win and win[focusMethods[direction]](win, directionalCandidates(), true, false) then
         -- Nothing directly beside it (e.g. another display): Hammerspoon
         -- picked. Focus change can finish one event-loop tick after the call.
         Util.warpToFocusedWindow(0.01)
@@ -259,23 +260,45 @@ function M.swap(direction)
     Focus.focus(win)
 end
 
+-- The display beside `screen` in `direction`, if there is one.
+local function screenToward(screen, direction)
+    local uuid = Spaces.displayToward(screen:getUUID(), direction)
+    for _, s in ipairs(hs.screen.allScreens()) do
+        if s:getUUID() == uuid then return s end
+    end
+    return nil
+end
+
 -- Move the focused window in a direction, like Hyprland's movewindow in
 -- its dwindle layout: a tile leaves the layout, which closes up, and goes
--- back in as if it had just opened with the pointer just past its old edge
--- (on another display, if that's there). It splits the tile there along
--- that tile's longer side (as new windows do), on the half the point is in. A float goes to
--- that edge of its display.
+-- back in as if it had just opened with the pointer just past its old edge,
+-- or at the near edge of the display that way when no tile is beside it.
+-- It splits the tile there along that tile's longer side (as new windows
+-- do), on the half the point is in. A float goes to that edge of its
+-- display, and from there to the display that way.
 function M.move(direction)
     local win = Focus.currentWindow()
     if not win then return end
+    local id = win:id()
 
     local _, leaf, key = Layout.locate(win)
     if not leaf or not leaf.rect then
-        local f, sf = win:frame(), win:screen():frame()
+        local screen = win:screen()
+        local f, sf = win:frame(), screen:frame()
+        local x, y = f.x, f.y
         if direction == "left" then f.x = sf.x
         elseif direction == "right" then f.x = sf.x + sf.w - f.w
         elseif direction == "up" then f.y = sf.y
         else f.y = sf.y + sf.h - f.h end
+        local other = math.abs(f.x - x) < 1 and math.abs(f.y - y) < 1 and screenToward(screen, direction)
+        if other then
+            S.windowInfo[id], S.applied[id] = nil, nil
+            win:moveToScreen(other, false, true, 0)
+            Spaces.claim(win, other:getUUID())
+            Focus.focus(win)
+            Util.warpToWindow(win)
+            return
+        end
         Util.setFrame(win, f, S.cfg.tiling.animationDuration)
         return
     end
@@ -289,13 +312,23 @@ function M.move(direction)
         y = direction == "up" and r.y - step or direction == "down" and r.y + r.h + step or r.y + r.h / 2,
     }
     local screen = win:screen()
-    for _, s in ipairs(hs.screen.allScreens()) do
-        if Util.pointInFrame(point, s:fullFrame()) then screen = s break end
+    if not nearestInDirection(r, id, tiles(S.trees[key]), direction) then
+        -- Nothing beside it: the display that way, coming in at its near
+        -- edge level with the window. (The outer gap can be wider than the
+        -- step, so the point alone may not get there.)
+        screen = screenToward(screen, direction)
+        if not screen then return end
+        local o = screen:frame()
+        point = {
+            x = direction == "left" and o.x + o.w - 1 or direction == "right" and o.x
+                or math.max(o.x, math.min(point.x, o.x + o.w - 1)),
+            y = direction == "up" and o.y + o.h - 1 or direction == "down" and o.y
+                or math.max(o.y, math.min(point.y, o.y + o.h - 1)),
+        }
     end
     local toKey = Tree.keyForScreen(screen)
     if S.untiled[toKey] then return end
 
-    local id = win:id()
     local area = S.trees[key].rect
     S.trees[key] = Tree.removeID(S.trees[key], id)
     if toKey == key and S.trees[key] then
@@ -323,9 +356,10 @@ function M.move(direction)
     end
 
     if toKey ~= key then
-        -- Park it on the other display so the retile keeps it there.
+        -- Park it on the other display so the retile keeps it there (and
+        -- looks up which display it's on afresh).
         S.keyIndex = {}
-        S.applied[id] = nil
+        S.applied[id], S.windowInfo[id] = nil, nil
         win:setFrame(target and target.rect or screen:frame(), 0)
         Layout.tileNow()
     else

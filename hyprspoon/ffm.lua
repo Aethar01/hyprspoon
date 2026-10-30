@@ -6,6 +6,7 @@ package.loaded["hyprspoon.ffm"] = M
 local S = require("hyprspoon.state")
 local Util = require("hyprspoon.util")
 local Focus = require("hyprspoon.focus")
+local Spaces = require("hyprspoon.spaces")
 
 -- ---------------------------------------------------------------------------
 -- Focus follows mouse
@@ -87,12 +88,15 @@ end
 local function ffmFocusPending()
     local entry = ffmPending
     ffmPending = nil
-    if not entry or S.dragState or locked
-       or not Util.pointInFrame(hs.mouse.absolutePosition(), entry.frame) then
+    if not entry or S.dragState or locked then return end
+    local point = hs.mouse.absolutePosition()
+    -- Over no window: a display with nothing on it takes focus.
+    if entry.nothing then
+        if not Focus.snapshotEntryAt(point) then Spaces.pointerOverNothing(point) end
         return
     end
+    if not Util.pointInFrame(point, entry.frame) then return end
     -- By id: the snapshot may have been rebuilt since.
-    local point = hs.mouse.absolutePosition()
     local under = Focus.snapshotEntryAt(point)
     if not under or under.id ~= entry.id then return end
     if S.ffmFocusedID ~= entry.id and overPopup(point, entry) then
@@ -126,6 +130,9 @@ local function onPointer(point)
         -- Only focus once the pointer has settled, so skimming across
         -- windows doesn't flicker focus through each of them.
         ffmPending = entry
+        S.running.ffmTimer:start()
+    elseif not entry then
+        ffmPending = { nothing = true }
         S.running.ffmTimer:start()
     end
 end
