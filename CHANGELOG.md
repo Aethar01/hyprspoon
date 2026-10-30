@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Option+Shift+H/J/K/L now move the window, like Hyprland's movewindow:
+  it leaves its tile and splits the one in that direction (on another
+  display too), instead of trading places with it. The new `moveLeft`,
+  `moveRight`, `moveUp` and `moveDown` actions do this; `swapLeft` etc.
+  still exist, unbound.
+
 ## 0.1.4 (2026-10-27)
 
 - Fixed focus follows mouse doing nothing on macOS 27, where the Dock keeps

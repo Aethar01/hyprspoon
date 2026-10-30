@@ -5,7 +5,7 @@
 ---     split resizing by mouse, keyboard, or native window edges
 ---   * modifier + drag anywhere on a window to move/resize it
 ---   * focus follows mouse, with cursor warping on keyboard focus changes
----   * directional focus/swap/resize and numbered workspaces of its own,
+---   * directional focus/move/swap/resize and numbered workspaces of its own,
 ---     switched by hotkey or trackpad swipe
 ---
 --- Download: https://github.com/Aethar01/hyprspoon/releases/latest
@@ -111,6 +111,7 @@ local M = {
     moveToWorkspace = Spaces.moveToWorkspace,
     resize = Actions.resize,
     swap = Actions.swap,
+    move = Actions.move,
     toggleFloat = Actions.toggleFloat,
     toggleFullScreen = Actions.toggleFullScreen,
     toggleMaximize = Actions.toggleMaximize,
@@ -142,6 +143,7 @@ local function hotkeyActions()
     for suffix, dir in pairs(DIRECTIONS) do
         actions["focus" .. suffix] = function() M.focus(dir) end
         actions["swap" .. suffix] = function() M.swap(dir) end
+        actions["move" .. suffix] = function() M.move(dir) end
         actions["preselect" .. suffix] = function() M.preselect(dir) end
         local step = RESIZE_STEPS[suffix]
         actions["resize" .. suffix] = function() M.resize(step[1], step[2]) end
@@ -193,7 +195,7 @@ M.defaultHotkeys = (function()
     }
     for suffix, key in pairs({ Left = "h", Down = "j", Up = "k", Right = "l" }) do
         map["focus" .. suffix] = { super, key }
-        map["swap" .. suffix] = { superShift, key }
+        map["move" .. suffix] = { superShift, key }
         map["resize" .. suffix] = { super, suffix:lower() }
         map["preselect" .. suffix] = { ctrlSuper, suffix:lower() }
     end

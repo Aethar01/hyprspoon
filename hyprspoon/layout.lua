@@ -476,6 +476,11 @@ local function applyTree(node, rect, byID, full)
     end
 end
 
+-- Works out every tile's rect in `rect` without moving any window.
+local function layOut(tree, rect)
+    applyTree(tree, rect, {})
+end
+
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
 -- flips only ever affect the layout of the window's own screen).
 local function tileNow(onlyIfChanged, onlyScreenUUID)
@@ -795,6 +800,7 @@ end
 
 M.stop = stop
 M.tileNow = tileNow
+M.layOut = layOut
 M.mayBeTab = mayBeTab
 M.handFocusBack = handFocusBack
 M.BSP_TAB_SETTLE = BSP_TAB_SETTLE

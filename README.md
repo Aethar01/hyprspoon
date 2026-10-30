@@ -229,7 +229,7 @@ you can also build your own table from scratch.
 | Keys | Action |
 |---|---|
 | Option+H/J/K/L | Focus left/down/up/right |
-| Option+Shift+H/J/K/L | Swap with the window in that direction |
+| Option+Shift+H/J/K/L | Move the window in that direction (`swapLeft` etc. swap instead, unbound) |
 | Option+arrows | Resize by 10% (repeats while held) |
 | Ctrl+Option+arrows | Open the next window on that side (again to cancel) |
 | Option+1…0 | Go to workspace 1…10 |

@@ -235,6 +235,26 @@ local function leafAtPoint(node, point)
     return leafAtPoint(node.a, point) or leafAtPoint(node.b, point)
 end
 
+-- The leaf whose tile contains `point`, else the one nearest it (`point`
+-- in a gap or past the edge).
+local function closestLeaf(node, point)
+    local hit = leafAtPoint(node, point)
+    if hit then return hit end
+    local best, bestDist = nil, nil
+    local function walk(n)
+        if not n then return end
+        if not isLeaf(n) then walk(n.a) walk(n.b) return end
+        local r = n.rect
+        if not r then return end
+        local dx = math.max(r.x - point.x, 0, point.x - (r.x + r.w))
+        local dy = math.max(r.y - point.y, 0, point.y - (r.y + r.h))
+        local dist = dx * dx + dy * dy
+        if not bestDist or dist < bestDist then best, bestDist = n, dist end
+    end
+    walk(node)
+    return best
+end
+
 local function removeID(node, windowID)
     if not node then return nil end
 
@@ -536,6 +556,7 @@ M.rightmostLeafID = rightmostLeafID
 M.insertAt = insertAt
 M.insertBeside = insertBeside
 M.nearestSide = nearestSide
+M.closestLeaf = closestLeaf
 M.removeID = removeID
 M.swapIDs = swapIDs
 M.ancestors = ancestors

@@ -1,4 +1,4 @@
--- hyprspoon/actions.lua: Hotkey actions: focus, swap, float, split, resize.
+-- hyprspoon/actions.lua: Hotkey actions: focus, swap, move, float, split, resize.
 
 local M = {}
 package.loaded["hyprspoon.actions"] = M
@@ -257,6 +257,82 @@ function M.swap(direction)
     end
 
     Focus.focus(win)
+end
+
+-- Move the focused window in a direction, like Hyprland's movewindow in
+-- its dwindle layout: a tile leaves the layout, which closes up, and goes
+-- back in as if it had just opened with the pointer just past its old edge
+-- (on another display, if that's there). It splits the tile there along
+-- that tile's longer side (as new windows do), on the half the point is in. A float goes to
+-- that edge of its display.
+function M.move(direction)
+    local win = Focus.currentWindow()
+    if not win then return end
+
+    local _, leaf, key = Layout.locate(win)
+    if not leaf or not leaf.rect then
+        local f, sf = win:frame(), win:screen():frame()
+        if direction == "left" then f.x = sf.x
+        elseif direction == "right" then f.x = sf.x + sf.w - f.w
+        elseif direction == "up" then f.y = sf.y
+        else f.y = sf.y + sf.h - f.h end
+        Util.setFrame(win, f, S.cfg.tiling.animationDuration)
+        return
+    end
+
+    -- Hyprland's focal point: just past the window's edge (and the gap, so
+    -- it's in the tile beyond, not nearer this one), on its middle.
+    local r = leaf.rect
+    local step = S.cfg.tiling.innerGap + 1
+    local point = {
+        x = direction == "left" and r.x - step or direction == "right" and r.x + r.w + step or r.x + r.w / 2,
+        y = direction == "up" and r.y - step or direction == "down" and r.y + r.h + step or r.y + r.h / 2,
+    }
+    local screen = win:screen()
+    for _, s in ipairs(hs.screen.allScreens()) do
+        if Util.pointInFrame(point, s:fullFrame()) then screen = s break end
+    end
+    local toKey = Tree.keyForScreen(screen)
+    if S.untiled[toKey] then return end
+
+    local id = win:id()
+    local area = S.trees[key].rect
+    S.trees[key] = Tree.removeID(S.trees[key], id)
+    if toKey == key and S.trees[key] then
+        -- Where the tiles are once the layout has closed up.
+        Layout.layOut(S.trees[key], area)
+    end
+
+    local tree = S.trees[toKey]
+    local target = tree and Tree.closestLeaf(tree, point)
+    if target and target.rect then
+        local t = target.rect
+        local px = math.max(t.x, math.min(point.x, t.x + t.w))
+        local py = math.max(t.y, math.min(point.y, t.y + t.h))
+        -- Side by side only when it's more than 1.5 times wider than tall,
+        -- as for a window that opens (Hyprland's split_width_multiplier).
+        local side
+        if t.w > 1.5 * t.h then
+            side = px < t.x + t.w / 2 and "left" or "right"
+        else
+            side = py < t.y + t.h / 2 and "top" or "bottom"
+        end
+        S.trees[toKey] = select(1, Tree.insertBeside(tree, target.windowID, id, side))
+    else
+        S.trees[toKey] = Tree.leaf(id)
+    end
+
+    if toKey ~= key then
+        -- Park it on the other display so the retile keeps it there.
+        S.keyIndex = {}
+        S.applied[id] = nil
+        win:setFrame(target and target.rect or screen:frame(), 0)
+        Layout.tileNow()
+    else
+        Layout.tileNow(false, Tree.keyUUID(key))
+    end
+    Focus.focus(win)
+    Util.warpToWindow(win)
 end
 
 -- Toggle floating for the focused window (overrides the automatic choice).
