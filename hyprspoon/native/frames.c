@@ -2,7 +2,16 @@
 // thread.
 //
 // Loaded through Util.setFrame, Util.focusWindow and hyprspoon/mouse.lua as
-// hyprspoon.native.frames (build: make -C hyprspoon/native).
+// hyprspoon.native.frames (build: make -C hyprspoon/native). spaces.lua also
+// uses it to confirm which saved windows still exist.
+//
+// Lua functions: set(pid, wid, x, y, w, h, duration), liveIDs(),
+// focus(pid, wid, raise) (focus.c), dragBegin(options) and dragEnd(x, y)
+// (drag.c). liveIDs() returns a set {[windowID] = true} across all Spaces
+// and hidden apps, or nil if the query fails. It uses no accessibility calls.
+// Without this module, frame changes, focus and drags run through Lua and
+// Hammerspoon. Workspace sync keeps uncertain IDs rather than treating
+// off-screen windows as closed; an old module without liveIDs does too.
 //
 // Moving another app's window is a set of accessibility calls that wait for
 // that app to answer, so a busy or hung app stalls whoever asks, and
