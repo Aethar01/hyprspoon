@@ -68,7 +68,7 @@ Tree.registerKind = function(kind, handler) Tree.kinds[kind] = handler end
 package.loaded["hyprspoon.state"] = S
 package.loaded["hyprspoon.tree"] = Tree
 package.loaded["hyprspoon.util"] = {
-    winByID = {},
+    winByID = {}, forgetManagedWindows = function() end,
     native = function() return native end, managedWindows = function() return filter end,
     isPictureInPicture = function() return false end,
 }

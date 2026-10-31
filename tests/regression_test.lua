@@ -53,7 +53,7 @@ end
 local S = { autoFloat = {}, tilingEnabled = true, running = { windowFilter = {} },
     applied = {}, settleUntil = 0, lastMouseTime = 0 }
 local rules = {}
-local Util = { isPictureInPicture = isPiP, windowKind = function() return "standard" end,
+local Util = { isPictureInPicture = isPiP, forgetManagedWindows = function() end, windowKind = function() return "standard" end,
     rulesFor = function() return rules end,
     dlog = function() end, setFrame = function(win, rect, duration) win:setFrame(rect, duration) end }
 local Tree = { bootTime = 1000 }

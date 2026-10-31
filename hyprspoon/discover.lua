@@ -165,6 +165,8 @@ local function withRecentlyChangedApps(windows)
     local frames = Util.native("frames")
     requestSnapshot(frames)
     local previousBackground = S.nativeBackground
+    local previousShown = {}
+    for _, w in ipairs(S.nativeShown or {}) do previousShown[w.id] = true end
     S.nativeBackground, S.nativeShown = {}, {}
     for pid in pairs(pids) do
         local app = hs.application.applicationForPID(pid)
@@ -251,6 +253,14 @@ local function withRecentlyChangedApps(windows)
             for id, d in pairs(nativeWindows) do if d.pid == pid then nativeWindows[id] = nil end end
         end
     end
+    -- Util.managedWindows adds the shown native windows the filter misses,
+    -- so its cached list is stale once that set changes.
+    local same = true
+    for _, w in ipairs(S.nativeShown) do
+        if not previousShown[w.id] then same = false break end
+        previousShown[w.id] = nil
+    end
+    if not same or next(previousShown) then Util.forgetManagedWindows() end
     return out
 end
 

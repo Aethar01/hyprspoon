@@ -62,7 +62,7 @@ for id = 1, 9 do window(id) end
 
 local noop = function() end
 local Util = {
-    focusHistory = {}, focusTimes = {}, winByID = {}, pidByID = {},
+    forgetManagedWindows = noop, focusHistory = {}, focusTimes = {}, winByID = {}, pidByID = {},
     dlog = noop, idList = function() return "" end,
     native = noop,
     rulesFor = function() return {} end,
