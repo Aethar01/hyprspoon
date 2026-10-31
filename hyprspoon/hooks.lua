@@ -131,6 +131,10 @@ end
 -- Notes that `event` happened; cheap enough for any path, and nothing at
 -- all when no hook wants it.
 function M.fire(event)
+    local bar = package.loaded["hyprspoon.groupbar"]
+    if event ~= "layout" and bar and bar.update then
+        if event == "focus" then bar.focus(S.ffmFocusedID) else bar.update() end
+    end
     local cfg = S.cfg
     if not (cfg and ((cfg.on and cfg.on[event]) or (cfg.exec and cfg.exec[event]))) then return end
     pending[event] = true

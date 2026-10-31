@@ -62,6 +62,7 @@ end
 -- Takes every ring away, or brings them back.
 function M.suspend(on)
     suspended = on
+    require("hyprspoon.groupbar").suspend("overview", on)
     if native then native.set(onShow()) end
 end
 

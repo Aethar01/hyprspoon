@@ -191,7 +191,15 @@ end
 function M.start()
     if not S.cfg.slide then return end
     native = Util.native("slide") or false
+    if native and native.onChange then
+        native.onChange(function(on) require("hyprspoon.groupbar").suspend("slide", on) end)
+    end
     M.reset()
+end
+
+function M.stop()
+    if native and native.onChange then native.onChange(nil) end
+    require("hyprspoon.groupbar").suspend("slide", false)
 end
 
 return M

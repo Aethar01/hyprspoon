@@ -251,6 +251,31 @@ pointer. Distances are fractions of the trackpad's width. Set
 | `swipe.span` | `0.35` | With `follow`, how far the fingers move a whole workspace |
 | `swipe.distance` | `0.12` | Without `follow`, how far the fingers travel before it switches |
 
+### Group bars (`group.bar`)
+
+Grouped tiles have an equal-width segment per member. Click its title to show
+and focus it. A native tab set counts as one member and uses its shown tab's
+title when selected; native sets outside groups keep their app's own tab bar.
+Empty or unavailable titles read “Untitled”; long titles are truncated.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `group.bar` | table below | `false` disables the strip and removes its inset |
+| `group.bar.height` | `24` | Height in points, clamped to leave at least one point of window content; `0` hides it |
+| `group.bar.font` | `false` | System menu-bar font, or a font name |
+| `group.bar.size` | `12` | Title font size in points |
+| `group.bar.padding` | `8` | Horizontal padding in each segment, in points |
+| `group.bar.text` | `{ white = 1 }` | Title colour, a `"#rrggbb"` string or `hs.drawing.color` table |
+
+Segment backgrounds reuse `border.active` for the focused member and
+`border.inactive` for all others (`false` is transparent). With `border = false`,
+they use the default border colours. The strip reserves space above the window
+on the same layout pass, including maximized and pseudotiled groups. It follows
+layout and focus events and title changes when the window filter supports them;
+there is no polling. Hidden workspaces, full screen, slides and the overview hide
+it. Floating or dissolved groups have no strip. Stopping removes canvases and
+insets. Rebuild the native slide module for slide visibility notifications.
+
 ### Indicators (`indicators`)
 
 Workspace numbers: 1 to `alwaysShow`, and any other in use, with the
@@ -519,7 +544,8 @@ one member, survive reloads and restarts, and show the next open member when
 the shown window closes. Floating groups survive reloads; restoring floating
 groups after a restart is not supported yet. Creation, dissolution, joining
 and splitting act on tiles; cycling also works for floating groups.
-No group rule or group bar options are added yet (the bar is tracked in #14).
+Group creation is explicit; there is no group rule. Tiled groups show a clickable
+title strip (see [Group bars](#group-bars-groupbar)).
 
 `spoon.hyprspoon:rescue()` returns the number of parked windows brought
 back. See [Getting windows back](#getting-windows-back) for a command that
