@@ -347,7 +347,13 @@ end
 -- a scratchpad.
 local function groupHidden(id)
     local leaf = Tree.setOf and Tree.setOf(id)
-    return leaf ~= nil and leaf.kind == "group" and leaf.windowID ~= id
+    if not leaf or leaf.kind ~= "group" or leaf.windowID == id then return false end
+    -- A native unit has one on-screen tab; its other tabs must reach discovery
+    -- so an app tab switch can hand the tile over without parking the unit.
+    for _, tab in ipairs(Tree.tabsOf(leaf, leaf.windowID) or {}) do
+        if tab == id then return false end
+    end
+    return true
 end
 
 local function isHidden(id)
@@ -1140,8 +1146,17 @@ function M.focusedParked(win)
         if n then focusWorkspace(n, false, going) end
         return
     end
-    local leaf, key = Tree.setOf and Tree.setOf(win:id())
-    if leaf and leaf.kind == "group" then Layout.showMember(leaf, win:id(), key) end
+    local leaf, key
+    if Tree.setOf then leaf, key = Tree.setOf(win:id()) end
+    if leaf and leaf.kind == "group" then
+        Layout.showMember(leaf, win:id(), key)
+        -- gotoWorkspace does nothing when this workspace already shows.
+        -- Clear parking before the immediate pass places the selected tile.
+        if not isHidden(win:id()) then
+            unpark(win)
+            Layout.tileNow(false)
+        end
+    end
     S.spaceFocusWin = win
     local n = of[win:id()]
     -- Beneath a scratchpad: that goes.

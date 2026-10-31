@@ -629,4 +629,15 @@ test("registerKind keeps a handler per kind", function()
     Tree.kinds.group = nil
 end)
 
+test("untiled workspaces keep their group membership without tile geometry", function()
+    S.trees, S.keyIndex, S.setsAway = {}, {}, {}
+    local group = set(1, { 1, 2 }, "group")
+    S.trees.ws1, S.untiled.ws1 = group, true
+    local found, key = Tree.setOf(2)
+    assert(found == group and key == "ws1", "hidden members remain identifiable for parking")
+    assert(Tree.findByID(2) == nil, "untiled members have no tile")
+    S.untiled.ws1 = nil
+    assert(Tree.setOf(2) == group and select(2, Tree.findByID(2)) == group)
+end)
+
 print("Tree tests passed")

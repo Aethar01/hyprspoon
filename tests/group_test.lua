@@ -77,6 +77,20 @@ Group.selectMember(2)
 Group.inset(2, 24)
 assert(leaf(2).groupInset == 24 and focus == 2)
 
+-- A cached background tab is not the selected tab of a native unit.
+hs.window.list = function() return { { kCGWindowNumber = 3 } } end
+Group.cycle(wins[2], leaf(2), "ws1", 1)
+assert(leaf(2).windowID == 3 and focus == 3, "cycle picks the on-screen native tab")
+Group.cycle(wins[3], leaf(3), "ws1", 1)
+hs.window.list = function() return {} end
+local selection = Group.info(2)
+for i, list in ipairs(selection.members) do
+    if #list == 2 then assert(selection.selected[i] == 3, "bar gets the remembered native tab") end
+end
+Group.cycle(wins[2], leaf(2), "ws1", -1)
+assert(leaf(2).windowID == 3, "cycle remembers the unit when its windows are parked")
+Group.selectMember(2)
+
 -- Save/reload retains member order, native units and selected window.
 S.openIDs = { [1] = true, [2] = true, [3] = true }
 Tree.saveTreesNow()
