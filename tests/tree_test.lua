@@ -491,11 +491,11 @@ test("a whole set moves: its tile out, and back in with any of its windows", fun
     assert(found.pseudo == size, "its pseudotile size goes with it")
     assert(next(S.setsAway) == nil)
 
-    -- Back in with the window that was hidden: it shows.
+    -- Seeing a parked member first must not change the group selection.
     tree = Tree.removeID(tree, 2)
     tree = Tree.insertAt(tree, 1, 3)
     _, found = Tree.ancestors(tree, 2)
-    assert(found.windowID == 3 and same(found.members, { 2, 3 }))
+    assert(found.windowID == 2 and same(found.members, { 2, 3 }))
 end)
 
 test("swapping trades whole sets, each with its pseudotiling", function()
@@ -575,7 +575,7 @@ test("sets are saved with the tree and survive a reload", function()
     assert(b.windowID == 50 and same(b.members, { 50, 51 }) and same(b.tabs[1], { 50, 51 }))
     assert(S.setsAway[1] and S.setsAway[1] == S.setsAway[50], "away sets come back")
     local back = Tree.leaf(50)
-    assert(back.windowID == 50 and same(back.members, { 1, 50 }) and back.kind == "group")
+    assert(back.windowID == 1 and same(back.members, { 1, 50 }) and back.kind == "group")
     assert(next(S.setsAway) == nil)
 
     -- A window that closes forgets its place in a set that's away.
@@ -602,7 +602,11 @@ test("a set away from the trees stays findable as its members change", function(
     Tree.addMember(away, 4)
     assert(Tree.setOf(4) == away)
     local back = Tree.leaf(4)
-    assert(back == away and back.windowID == 4 and next(S.setsAway) == nil)
+    assert(back == away and back.windowID == 1 and next(S.setsAway) == nil)
+
+    -- Native sets still follow the app-selected tab when they return.
+    Tree.removeID(set(7, { 7, 8 }, "native"), 7)
+    assert(Tree.leaf(8).windowID == 8)
 
     -- A native set down to one window while away is just that window.
     Tree.removeID(set(5, { 5, 6 }, "native", { w = 10, h = 10 }), 5)
