@@ -273,6 +273,28 @@ function M.stop()
     S.running = {}
 end
 
+-- For windows stuck in a corner after a crash: brings back every parked
+-- window, forgets the workspaces and turns tiling off. Works whether or
+-- not start() was called, so from `hs -c` too (see the README); when it
+-- was, hyprspoon starts again with the same options. Returns how many
+-- windows came back.
+function M.rescue()
+    local running = S.running.windowFilter ~= nil
+    S.tilingEnabled = false
+    hs.settings.set(S.SETTINGS_KEY, false)
+    -- Tiles go back to their frames from before tiling; parked ones get
+    -- theirs when they're brought back below.
+    Layout.restoreFloatingFrames()
+    M.stop()
+    local back, missing = Spaces.rescue()
+    print(string.format("hyprspoon: brought back %d parked window(s), tiling off", back))
+    if missing > 0 then
+        print(string.format("hyprspoon: %d more on another Space; go there and run rescue() again", missing))
+    end
+    if running then M:start(S.cfg) end
+    return back
+end
+
 function M:start(opts)
     M.stop()
     Util.forgetManagedWindows()

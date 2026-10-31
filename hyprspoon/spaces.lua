@@ -439,18 +439,24 @@ local function unpark(win)
     Util.setFrame(win, frame, 0)
 end
 
+-- The IDs of every window WindowServer has, on any Space. One CGWindowList
+-- query, not hs.window.get per ID: that walks every app's windows over
+-- accessibility each time and stalls the slide animations.
+local function liveIDs()
+    local live = {}
+    for _, w in ipairs(hs.window.list(true) or {}) do
+        if w.kCGWindowNumber then live[w.kCGWindowNumber] = true end
+    end
+    return live
+end
+
 -- Parks the windows of workspaces not showing and brings back the rest.
 -- Parked windows stay put unless `force` (displays changed, so corners did).
 local function sync(force)
     -- A missed window-filter event can leave a dead window ID in `of` or
     -- `parked`, keeping its workspace alive. Reconcile those IDs against
-    -- WindowServer whenever workspace state is synced. One CGWindowList
-    -- query, not hs.window.get per ID: that walks every app's windows over
-    -- accessibility each time and stalls the slide animations.
-    local live, stale = {}, {}
-    for _, w in ipairs(hs.window.list(true) or {}) do
-        if w.kCGWindowNumber then live[w.kCGWindowNumber] = true end
-    end
+    -- WindowServer whenever workspace state is synced.
+    local live, stale = liveIDs(), {}
     if next(live) then
         for id in pairs(of) do
             if not live[id] then stale[id] = true end
@@ -1153,6 +1159,63 @@ function M.unparkAll()
     end
     parked = {}
     saveNow()
+end
+
+-- For spoon.hyprspoon:rescue(): brings back every parked window, this
+-- run's and, from the saved state, those of an earlier run this boot that
+-- crashed, then forgets the workspaces so nothing parks them again (each
+-- window joins the workspace showing on its display). A frame on a
+-- display that has gone is centred on the primary one. Windows hs.window
+-- can't reach (on another Space) stay saved as parked, for another go from
+-- there. Returns how many came back and how many are still parked.
+function M.rescue()
+    if saveTimer then saveTimer:stop() saveTimer = nil end
+    local frames = {}
+    local saved = hs.settings.get(STATE_KEY)
+    if type(saved) == "table" and type(saved.boot) == "number"
+       and math.abs(saved.boot - Tree.bootTime) < 120 and type(saved.parked) == "table" then
+        for id, f in pairs(saved.parked) do frames[tonumber(id)] = f end
+    end
+    for id, f in pairs(parked) do frames[id] = f end
+    local live = liveIDs()
+    if next(live) then
+        for id in pairs(frames) do
+            if not live[id] then frames[id] = nil end
+        end
+    end
+
+    local screens, primary = hs.screen.allScreens() or {}, hs.screen.primaryScreen()
+    local back = 0
+    -- Windows of hidden apps aren't in the filter's list (nor is there
+    -- one when hyprspoon isn't running).
+    for _, win in ipairs(hs.window.allWindows()) do
+        local id = win:id()
+        local f = id and frames[id]
+        if f then
+            local frame = { x = f.x, y = f.y, w = f.w, h = f.h }
+            local centre = { x = frame.x + frame.w / 2, y = frame.y + frame.h / 2 }
+            local onScreen = false
+            for _, screen in ipairs(screens) do
+                if Util.pointInFrame(centre, screen:frame()) then onScreen = true break end
+            end
+            if not onScreen and primary then
+                local sf = primary:frame()
+                frame.x = sf.x + (sf.w - frame.w) / 2
+                frame.y = sf.y + (sf.h - frame.h) / 2
+            end
+            win:setFrame(frame, 0)
+            frames[id] = nil
+            back = back + 1
+        end
+    end
+
+    local missing = 0
+    for _ in pairs(frames) do missing = missing + 1 end
+    active, under, home, of, pins, info, parked = {}, {}, {}, {}, {}, {}, frames
+    previous, lastNumbered, focusedEmpty = nil, nil, nil
+    saveNow()
+    Restore.forget()
+    return back, missing
 end
 
 -- The workspaces in use, by number: { n =, display = UUID showing it or
