@@ -409,6 +409,7 @@ test("group close handoff unparks and places the next member in the same pass", 
     assert(focused[#focused] == 3, "focus follows the replacement")
     Group.inset(3, 24)
     pass({ A = { 1, 3 } })
+    assert(group.windowRect.y == group.rect.y + 24 and group.windowRect.h == group.rect.h - 24)
     assert(wins[3].frame_.y == group.rect.y + 24 and wins[3].frame_.h == group.rect.h - 24)
     Group.inset(3, 0)
     pass({ A = { 1, 3 } })

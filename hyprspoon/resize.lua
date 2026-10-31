@@ -39,7 +39,9 @@ local function adoptFrame(win)
     if leaf.fullRect then return end
 
     local f = win:frame()
-    local r = leaf.pseudoRect or leaf.rect
+    local outer = leaf.pseudoRect or leaf.rect
+    local r = leaf.windowRect or outer
+    local inset = r.y - outer.y
     -- An unreadable frame (a busy app) reads as all zeros, not a resize.
     if f.w <= 0 or f.h <= 0 then return end
     local function differs(a, b) return math.abs(a - b) > BSP_EDGE_TOLERANCE end
@@ -64,13 +66,13 @@ local function adoptFrame(win)
         tostring(win:id()), seen, r.x, r.y, r.w, r.h))
     if leaf.pseudo then
         if differs(f.w, r.w) or differs(f.h, r.h) then
-            leaf.pseudo = { w = math.min(f.w, leaf.rect.w), h = math.min(f.h, leaf.rect.h) }
+            leaf.pseudo = { w = math.min(f.w, leaf.rect.w), h = math.min(f.h + inset, leaf.rect.h) }
         end
     elseif differs(f.w, r.w) or differs(f.h, r.h) then
         local edges = {
             { edge = "left",   split = "vertical",   branch = "b", now = f.x,       was = r.x },
             { edge = "right",  split = "vertical",   branch = "a", now = f.x + f.w, was = r.x + r.w },
-            { edge = "top",    split = "horizontal", branch = "b", now = f.y,       was = r.y },
+            { edge = "top",    split = "horizontal", branch = "b", now = f.y - inset, was = r.y - inset },
             { edge = "bottom", split = "horizontal", branch = "a", now = f.y + f.h, was = r.y + r.h },
         }
         for _, e in ipairs(edges) do

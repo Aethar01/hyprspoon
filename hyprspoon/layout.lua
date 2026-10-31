@@ -592,6 +592,8 @@ local function applyTree(node, rect, byID, full)
             local height = math.min(node.groupInset, math.max(0, rect.h - 1))
             rect = hs.geometry.rect(rect.x, rect.y + height, rect.w, rect.h - height)
         end
+        -- Resize adoption compares with the content frame, including a bar.
+        node.windowRect = rect
         local win = byID[node.windowID]
         if win then
             local id = node.windowID
