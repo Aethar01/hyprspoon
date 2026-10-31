@@ -30,7 +30,7 @@ function M.segments(info, cfg, titles, focused)
     local out = {}
     local count = #info.members
     for i, members in ipairs(info.members) do
-        local id = members[1]
+        local id = info.selected and info.selected[i] or members[1]
         for _, member in ipairs(members) do
             if member == info.shown then id = member break end
         end
@@ -92,8 +92,8 @@ function M.update()
                     end)
                 end
                 local titles = {}
-                for _, members in ipairs(info.members) do
-                    local member = members[1]
+                for i, members in ipairs(info.members) do
+                    local member = info.selected and info.selected[i] or members[1]
                     for _, tab in ipairs(members) do
                         if tab == info.shown then member = tab break end
                     end

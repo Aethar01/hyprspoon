@@ -74,7 +74,11 @@ rect.w = 200
 Bar.update()
 assert(canvas.frame_.w == 200 and canvas.elements[3].frame.x == 100)
 info.shown, leaf.windowID = 1, 1
+info.selected = { 1, 3 }
 Bar.focus(1)
+assert(canvas.elements[4].text == "Window 3", "hidden units use their remembered tab's title")
+canvas.click(canvas, "mouseDown", nil, 180, 10)
+assert(selected == 3, "bar selects the remembered native tab instead of members[1]")
 assert(canvas.elements[1].fillColor.hex == S.cfg.border.active)
 Bar.unfocused(wins[1])
 assert(canvas.elements[1].fillColor == S.cfg.border.inactive)
