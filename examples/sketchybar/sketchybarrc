@@ -2,7 +2,9 @@
 # up to date by hyprspoon's exec hooks rather than polling. Add this to
 # ~/.config/sketchybar/sketchybarrc, copy plugins/hyprspoon.sh to
 # ~/.config/sketchybar/plugins/ (and chmod +x it), and give hyprspoon the
-# exec hooks in examples/init.lua.
+# exec hooks in examples/init.lua. See README.md here for IPC setup and
+# full command paths. After loading both configs, run `sketchybar --update`
+# for the initial state. This snippet only shows numbered workspaces 1 to 10.
 
 PLUGIN_DIR="$CONFIG_DIR/plugins"
 
@@ -22,7 +24,8 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
                    click_script="hs -c 'spoon.hyprspoon.gotoWorkspace($i)'"
 done
 
-# The focused app. Its script updates the workspaces too.
+# The focused app. Its script updates the workspace items too. A forced
+# update queries state once; focus triggers carry the values themselves.
 sketchybar --add item front_app left \
            --set front_app icon.drawing=off label.padding_left=8 \
                  script="$PLUGIN_DIR/hyprspoon.sh" \

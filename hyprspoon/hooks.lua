@@ -38,15 +38,17 @@ end
 --   workspace  any change to the workspaces: a switch, one made or
 --              forgotten, a window joining or leaving one (each goes
 --              through the save in hyprspoon/spaces.lua)
---   layout     a tiling pass moved tiles
+--   layout     a tiling pass applied a layout (frames may be unchanged)
 --   focus      another window, workspace or display took focus
 --
 -- They're fired from the middle of switches, layouts and event taps, so
 -- firing only notes the event; everything fired runs together on the next
 -- turn of the run loop, each event once however often it fired, in the
 -- order above. A focus event that would report the same focus as the last
--- one is dropped. Every configured event also runs once on start(), so a
--- status bar has something to show after a reload.
+-- one is dropped (window, workspace and display are compared). Hooks
+-- receive the focus at delivery time, not the object that changed.
+-- Every configured event also runs once on start(), so a status bar has
+-- something to show after a reload.
 
 local EVENTS = { "display", "workspace", "layout", "focus" }
 
@@ -152,7 +154,8 @@ end
 --
 -- Everything a status bar shows, as a table for hs.json.encode. Its shape
 -- doesn't change: every key is always there, false where there's no value,
--- and lists are lists (possibly empty).
+-- and lists are lists (possibly empty). Call after start() so the options
+-- and window filter are ready. App fields are names, not bundle IDs.
 --   focus       as above: { window, app, workspace, display }
 --   displays    { uuid, name, primary, workspace = the name of the one it
 --               shows (a scratchpad over its own), focused }, the primary
@@ -163,7 +166,10 @@ end
 --               the order the menu bar shows them
 --   windows     { id, app, title, workspace = name, floating, hidden =
 --               parked or beneath a scratchpad, focused }, those with a
---               workspace (not minimized or full screen)
+--               workspace and in the current Space's managed-window filter
+--               (not hidden apps, minimized or full-screen windows). Grouped
+--               by workspace in the order above. focus.window may be an
+--               unmanaged window absent from this list.
 -- Titles take an accessibility call per window.
 function M.query()
     local focus, focusedN = focused()

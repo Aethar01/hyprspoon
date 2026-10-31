@@ -76,7 +76,8 @@ spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.defaultHotkeys)
 ```
 
 Tiling starts off. Press **Option+B** to turn it on (it stays on across
-reloads). See [`examples/init.lua`](examples/init.lua) for a fuller config.
+reloads). See [`examples/init.lua`](examples/init.lua) for a fuller config,
+including hooks for a [status bar](#status-bars).
 
 ## Configuration
 
@@ -293,8 +294,9 @@ hs -c 'return hs.json.encode(spoon.hyprspoon:query())'
 ### Status bars
 
 `spoon.hyprspoon:query()` returns the workspaces, windows and focus as one
-table for `hs.json.encode`. Its shape doesn't change: every key is always
-there, `false` where there's no value.
+table for `hs.json.encode`. Call it after `start()` so the options and
+window filter are ready. Every key below is always present, with `false`
+where there is no value. Lists encode as arrays, including empty lists.
 
 ```jsonc
 {
@@ -308,7 +310,7 @@ there, `false` where there's no value.
   // takes; `showing` is true beneath a scratchpad too. Windows: tiles first.
   "workspaces": [
     { "name": "2", "number": 2, "display": "<UUID>", "showing": true,
-      "focused": true, "scratchpad": false, "windows": [1234, 1240] }
+      "focused": true, "scratchpad": false, "windows": [1234] }
   ],
   // Windows with a workspace (not minimized or full screen). `hidden`:
   // parked on a workspace not showing, or beneath a scratchpad.
@@ -319,6 +321,33 @@ there, `false` where there's no value.
 }
 ```
 
+`focus.window` is a window ID; `focus.app` is the app's name, not its
+bundle ID. The focused window can belong to an app hyprspoon doesn't
+manage, so it need not appear in `windows`. With an empty display focused,
+its workspace has focus; otherwise the workspace comes from the focused
+window, its display, or the pointer's display.
+
+Display `uuid` and `name` identify the screen. `primary` marks the primary
+display; `focused` matches `focus.display`. Its `workspace` is the name of
+the workspace on top, including a scratchpad when one is open.
+
+Workspace `name` is a string: a number as text, a scratchpad name, or a
+display name. `number` is its numeric ID: scratchpads start at 101, and
+workspaces belonging to unconfigured displays use negative IDs. Pass that
+ID to `gotoWorkspace()`. `display` is the UUID it lives on, even when
+hidden, or the primary display while its own is disconnected. `showing`
+is true for the workspace beneath a scratchpad too; `focused` matches the
+focused workspace, and `scratchpad` identifies named workspaces. `windows`
+lists its window IDs, tiles before floats.
+
+Each window has a numeric `id`, app name, title, and workspace name.
+`floating` reflects hyprspoon's floating classification, `hidden` means
+parked or beneath a scratchpad, and `focused` matches `focus.window`.
+Only managed windows in the current macOS Space's filter appear, grouped
+by workspace in the same order as `workspaces`. Hidden apps, minimized
+windows and full-screen windows are absent. Reading titles costs an
+accessibility call per window, so hooks don't call `query()` themselves.
+
 To hear about changes instead of polling, give `start()` functions in `on`
 and shell commands in `exec`, by event:
 
@@ -326,19 +355,31 @@ and shell commands in `exec`, by event:
 |---|---|
 | `workspace` | Any change to the workspaces: a switch, one made or forgotten, a window joining or leaving one |
 | `focus` | Another window, workspace or display takes focus |
-| `layout` | A tiling pass moves tiles |
+| `layout` | A tiling pass applies a layout, even if the frames stay the same |
 | `display` | Displays are connected, disconnected or rearranged |
 
-They run on the next turn of the run loop, never in the middle of a switch
-or an event tap, once per turn however many changes there were, and once
-each on `start()`. A function gets `{ event, window, app, workspace,
-display }` (the `focus` table above, plus the event); a command (or a list
-of them) runs through `/bin/sh` with the same in `HYPRSPOON_EVENT`,
-`HYPRSPOON_WINDOW`, `HYPRSPOON_APP`, `HYPRSPOON_WORKSPACE` and
-`HYPRSPOON_DISPLAY`. A command still running isn't started again: it runs
-once more when it's done. Errors go to the Hammerspoon console.
-Hammerspoon's `PATH` is only the system's, so give commands elsewhere in
-full.
+Configured events run on the next turn of the run loop, once per event
+however many times it fired, and once each on `start()`. When several are
+pending, they run in this order: `display`, `workspace`, `layout`, `focus`.
+A focus event with the same window, workspace and display as the last one
+is dropped. Hooks describe the focus at delivery time, not each change
+along the way. They don't receive the window or workspace that changed.
+
+Each `on` entry is one function. It gets `{ event, window, app, workspace,
+display }` (the `focus` table above, plus the event). It runs in Hammerspoon,
+so keep it short; use `exec` for external work. Each `exec` entry is a shell
+command or list of commands, run asynchronously through `/bin/sh` with
+`HYPRSPOON_EVENT`, `HYPRSPOON_WINDOW`, `HYPRSPOON_APP`, `HYPRSPOON_WORKSPACE`
+and `HYPRSPOON_DISPLAY`. Values are strings; missing values become empty
+strings. For each event and command, a running command gets at most one
+rerun with the latest values. Callbacks run before commands for that event.
+Errors go to the console, and other hooks still run. `stop()` drops pending
+hooks and reruns; commands already running finish.
+
+Hammerspoon's `PATH` may omit Homebrew. Give SketchyBar's full path in
+`exec`: `/opt/homebrew/bin/sketchybar` on Apple Silicon, usually
+`/usr/local/bin/sketchybar` on Intel. Check with `command -v sketchybar`
+in your terminal and change the examples to match.
 
 ```lua
 spoon.hyprspoon:start({
@@ -354,7 +395,10 @@ spoon.hyprspoon:start({
 ```
 
 [`examples/sketchybar`](examples/sketchybar) is a SketchyBar setup that
-shows the workspaces in use and the focused app this way.
+shows numbered workspaces 1 to 10 in use and the focused app this way.
+Its README covers installation, IPC and initial updates. Scratchpads and
+displays' own workspaces are in `query()`, but need extra items to appear
+in this example.
 
 ## Troubleshooting
 
@@ -374,8 +418,9 @@ shows the workspaces in use and the focused app this way.
   basics working.
 - It wraps `hs.reload` to tell a reload apart from a quit, so that windows
   stay parked across a reload.
-- Native full-screen windows still get their own Space, which macOS
-  manages.
+- Use one macOS Desktop per display. Window management and `query()`
+  only see the current Desktop's managed windows. Native full-screen
+  windows still get their own Space, which macOS manages.
 
 ## Contributing
 

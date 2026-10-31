@@ -29,8 +29,10 @@ spoon.hyprspoon:start({
 		-- { app = "Slack", workspace = 4, silent = true },
 	},
 	-- Status bars hear about changes as they happen, e.g. SketchyBar with
-	-- examples/sketchybar. Hammerspoon's PATH is only the system's, so
-	-- commands are given in full.
+	-- examples/sketchybar/README.md for installation. Uncomment this table
+	-- inside start(); a second start() replaces these options. Hammerspoon's
+	-- PATH may omit Homebrew, so use the full path from `command -v sketchybar`
+	-- (/opt/homebrew/bin on Apple Silicon, usually /usr/local/bin on Intel).
 	-- exec = {
 	-- 	workspace = "/opt/homebrew/bin/sketchybar --trigger hyprspoon_workspace",
 	-- 	focus = '/opt/homebrew/bin/sketchybar --trigger hyprspoon_focus'

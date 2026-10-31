@@ -121,17 +121,22 @@ S.defaults = {
     --   }
     rules = {},
 
-    -- For status bars: functions called, and shell commands run, on the
-    -- next turn of the run loop after `workspace`, `focus`, `layout` or
-    -- `display` changes (see hyprspoon/hooks.lua), once per turn however
-    -- many there were, and once each on start(). A function gets { event =,
-    -- window = id, app =, workspace = name, display = UUID } (false for
-    -- none); a command (or a list of them) runs through /bin/sh with the
-    -- same as HYPRSPOON_EVENT, HYPRSPOON_WINDOW, HYPRSPOON_APP,
-    -- HYPRSPOON_WORKSPACE and HYPRSPOON_DISPLAY. Hammerspoon's PATH is
-    -- only the system's, so give commands elsewhere in full. E.g.
-    --   on = { workspace = function(e) print("now on " .. e.workspace) end },
-    --   exec = { focus = "/opt/homebrew/bin/sketchybar --trigger hyprspoon_focus" },
+    -- Status bar hooks, by event: `workspace` (membership or showing),
+    -- `focus` (window/workspace/display), `layout` (a layout applied, even
+    -- with unchanged frames), `display` (screens changed). See hooks.lua.
+    -- Each configured event runs once on start() and once per run-loop
+    -- turn, in display/workspace/layout/focus order. Unchanged focus is
+    -- dropped. Callbacks get the focus at delivery, not what changed:
+    -- { event =, window = id, app = name, workspace = name, display = UUID },
+    -- false for missing values. Keep callbacks short; they run in Hammerspoon.
+    -- `on[event]` is one function; `exec[event]` is a command or list run
+    -- asynchronously through /bin/sh. The same fields are strings in
+    -- HYPRSPOON_EVENT, HYPRSPOON_WINDOW, HYPRSPOON_APP, HYPRSPOON_WORKSPACE,
+    -- HYPRSPOON_DISPLAY; missing values are empty strings. A running
+    -- command gets at most one rerun with the latest values per event.
+    -- Hammerspoon's PATH may omit Homebrew, so use full paths. E.g.
+    --   on = { workspace = function(e) print("now on " .. tostring(e.workspace)) end },
+    --   exec = { workspace = "/opt/homebrew/bin/sketchybar --trigger hyprspoon_workspace" },
     on = {},
     exec = {},
 

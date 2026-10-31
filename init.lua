@@ -125,8 +125,10 @@ local M = {
     warpToFocusedWindow = Actions.warpToFocusedWindow,
     warpToWindow = Actions.warpToWindow,
     workspaces = Spaces.workspaces,
-    -- spoon.hyprspoon:query(): workspaces, windows and focus for status
-    -- bars, the shape documented in hyprspoon/hooks.lua.
+    -- spoon.hyprspoon:query() -> { focus, displays, workspaces, windows }.
+    -- Call after start(). Fields are documented in README.md (Status bars)
+    -- and hyprspoon/hooks.lua; missing values are false. Titles cost one
+    -- accessibility call per managed window.
     query = Hooks.query,
 }
 

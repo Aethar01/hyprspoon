@@ -20,6 +20,9 @@ Reload Hammerspoon to pick up changes, including rebuilt native modules.
 - `hyprspoon/*.lua`: the modules. The header of `init.lua` says what each
   one does.
 - `hyprspoon/state.lua`: every option, with its default and documentation.
+- `hyprspoon/hooks.lua`: event delivery and the `query()` snapshot. Keep its
+  field comments and the README shape in sync.
+- `examples/`: a Hammerspoon config and a SketchyBar snippet with its plugin.
 - `hyprspoon/native/`: optional C and Objective-C modules. Each one has a
   Lua fallback, and the Lua side must keep working without it.
 

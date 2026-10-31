@@ -3,10 +3,11 @@
 # and front_app, from examples/sketchybar/sketchybarrc.
 #
 # hyprspoon_focus brings the focused workspace and app with it, so needs
-# nothing else. hyprspoon_workspace, and SketchyBar starting, ask
+# nothing else. hyprspoon_workspace and forced updates (`sketchybar --update`) ask
 # hyprspoon for everything once with spoon.hyprspoon:query(), through the
 # hs command-line tool (require("hs.ipc") in your Hammerspoon config) and
-# jq (part of macOS 15 and later, else `brew install jq`).
+# jq (`brew install jq` if missing). See ../README.md for installation.
+# Scratchpads and displays' own workspaces have no items in this example.
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
