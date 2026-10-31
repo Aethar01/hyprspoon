@@ -415,4 +415,28 @@ test("group close handoff unparks and places the next member in the same pass", 
     assert(wins[3].frame_.y == group.rect.y and wins[3].frame_.h == group.rect.h)
 end)
 
+test("native tabs switch inside the shown group unit and tear off", function()
+    local Spaces = package.loaded["hyprspoon.spaces"]
+    Util.windowFor = function(id) return wins[id] end
+    local parkedIDs = {}
+    Spaces.park = function(w) parkedIDs[w:id()] = true end
+    Spaces.unpark = function(w) parkedIDs[w:id()] = nil end
+    package.loaded["hyprspoon.group"] = nil
+    require("hyprspoon.group")
+    pass({ A = { 1, 2 } })
+    local group = S.trees.ws1.b
+    group.members, group.kind, group.tabs = { 2, 3, 4 }, "group", { { 2, 3 } }
+    wins[3].frame_ = wins[2]:frame()
+    workspaceOf[2], workspaceOf[3], workspaceOf[4] = 1, 1, 1
+    pass({ A = { 1, 3 } }, { 4 }, { 2 })
+    assert(group.windowID == 3 and not parkedIDs[2] and not parkedIDs[3])
+    assert(wins[3].moves == 0, "switching native tabs does not move their window")
+    clock = clock + 1.1
+    pass({ A = { 1, 3 } }, { 4 }, { 2 })
+    assert(S.trees.ws1.b == group and not S.setsAway[3], "switch survives SET_WAIT")
+    pass({ A = { 1, 3, 2 } }, { 4 })
+    assert(Tree.setOf(2) == nil and Tree.shownIDs(S.trees.ws1)[2], "tear-off gets its own tile")
+    assert(group.windowID == 3 and not parkedIDs[2], "shown unit stays selected")
+end)
+
 print("Layout tests passed")

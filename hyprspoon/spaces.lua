@@ -347,7 +347,13 @@ end
 -- a scratchpad.
 local function groupHidden(id)
     local leaf = Tree.setOf and Tree.setOf(id)
-    return leaf ~= nil and leaf.kind == "group" and leaf.windowID ~= id
+    if not leaf or leaf.kind ~= "group" or leaf.windowID == id then return false end
+    -- A native unit has one on-screen tab; its other tabs must reach discovery
+    -- so an app tab switch can hand the tile over without parking the unit.
+    for _, tab in ipairs(Tree.tabsOf(leaf, leaf.windowID) or {}) do
+        if tab == id then return false end
+    end
+    return true
 end
 
 local function isHidden(id)

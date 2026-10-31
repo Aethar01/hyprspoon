@@ -23,9 +23,21 @@ local function units(leaf)
     return out
 end
 
+local function sameUnit(leaf, a, b)
+    for _, id in ipairs(Tree.tabsOf(leaf, a) or { a }) do
+        if id == b then return true end
+    end
+    return false
+end
+
 local function hide(leaf, key, strays)
+    -- Two tabs of the shown unit with their own windows are a tear-off.
+    -- Let discovery tile the detached window during this same pass.
+    for _, id in ipairs(strays or {}) do
+        if sameUnit(leaf, leaf.windowID, id) then Tree.removeMember(leaf, id) end
+    end
     for _, id in ipairs(leaf.members) do
-        if id ~= leaf.windowID then
+        if not sameUnit(leaf, leaf.windowID, id) then
             local win = Util.windowFor(id)
             if win then Spaces.park(win, Spaces.workspaceOf(id), strays and #strays > 0) end
         end
@@ -33,6 +45,7 @@ local function hide(leaf, key, strays)
 end
 
 function M.show(leaf, key, from, to)
+    if sameUnit(leaf, from, to) then return end
     local win = Util.windowFor(to)
     if win then Spaces.unpark(win) end
     local old = Util.windowFor(from)
