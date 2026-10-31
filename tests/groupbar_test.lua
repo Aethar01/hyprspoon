@@ -106,8 +106,17 @@ info.members = { { 1 } }
 Bar.update()
 local last = canvases[#canvases]
 assert(#last.elements == 2)
+local managed = package.loaded["hyprspoon.util"].managedWindows
+package.loaded["hyprspoon.util"].managedWindows = function()
+    error("title notifications must not enumerate other groups")
+end
+local draws = last.draws
+Bar.titleChanged(wins[1])
+assert(last.draws == draws, "unchanged labels do not redraw")
 wins[1].title = function() return "Changed title" end
-Bar.update()
+Bar.titleChanged(wins[1])
+assert(last.draws == draws + 1, "only the changed title redraws")
+package.loaded["hyprspoon.util"].managedWindows = managed
 assert(last.elements[2].text == "Changed title")
 last.click(last, "mouseDown", nil, 180, 10)
 assert(selected == 1)

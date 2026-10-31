@@ -675,10 +675,10 @@ local function focusWorkspace(n, warp, skip)
         S.intent = nil
         hs.focus()
         focusedEmpty = shown[n]
-        Hooks.fire("focus")
         -- Nothing of ours has focus now: the pointer going back onto the
         -- window that had it focuses it again.
         S.ffmFocusedID, S.ffmLastWindow = nil, nil
+        Hooks.fire("focus")
         local screen = connected[shown[n]]
         if warp and screen then
             local f = screen:frame()

@@ -310,6 +310,22 @@ group.tabs = { { 70, 71 } }
 assert(not Spaces.isHidden(71), "a shown unit's native tabs are never group-hidden")
 group.tabs = nil
 
+-- Empty workspace focus on another display publishes the cleared focus.
+local Hooks = require("hyprspoon.hooks")
+local fire, sawEmpty = Hooks.fire, false
+Hooks.fire = function(event)
+    if event == "focus" then
+        assert(S.ffmFocusedID == nil and S.ffmLastWindow == nil, "focus hook sees no old active segment")
+        sawEmpty = true
+    end
+end
+Util.managedWindows = function() return {} end
+Util.focusHistory = {}
+S.ffmFocusedID, S.ffmLastWindow = 70, gshown
+Spaces.gotoWorkspace(5)
+assert(sawEmpty, "empty workspace emits a focus hook")
+Hooks.fire = fire
+
 -- Pins are saved with the rest, and come back on reload.
 Spaces.stop()
 package.loaded["hyprspoon.spaces"] = nil

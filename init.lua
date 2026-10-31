@@ -497,7 +497,7 @@ function M:start(opts)
         Border.unfocused(win)
     end)
     if hs.window.filter.windowTitleChanged then
-        filter:subscribe(hs.window.filter.windowTitleChanged, Groupbar.update)
+        filter:subscribe(hs.window.filter.windowTitleChanged, Groupbar.titleChanged)
     end
 
     -- A window moved or resized (each step of our own animations too).

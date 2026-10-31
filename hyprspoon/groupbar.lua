@@ -59,11 +59,12 @@ local function color(value)
     return type(value) == "string" and { hex = value } or value
 end
 
-function M.update()
+function M.update(onlyLeaf)
     if not running then return end
     local cfg, seen = config(), {}
     local blocked = next(suspended) ~= nil
-    for _, win in ipairs(Util.managedWindows()) do
+    local windows = onlyLeaf and { Util.windowFor(onlyLeaf.windowID) } or Util.managedWindows()
+    for _, win in ipairs(windows) do
         local id = win:id()
         local leaf = Tree.setOf(id)
         local info = leaf and leaf.kind == "group" and leaf.windowID == id and Group.info(id)
@@ -134,7 +135,27 @@ function M.update()
         end
     end
     for leaf, bar in pairs(bars) do
-        if not seen[leaf] then bar.canvas:delete() bars[leaf] = nil end
+        if (not onlyLeaf or leaf == onlyLeaf) and not seen[leaf] then
+            bar.canvas:delete() bars[leaf] = nil
+        end
+    end
+end
+
+function M.titleChanged(win)
+    if not running or not win then return end
+    local id = win:id()
+    local leaf = Tree.setOf(id)
+    local bar = leaf and bars[leaf]
+    if not bar then return end
+    for _, cell in ipairs(bar.cells) do
+        if cell.id == id then
+            local title = win:title()
+            local label = title and title ~= "" and title or "Untitled"
+            -- Terminal emits frequent repeated title notifications. Touch only
+            -- the affected group, and redraw only a changed displayed label.
+            if cell.label ~= label then M.update(leaf) end
+            return
+        end
     end
 end
 
