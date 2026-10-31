@@ -60,7 +60,8 @@ local function hasFloating()
 end
 
 -- Puts a new float where its rule says: `size` and `position` (from the
--- display's top left) are points, or fractions of the display from 0 to 1.
+-- display's top left) are points, or fractions when 0 < v <= 1 (1 is the
+-- full display). Zero and negatives are points; the frame stays on screen.
 -- Without a position it's centred if the rule's `center` is true, or if
 -- `centre` is and the rule doesn't say.
 local function placeFloat(win, rule, centre)
@@ -77,23 +78,30 @@ local function placeFloat(win, rule, centre)
     local screen = win:screen()
     if not screen then return end
     local sf = screen:frame()
-    local function scale(v, whole) return v <= 1 and v * whole or v end
+    local f = win:frame()
+    local x, y, w, h = f.x, f.y, f.w, f.h
+    local function scale(v, whole) return v > 0 and v <= 1 and v * whole or v end
     if type(size) == "table" then
-        local w, h = size[1] or size.w, size[2] or size.h
-        if type(w) == "number" and type(h) == "number" then
-            win:setSize({ w = scale(w, sf.w), h = scale(h, sf.h) })
+        local rw, rh = size[1] or size.w, size[2] or size.h
+        if type(rw) == "number" and type(rh) == "number" then
+            w, h = scale(rw, sf.w), scale(rh, sf.h)
         end
+    end
+    w, h = math.max(1, math.min(w, sf.w)), math.max(1, math.min(h, sf.h))
+    if centre then
+        -- Use the requested size: an app may not have resized yet.
+        x, y = sf.x + (sf.w - w) / 2, sf.y + (sf.h - h) / 2
     end
     if type(pos) == "table" then
-        local x, y = pos[1] or pos.x, pos[2] or pos.y
-        if type(x) == "number" and type(y) == "number" then
-            win:setTopLeft({ x = sf.x + scale(x, sf.w), y = sf.y + scale(y, sf.h) })
-            return
+        local px, py = pos[1] or pos.x, pos[2] or pos.y
+        if type(px) == "number" and type(py) == "number" then
+            x, y = sf.x + scale(px, sf.w), sf.y + scale(py, sf.h)
         end
     end
-    if centre then
-        local f = win:frame()
-        win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2, y = sf.y + (sf.h - f.h) / 2 })
+    x, y = math.max(sf.x, math.min(x, sf.x + sf.w - w)), math.max(sf.y, math.min(y, sf.y + sf.h - h))
+    if w ~= f.w or h ~= f.h then win:setSize({ w = w, h = h }) end
+    if x ~= f.x or y ~= f.y then
+        win:setTopLeft({ x = x, y = y })
     end
 end
 

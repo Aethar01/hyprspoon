@@ -235,11 +235,15 @@ e.g. `"AXWindow"` and `"AXDialog"`), and sets any of:
 | `float` | `true` to float the window, `false` to tile it even if it would float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
-| `size` | A float's size when it first appears, `{ w, h }`: points, or fractions of the display from 0 to 1, e.g. `{ 0.5, 0.6 }` |
+| `size` | A float's size when it first appears, `{ w, h }`: points, or fractions of the display for `0 < v <= 1`, e.g. `{ 0.5, 0.6 }`; `1` means the full display |
 | `position` | A float's top left when it first appears, `{ x, y }` from the display's top left, in points or fractions like `size` |
 | `center` | `true` to centre a new float (floats are by default, dialogs aren't), `false` to leave it where the app put it |
 | `noborder` | `true` for no ring around the window |
 | `opacity` | How see-through the window itself is, from 0 to 1, for border masking (not read yet) |
+
+Zero and negative `size`/`position` values are points. Placement clamps the
+requested frame to the display's usable area, with a minimum size of one
+point. Existing floats keep their frames across reloads.
 
 Rules are read once per window, when it first appears; later matching rules
 win.

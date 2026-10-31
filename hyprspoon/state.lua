@@ -116,7 +116,8 @@ S.defaults = {
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
     --   size = { w, h }      a float's size when it first appears, in points
-    --                        or, from 0 to 1, fractions of the display
+    --                        or fractions when 0 < v <= 1 (1 is the full
+    --                        display); zero and negatives are points
     --   position = { x, y }  likewise its top left, measured from the
     --                        display's top left
     --   center = true/false  centre a new float (they are by default, but
@@ -124,6 +125,8 @@ S.defaults = {
     --   noborder = true      no ring around it
     --   opacity = 0..1       how see-through the window itself is, for
     --                        border masking (not read yet)
+    -- Placement clamps the requested frame to the display's usable area,
+    -- with a minimum size of one point. Reloads keep existing float frames.
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {

@@ -123,7 +123,7 @@ assert(classify(false) == false and S.autoFloat[1] == false and axReads == 0, "a
 local placed, sized
 local sf = { x = 100, y = 50, w = 1000, h = 800 }
 win.screen = function() return { frame = function() return sf end } end
-win.frame = function() return { x = 0, y = 0, w = sized and sized.w or 200, h = sized and sized.h or 100 } end
+win.frame = function() return { x = 0, y = 0, w = 200, h = 100 } end
 win.setTopLeft = function(_, p) placed = p end
 win.setSize = function(_, s) sized = s end
 local function place(rule, canFullScreen)
@@ -136,12 +136,40 @@ place({ size = { 0.5, 0.25 } })
 assert(sized.w == 500 and sized.h == 200 and placed.x == 350 and placed.y == 350,
     "fractions size against the display, then centre")
 place({ size = { w = 640, h = 480 }, position = { 0, 0.5 } })
-assert(sized.w == 640 and sized.h == 480 and placed.x == 100 and placed.y == 450,
-    "points size, and position is from the display's top left")
+assert(sized.w == 640 and sized.h == 480 and placed.x == 100 and placed.y == 370,
+    "points size, and fractional position is clamped to the display")
 place({ position = { 20, 30 }, center = true })
 assert(placed.x == 120 and placed.y == 80, "a position wins over centring")
 place({ center = false })
 assert(placed == nil and sized == nil, "center = false leaves it where the app put it")
+place({ size = { 1, 1 }, position = { 1, 1 } })
+assert(sized.w == 1000 and sized.h == 800 and placed.x == 100 and placed.y == 50,
+    "one means the full display, and the final frame stays inside it")
+place({ size = { 2000, 1200 }, center = true })
+assert(sized.w == 1000 and sized.h == 800 and placed.x == 100 and placed.y == 50,
+    "oversized requests are clamped before centring")
+place({ position = { -20, -30 } })
+assert(placed.x == 100 and placed.y == 50, "negative point offsets are clamped at the display's top left")
+place({ position = { 5000, 5000 } })
+assert(placed.x == 900 and placed.y == 750, "position keeps the whole window inside the display")
+place({ size = { 400, 300 }, center = false })
+assert(sized.w == 400 and sized.h == 300 and placed.x == 100 and placed.y == 50,
+    "size alone keeps the final frame inside the display")
+place({ size = { 400, 300 } })
+assert(placed.x == 400 and placed.y == 300,
+    "centres from the requested size even when the app still reports its old frame")
+local oldFrame = win.frame
+win.frame = function() return { x = 100, y = 50, w = 2000, h = 1200 } end
+place({ position = { 20, 30 } })
+assert(sized.w == 1000 and sized.h == 800 and placed == nil,
+    "position also clamps an existing oversized frame")
+win.frame = oldFrame
+local oldScreenFrame = sf
+sf = { x = -1400, y = -900, w = 1200, h = 900 }
+place({ size = { 0.5, 0.5 }, position = { 1, 1 } })
+assert(sized.w == 600 and sized.h == 450 and placed.x == -800 and placed.y == -450,
+    "fractions and bounds use the float's display, including negative display origins")
+sf = oldScreenFrame
 place({ size = { 0.5, 0.5 } }, true)
 assert(S.autoFloat[1] == false and sized == nil, "tiles aren't sized")
 Util.windowKind = function() return "subwindow" end
