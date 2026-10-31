@@ -345,7 +345,19 @@ end
 
 -- True for a window parked on a workspace that isn't showing, or beneath
 -- a scratchpad.
+local function groupHidden(id)
+    local leaf = Tree.setOf and Tree.setOf(id)
+    if not leaf or leaf.kind ~= "group" or leaf.windowID == id then return false end
+    -- A native unit has one on-screen tab; its other tabs must reach discovery
+    -- so an app tab switch can hand the tile over without parking the unit.
+    for _, tab in ipairs(Tree.tabsOf(leaf, leaf.windowID) or {}) do
+        if tab == id then return false end
+    end
+    return true
+end
+
 local function isHidden(id)
+    if groupHidden(id) then return true end
     local n = id and of[id]
     return n ~= nil and (shown[n] == nil or behind[n] == true)
 end
@@ -529,7 +541,7 @@ local function sync(force)
         local id = win:id()
         local n = of[id]
         if n then
-            if shown[n] then
+            if shown[n] and not groupHidden(id) then
                 if parked[id] then unpark(win) end
             elseif force or not parked[id] then
                 park(win, n)
@@ -550,7 +562,12 @@ end
 -- Native tabs get bookkeeping only; their app moves them with the shown
 -- window. Group members keep their independent parking behaviour.
 local function bringMembers(id, n)
-    local leaf = Tree.setOf(id)
+    local leaf, key = Tree.setOf(id)
+    -- Sync can forget an emptied source workspace before discovery runs.
+    -- Detach its set now, while membership and the selected member still exist.
+    if leaf and key and key ~= "ws" .. tostring(n) then
+        S.trees[key] = Tree.removeID(S.trees[key], leaf.windowID)
+    end
     if leaf and leaf.kind == "native" then
         -- Native tabs move only through their shown window. Give even
         -- never-shown members the workspace and discard old parking state.
@@ -666,17 +683,19 @@ end
 local function focusWorkspace(n, warp, skip)
     local sent = S.spaceFocusWin
     S.spaceFocusWin = nil
-    local target = sent and sent:id() and of[sent:id()] == n
+    local target = sent and sent:id() and of[sent:id()] == n and not groupHidden(sent:id())
         and not nativeBackground(sent:id()) and sent or nil
     if not target then
         for _, fid in ipairs(Util.focusHistory) do
             local win = Util.winByID[fid]
-            if of[fid] == n and fid ~= skip and not nativeBackground(fid) and win and win:id() == fid then target = win break end
+            if of[fid] == n and not groupHidden(fid) and not nativeBackground(fid) and fid ~= skip
+               and win and win:id() == fid then target = win break end
         end
     end
     if not target then
         for _, win in ipairs(Util.managedWindows()) do
-            if of[win:id()] == n and win:id() ~= skip and not nativeBackground(win:id()) then target = win break end
+            if of[win:id()] == n and not groupHidden(win:id()) and not nativeBackground(win:id())
+               and win:id() ~= skip then target = win break end
         end
     end
 
@@ -688,10 +707,10 @@ local function focusWorkspace(n, warp, skip)
         S.intent = nil
         hs.focus()
         focusedEmpty = shown[n]
-        Hooks.fire("focus")
         -- Nothing of ours has focus now: the pointer going back onto the
         -- window that had it focuses it again.
         S.ffmFocusedID, S.ffmLastWindow = nil, nil
+        Hooks.fire("focus")
         local screen = connected[shown[n]]
         if warp and screen then
             local f = screen:frame()
@@ -1102,7 +1121,8 @@ function M.moveWorkspaceToDisplay(delta)
         if of[id] == n and not nativeBackground(id) then
             pins[id] = until_
             S.windowInfo[id], S.applied[id] = nil, nil
-            win:moveToScreen(connected[to], false, true, 0)
+            if groupHidden(id) then park(win, n)
+            else win:moveToScreen(connected[to], false, true, 0) end
         end
     end
     lastSwitch = hs.timer.secondsSinceEpoch()
@@ -1134,7 +1154,7 @@ function M.place(win, force)
         end
         return
     end
-    if shown[n] then
+    if shown[n] and not groupHidden(id) then
         if parked[id] then unpark(win) end
     elseif not parked[id] then
         park(win, n)
@@ -1158,6 +1178,17 @@ function M.focusedParked(win)
         local n = active[pointerUUID()]
         if n then focusWorkspace(n, false, going) end
         return
+    end
+    local leaf, key
+    if Tree.setOf then leaf, key = Tree.setOf(win:id()) end
+    if leaf and leaf.kind == "group" then
+        Layout.showMember(leaf, win:id(), key)
+        -- gotoWorkspace does nothing when this workspace already shows.
+        -- Clear parking before the immediate pass places the selected tile.
+        if not isHidden(win:id()) then
+            unpark(win)
+            Layout.tileNow(false)
+        end
     end
     S.spaceFocusWin = win
     local n = of[win:id()]
@@ -1374,7 +1405,7 @@ function M.overview()
         -- A background native tab has no window on screen of its own: its
         -- set shows as the tab in front, like a group's hidden members.
         local ws = of[id] and not nativeBackground(id) and byN[of[id]]
-        if ws then
+        if ws and not groupHidden(id) then
             local frame = Tree.rectFor(id) or parked[id]
             if not frame then
                 local f = win:frame()
@@ -1453,6 +1484,14 @@ function M.stop()
     if saveTimer then saveNow() end
 end
 
+M.park = function(win, n, force)
+    if n and (force or not parked[win:id()]) then park(win, n) save() end
+end
+M.unpark = function(win)
+    -- A user can select a group member from the Dock on a workspace that
+    -- is still hidden. Its workspace switch will unpark it after refresh.
+    if not isHidden(win:id()) then unpark(win) end
+end
 M.isHidden = isHidden
 M.claim = claim
 M.displayOf = displayOf

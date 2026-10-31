@@ -404,6 +404,96 @@ test("groupNext, groupPrev and moveOutOfGroup go to the focused set's kind", fun
     assert(#calls == 4)
 end)
 
+test("group close handoff unparks and places the next member in the same pass", function()
+    local Spaces = package.loaded["hyprspoon.spaces"]
+    Util.windowFor = function(id) return wins[id] end
+    Spaces.park = noop
+    local unparked = nil
+    Spaces.unpark = function(w) unparked = w:id() end
+    package.loaded["hyprspoon.group"] = nil
+    local Group = require("hyprspoon.group")
+    pass({ A = { 1, 2 } })
+    local group = S.trees.ws1.b
+    group.members, group.kind = { 2, 3 }, "group"
+    local rect = group.rect
+    Util.focusHistory[1] = 2
+    pass({ A = { 1 } }, { 3 })
+    group = S.trees.ws1.b
+    assert(group.windowID == 3 and #group.members == 1 and group.kind == "group")
+    assert(unparked == 3 and wins[3].frame_.x == rect.x and wins[3].frame_.w == rect.w)
+    assert(focused[#focused] == 3, "focus follows the replacement")
+    Group.inset(3, 24)
+    pass({ A = { 1, 3 } })
+    assert(group.windowRect.y == group.rect.y + 24 and group.windowRect.h == group.rect.h - 24)
+    assert(wins[3].frame_.y == group.rect.y + 24 and wins[3].frame_.h == group.rect.h - 24)
+    Util.setFrame = function(w, f) w:setFrame(f) end
+    require("hyprspoon.groupbar").stop()
+    Layout.stop()
+    assert(wins[3].frame_.y == group.rect.y and wins[3].frame_.h == group.rect.h,
+        "stopping restores full content before layout timers are cancelled")
+    pass({ A = { 1, 3 } })
+    assert(wins[3].frame_.y == group.rect.y and wins[3].frame_.h == group.rect.h)
+end)
+
+test("native tabs switch inside the shown group unit and tear off", function()
+    local Spaces = package.loaded["hyprspoon.spaces"]
+    Util.windowFor = function(id) return wins[id] end
+    local parkedIDs = {}
+    Spaces.park = function(w) parkedIDs[w:id()] = true end
+    Spaces.unpark = function(w) parkedIDs[w:id()] = nil end
+    package.loaded["hyprspoon.group"] = nil
+    require("hyprspoon.group")
+    pass({ A = { 1, 2 } })
+    local group = S.trees.ws1.b
+    group.members, group.kind, group.tabs = { 2, 3, 4 }, "group", { { 2, 3 } }
+    wins[3].frame_ = wins[2]:frame()
+    workspaceOf[2], workspaceOf[3], workspaceOf[4] = 1, 1, 1
+    pass({ A = { 1, 3 } }, { 4 }, { 2 })
+    assert(group.windowID == 3 and not parkedIDs[2] and not parkedIDs[3])
+    assert(wins[3].moves == 0, "switching native tabs does not move their window")
+    clock = clock + 1.1
+    pass({ A = { 1, 3 } }, { 4 }, { 2 })
+    assert(S.trees.ws1.b == group and not S.setsAway[3], "switch survives SET_WAIT")
+    pass({ A = { 1, 3, 2 } }, { 4 })
+    assert(Tree.setOf(2) == nil and Tree.shownIDs(S.trees.ws1)[2], "tear-off gets its own tile")
+    assert(group.windowID == 3 and not parkedIDs[2], "shown unit stays selected")
+end)
+
+test("untile and retile keep hidden members parked", function()
+    local Spaces = package.loaded["hyprspoon.spaces"]
+    local previousHidden = Spaces.isHidden
+    Spaces.isHidden = function(id)
+        local l = Tree.setOf(id)
+        return l and l.kind == "group" and l.windowID ~= id
+    end
+    pass({ A = { 1, 2 } })
+    local group = S.trees.ws1.b
+    group.members, group.kind = { 2, 3 }, "group"
+    S.floatingFrames[3] = { x = 10, y = 20, w = 300, h = 200 }
+    Util.setFrame = function(w, f) w:setFrame(f) end
+    local before = wins[3].moves
+    Layout.toggleWorkspaceTiling("ws1")
+    assert(Spaces.isHidden(3) and wins[3].moves == before, "untile leaves hidden frames parked")
+    Layout.toggleWorkspaceTiling("ws1")
+    pass({ A = { 1, 2 } }, { 3 })
+    assert(Spaces.isHidden(3) and wins[3].moves == before, "retile keeps the hidden member parked")
+    Spaces.isHidden = previousHidden
+end)
+
+test("group handoff preserves the old focus until requested", function()
+    pass({ A = { 1, 2 } })
+    local group = S.trees.ws1.b
+    group.members, group.kind = { 2, 3 }, "group"
+    S.ffmFocusedID = 2
+    Layout.showMember(group, 3, "ws1")
+    assert(S.ffmFocusedID == 2, "group selection must still raise from the old window")
+    group.kind = "native"
+    Layout.showMember(group, 2, "ws1")
+    S.ffmFocusedID = 2
+    Layout.showMember(group, 3, "ws1")
+    assert(S.ffmFocusedID == 3, "app tab switches inherit actual focus")
+end)
+
 print("Layout tests passed")
 
 test("an unknown native switch creates a set and hands the ring over in the same pass", function()

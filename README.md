@@ -251,6 +251,31 @@ pointer. Distances are fractions of the trackpad's width. Set
 | `swipe.span` | `0.35` | With `follow`, how far the fingers move a whole workspace |
 | `swipe.distance` | `0.12` | Without `follow`, how far the fingers travel before it switches |
 
+### Group bars (`group.bar`)
+
+Grouped tiles have an equal-width segment per member. Click its title to show
+and focus it. A native tab set counts as one member and uses its shown tab's
+title when selected; native sets outside groups keep their app's own tab bar.
+Empty or unavailable titles read “Untitled”; long titles are truncated.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `group.bar` | table below | `false` disables the strip and removes its inset |
+| `group.bar.height` | `24` | Height in points, clamped to leave at least one point of window content; `0` hides it |
+| `group.bar.font` | `false` | System menu-bar font, or a font name |
+| `group.bar.size` | `12` | Title font size in points |
+| `group.bar.padding` | `8` | Horizontal padding in each segment, in points |
+| `group.bar.text` | `{ white = 1 }` | Title colour, a `"#rrggbb"` string or `hs.drawing.color` table |
+
+Segment backgrounds reuse `border.active` for the focused member and
+`border.inactive` for all others (`false` is transparent). With `border = false`,
+they use the default border colours. The strip reserves space above the window
+on the same layout pass, including maximized and pseudotiled groups. It follows
+layout and focus events and title changes when the window filter supports them;
+there is no polling. Hidden workspaces, full screen, slides and the overview hide
+it. Floating or dissolved groups have no strip. Stopping removes canvases and
+insets. Rebuild the native slide module for slide visibility notifications.
+
 ### Indicators (`indicators`)
 
 Workspace numbers: 1 to `alwaysShow`, and any other in use, with the
@@ -432,6 +457,8 @@ check the chords you choose.
 | Option+T | Toggle floating | `toggleFloat` |
 | (unbound) | Pin or unpin the focused window on its display | `togglePin` |
 | (unbound) | Pseudotile the focused tile: keep its own size, centred in the tile | `togglePseudo` |
+| (unbound) | Create or dissolve the focused tile’s group | `toggleGroup` |
+| (unbound) | Join the existing group in a direction | `moveIntoGroupLeft`, `moveIntoGroupRight`, `moveIntoGroupUp`, `moveIntoGroupDown` |
 | (unbound) | Show the next / previous window sharing the focused tile | `groupNext`, `groupPrev` |
 | (unbound) | Take the focused window out of the tile it shares, into its own | `moveOutOfGroup` |
 | Option+G | Cycle through floating windows | `focusFloat` |
@@ -502,6 +529,23 @@ With no focused window it does nothing. It also works with tiling off.
 
 `togglePseudo()` takes no arguments. It acts on the focused tile and does
 nothing for a floating window, with tiling off, or with no focused tile.
+
+`toggleGroup()` turns the focused tile into a group, or dissolves its group
+back into tiles. A group keeps one window on show and parks the others off
+screen. `moveIntoGroup("left" | "right" | "up" | "down")` joins the group in
+that direction; an ordinary neighbour is left alone. The hotkey names are
+`moveIntoGroupLeft`, `moveIntoGroupRight`, `moveIntoGroupUp`, and
+`moveIntoGroupDown`. These actions are unbound in every supplied keymap.
+
+`groupNext()` and `groupPrev()` cycle the focused tile's members.
+`moveOutOfGroup()` splits the selected member into a tile beside the group.
+Native tab sets join and leave as one member. Groups remain groups down to
+one member, survive reloads and restarts, and show the next open member when
+the shown window closes. Floating groups survive reloads; restoring floating
+groups after a restart is not supported yet. Creation, dissolution, joining
+and splitting act on tiles; cycling also works for floating groups.
+Group creation is explicit; there is no group rule. Tiled groups show a clickable
+title strip (see [Group bars](#group-bars-groupbar)).
 
 `groupNext()`, `groupPrev()` and `moveOutOfGroup()` take no arguments. They
 act on a tile holding several windows, one on show, and do nothing for a

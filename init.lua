@@ -43,6 +43,8 @@
 --   slide     workspaces sliding in and out as they switch
 --   overview  every workspace at a glance, in place of Mission Control
 --   hooks     callbacks and shell commands on changes, and query() for status bars
+--   group     window groups and the group-bar API
+--   groupbar  clickable title strips for grouped tiles
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
@@ -90,6 +92,8 @@ local Border = require("hyprspoon.border")
 local Slide = require("hyprspoon.slide")
 local Overview = require("hyprspoon.overview")
 local Hooks = require("hyprspoon.hooks")
+local Group = require("hyprspoon.group")
+local Groupbar = require("hyprspoon.groupbar")
 
 -- The public API. Actions are plain functions (no `self`), so they can be
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
@@ -108,6 +112,8 @@ local M = {
     -- windows, show the next or previous one, or take the focused one out
     -- into a tile of its own. No arguments; nothing happens for a window
     -- that's alone in its tile.
+    toggleGroup = Actions.toggleGroup,
+    moveIntoGroup = Actions.moveIntoGroup,
     groupNext = Actions.groupNext,
     groupPrev = Actions.groupPrev,
     moveOutOfGroup = Actions.moveOutOfGroup,
@@ -166,12 +172,13 @@ local function hotkeyActions()
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
         "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
         "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo",
-        "groupNext", "groupPrev", "moveOutOfGroup" }) do
+        "toggleGroup", "groupNext", "groupPrev", "moveOutOfGroup" }) do
         actions[name] = M[name]
     end
     for suffix, dir in pairs(DIRECTIONS) do
         actions["focus" .. suffix] = function() M.focus(dir) end
         actions["swap" .. suffix] = function() M.swap(dir) end
+        actions["moveIntoGroup" .. suffix] = function() M.moveIntoGroup(dir) end
         actions["move" .. suffix] = function() M.move(dir) end
         actions["preselect" .. suffix] = function() M.preselect(dir) end
         local step = RESIZE_STEPS[suffix]
@@ -332,6 +339,8 @@ function M.stop()
     if S.running.menuBarWatcher then S.running.menuBarWatcher:stop() end
     for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
     if S.running.ffmTimer then S.running.ffmTimer:stop() end
+    Slide.stop()
+    Groupbar.stop()
     Layout.stop()
     Spaces.stop()
     Float.stop()
@@ -485,7 +494,13 @@ function M:start(opts)
         Focus.invalidateWindowCache()
     end)
 
-    filter:subscribe(hs.window.filter.windowUnfocused, Border.unfocused)
+    filter:subscribe(hs.window.filter.windowUnfocused, function(win)
+        Groupbar.unfocused(win)
+        Border.unfocused(win)
+    end)
+    if hs.window.filter.windowTitleChanged then
+        filter:subscribe(hs.window.filter.windowTitleChanged, Groupbar.titleChanged)
+    end
 
     -- A window moved or resized (each step of our own animations too).
     local function onWindowMoved(win)
@@ -592,6 +607,7 @@ function M:start(opts)
             -- their workspace has been left since.
             Spaces.place(win)
         end
+        Groupbar.update()
         Discover.markDirty(win)
         Focus.invalidateWindowCache()
         -- Placed straight away so it doesn't sit where the app opened it;
@@ -644,6 +660,7 @@ function M:start(opts)
             local handedOn = set and set.windowID == id and #set.members > 1 and not S.fullscreen[id]
             if event ~= hs.window.filter.windowNotInCurrentSpace and not handedOn then Border.forget(id) end
         end
+        Groupbar.update()
         Discover.markDirty(win)
         Focus.invalidateWindowCache()
         if event == hs.window.filter.windowNotInCurrentSpace then
@@ -694,6 +711,7 @@ function M:start(opts)
     Slide.start()
     Spaces.start()
     Border.start()
+    Groupbar.start()
     Util.watchWindows()
     -- No focus event is coming for the window already focused.
     local focused = Util.focusedWindow()

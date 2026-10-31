@@ -57,6 +57,23 @@ It is read-only by default. `-s` also creates, changes and closes an
 off-screen test window. See its header for options and output columns.
 It is separate from the unit tests and needs no Hammerspoon reload.
 
+`tests/tabs_probe.m` shows how native tabs look to WindowServer and the
+accessibility API: on-screen state, Space, frame and alpha of each window,
+and each window's tab bar. Build and run it the same way:
+
+```sh
+clang -fobjc-arc -framework AppKit -framework ApplicationServices \
+    tests/tabs_probe.m -o /tmp/tabs_probe
+/tmp/tabs_probe            # Finder TextEdit Terminal Ghostty Preview Xcode
+/tmp/tabs_probe -w 2000 TextEdit   # print changes for 2s while you switch tabs
+```
+
+It is read-only. The tab bar part needs the Accessibility permission for
+the terminal running it, and titles need Screen Recording. Without
+them, `tests/tabs_probe.lua` shows the accessibility side from inside
+Hammerspoon (see its header). Its `press` presses a tab button, so only
+use it on windows you opened for the test.
+
 Window management depends on timing, so also try a change live: tiling on
 and off, several displays if you have them, full-screen windows, and
 switching workspaces while windows open and close.

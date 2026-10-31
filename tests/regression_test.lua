@@ -533,6 +533,36 @@ edgeFrame = { x = 50, y = 20, w = 200, h = 100 }
 adopt(edgeWin)
 assert(pseudoLeaf.pseudo.w == 200 and not splitMoved and retiled == 3, "a move snaps back")
 
+-- The bar's content frame is the resize baseline. Its 24-point top inset
+-- must not drag a horizontal split when only the right edge changed.
+pseudoLeaf.pseudo, pseudoLeaf.pseudoRect, pseudoLeaf.lastSeenFrame = nil, nil, nil
+pseudoLeaf.kind, pseudoLeaf.groupInset = "group", 24
+pseudoLeaf.windowRect = { x = 0, y = 24, w = 400, h = 276 }
+edgeFrame = { x = 0, y = 24, w = 400, h = 276 }
+local beforeRetile = retiled
+adopt(edgeWin)
+assert(retiled == beforeRetile, "late echo of the inset frame is ignored")
+local movedEdges = {}
+-- Inspect which split is moved using a fresh copy of the real function.
+local barAdopt = assert(load("local BSP_EDGE_TOLERANCE = 4\n"
+    .. extract("resize", "local function adoptFrame(win)", "-- Keyboard resize")
+    .. "return adoptFrame", "bar adopt", "t", setmetatable({
+        S = { windowInfo = {}, applied = {}, fullscreen = {} },
+        Tree = { keyUUID = function() return "1" end,
+            boundingSplit = function() return {} end,
+            moveSplit = function(_, edge, value) movedEdges[edge] = value end },
+        Layout = { locate = function() return {}, pseudoLeaf, "ws1" end, tileNow = function() end },
+        print = function() end,
+    }, { __index = _G })))()
+edgeFrame = { x = 0, y = 24, w = 450, h = 276 }
+barAdopt(edgeWin)
+assert(movedEdges.right == 450 and movedEdges.top == nil and movedEdges.bottom == nil,
+    "right-edge drag keeps the split above the bar in place")
+pseudoLeaf.lastSeenFrame = nil
+edgeFrame = { x = 0, y = 44, w = 400, h = 256 }
+barAdopt(edgeWin)
+assert(movedEdges.top == 20, "top-edge drag adopts the split above the inset")
+
 -- Swipes fire once per gesture, only with the configured finger count and
 -- mostly sideways movement; fingers moving left go to the next workspace.
 local switches = {}
@@ -570,3 +600,24 @@ assert(#switches == 2, "short movements don't switch")
 assert(onGesture({ getTouches = function() return nil end }) == false, "non-gesture events pass through")
 
 print("Window classification, rules, layout, snapshots, discovery, PiP, BSP navigation, pseudotile resizing, borders, and swipe regressions passed")
+
+-- Focus requests must raise same-app group members, including after reload.
+do
+    local raised
+    local state = {}
+    local env = setmetatable({
+        S = state, superseded = {}, covered = function() return false end,
+        noteFocus = function(w) state.ffmFocusedID = w:id() end,
+        hs = { timer = { secondsSinceEpoch = function() return 1000 end } },
+        Util = { pidByID = { [1] = 10, [2] = 10 },
+            focusWindow = function(_, raise) raised = raise end },
+    }, { __index = _G })
+    local request = assert(load(extract("focus", "local function request(win)",
+        "-- Focus a window on our own initiative.") .. "return request", "request", "t", env))()
+    local win = { id = function() return 2 end }
+    request(win)
+    assert(raised, "first group selection after reload raises without a focus record")
+    state.ffmFocusedID = 1
+    request(win)
+    assert(raised, "cycling between same-app members raises the newly shown one")
+end

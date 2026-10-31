@@ -462,6 +462,15 @@ local function onSet(action, ...)
     if handler and handler[action] then handler[action](win, leaf, key, ...) end
 end
 
+function M.toggleGroup()
+    require("hyprspoon.group").toggle(Focus.currentWindow())
+end
+
+function M.moveIntoGroup(direction)
+    local win = Focus.currentWindow()
+    if win then require("hyprspoon.group").join(win, neighbourInDirection(win, direction)) end
+end
+
 -- Show the next window in the focused tile's set.
 function M.groupNext()
     onSet("cycle", 1)

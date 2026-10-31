@@ -110,6 +110,17 @@ S.defaults = {
         fade = 0.15,
     },
 
+    -- Title strips for tiled groups; group.bar = false disables them.
+    -- Backgrounds reuse border.active/inactive (default colours when borders
+    -- are off). Native tab sets outside groups never get a strip.
+    group = { bar = {
+        height = 24, -- points reserved above the shown window; 0 hides it
+        font = false, -- false uses the system menu-bar font, or a font name
+        size = 12, -- title font size in points
+        padding = 8, -- horizontal padding inside each equal-width segment
+        text = { white = 1 }, -- title colour: "#rrggbb" or hs.drawing.color table
+    } },
+
     -- App names whose windows are never managed or tiled (palettes, overlays,
     -- anything noisy). Border masking still watches them as occluders.
     ignoreApps = {},
