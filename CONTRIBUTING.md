@@ -24,7 +24,7 @@ Reload Hammerspoon to pick up changes, including rebuilt native modules.
   Lua path that keeps the basics working without it; borders and slides
   are disabled when their modules are absent. `frames.c`, `drag.c` and
   `focus.c` build into `frames.so`. Its `liveIDs()` query confirms closure
-  across Spaces; without it, workspace sync keeps uncertain IDs.
+  across Spaces; without it, workspace sync and `rescue()` keep uncertain IDs.
 
 ## Tests
 

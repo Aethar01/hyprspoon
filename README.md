@@ -59,7 +59,8 @@ Every native module is optional. Without one, a slower Lua path takes over,
 and slides and borders are off. The `frames` module moves, resizes and
 focuses windows and follows modifier-drags. It also checks which window
 IDs still exist across all macOS Spaces, so an off-screen window keeps
-its workspace when Hammerspoon reloads.
+its workspace when Hammerspoon reloads, and `rescue()` keeps the parked
+frames of windows it can't reach yet.
 
 ## Permissions
 
@@ -296,12 +297,46 @@ hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
 hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 ```
 
+`spoon.hyprspoon:rescue()` returns the number of parked windows brought
+back. See [Getting windows back](#getting-windows-back) for a command that
+also works when the Spoon isn't loaded.
+
+## Getting windows back
+
+Windows on hidden workspaces are parked in a corner of their display.
+Quitting Hammerspoon brings them back, but a crash (or `kill -9`) leaves
+them there. `rescue()` brings back the parked windows it can reach, using
+frames from memory and the saved state. It forgets the workspaces (windows
+join the one showing on their display at the next start) and turns tiling
+off. If hyprspoon is running, it stops and starts again with the same
+options. Otherwise it stays stopped. Tiled windows go back to their frames
+from before tiling when those frames are still in memory. A saved frame
+whose centre is off every connected display is centred on the primary one.
+
+With `require("hs.ipc")` in your config:
+
+```sh
+hs -c 'local s = spoon and spoon.hyprspoon or hs.loadSpoon("hyprspoon"); s:rescue()'
+```
+
+Or paste the part in quotes into the Hammerspoon console. Turn tiling back
+on with Option+B if the default hotkeys are bound and hyprspoon is started.
+Hammerspoon must be running with IPC loaded for `hs -c` to work; this command
+loads the Spoon if needed, but does not start Hammerspoon.
+
+Windows on another macOS Space (such as a full-screen one) can't be reached
+from the current one: the console says how many are left, and running
+`rescue()` again from their Space brings them back. Window IDs only last
+until macOS restarts, so after a restart there is nothing to bring back by
+ID. Saves wait one second after a workspace change, so a crash can lose
+the most recent parked frames. Without a working native `frames.liveIDs()`
+query, saved IDs that might have closed stay saved too; the remaining
+count can therefore include closed windows. Rebuild the native modules
+after updating from source.
+
 ## Troubleshooting
 
-- **Windows stuck in a corner.** Windows on hidden workspaces are parked in
-  a corner of the display. Quitting Hammerspoon brings them back, but a
-  crash leaves them there. Start Hammerspoon again, then switch to their
-  workspace or quit it normally.
+- **Windows stuck in a corner.** See [Getting windows back](#getting-windows-back).
 - **Empty workspaces left behind.** If a close event was missed, the
   native `frames.liveIDs()` query confirms which saved windows have closed.
   Rebuild `frames` if it is missing or outdated. Without this query, or if
@@ -319,6 +354,9 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
   basics working.
 - It wraps `hs.reload` to tell a reload apart from a quit, so that windows
   stay parked across a reload.
+- Use one macOS Desktop per display. Window management only sees the
+  current Desktop's windows. See [Getting windows back](#getting-windows-back)
+  for recovery limits after a crash or macOS restart.
 - Native full-screen windows still get their own Space, which macOS
   manages. Border checks use the Space type before Lua learns a window is
   full screen. If that private call is unavailable, the native check only
