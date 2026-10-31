@@ -113,6 +113,8 @@ S.defaults = {
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
+    --   pseudo = true        pseudotile it: it keeps the size it opened
+    --                        with, centred in its tile
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {

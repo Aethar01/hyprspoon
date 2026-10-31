@@ -4,8 +4,9 @@ A Hyprland-inspired tiling window manager for macOS, as a
 [Hammerspoon](https://www.hammerspoon.org) Spoon.
 
 - **BSP tiling**, toggled globally or per workspace, with gaps, rotate,
-  mirror, balance and preselection. Drag a tile onto another to move it, and
-  resize splits with the mouse, the keyboard or the windows' own edges.
+  mirror, balance, preselection and pseudotiling. Drag a tile onto another
+  to move it, and resize splits with the mouse, the keyboard or the
+  windows' own edges.
 - **Workspaces of its own**, numbered 1 to 10 plus named scratchpads, switched
   instantly by hotkey or a three-finger swipe. They don't use macOS
   Spaces, so there's no Mission Control animation. Give displays their
@@ -16,7 +17,7 @@ A Hyprland-inspired tiling window manager for macOS, as a
   inactive colours.
 - **Modifier + drag** anywhere on a window to move or resize it.
 - **Focus follows mouse** (optional), and cursor warping on keyboard focus.
-- **Window rules**: float a window or send it to a workspace by app or title.
+- **Window rules**: float, pseudotile or send a window to a workspace by app or title.
 - **An overview** of every workspace, in place of Mission Control.
 - **Layouts survive** reloads and restarts.
 - **Scriptable** from the `hs` command line, like `hyprctl`.
@@ -233,6 +234,7 @@ pattern), and sets any of:
 | `float` | `true` to float the window, `false` to tile it even if it would float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
+| `pseudo` | `true` to pseudotile it: it keeps the size it opened with, centred in its tile |
 
 Rules are read once per window, when it first appears; later matching rules
 win.
@@ -273,6 +275,10 @@ you can also build your own table from scratch.
 | Option+R | Rotate the layout (Shift: mirror it) |
 | Option+Tab | Overview |
 | Option+W | Close the window |
+
+`togglePseudo` is unbound: it pseudotiles the window, which keeps its own
+size (the one it had before it was tiled), centred in its tile, or stops.
+Resizing a pseudotiled window by its edges changes that size, not the tile.
 
 Option+letter shortcuts replace the characters macOS types with Option
 (å, ß, ∂ and so on). Remap the ones you need for typing.

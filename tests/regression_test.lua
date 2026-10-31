@@ -310,6 +310,38 @@ local recheck = assert(load(extract("layout", "local function scheduleRecheck(st
 recheck()
 drain()
 assert(checks == 3, "discovery retries must continue without a layout change")
+-- Resizing a pseudotiled window by its edges changes its own size, not
+-- the splits; moving it snaps it back.
+local pseudoLeaf = { windowID = 1, rect = { x = 0, y = 0, w = 400, h = 300 },
+    pseudo = { w = 200, h = 100 }, pseudoRect = { x = 100, y = 100, w = 200, h = 100 } }
+local splitMoved, retiled = false, 0
+local edgeFrame = nil
+local edgeWin = { id = function() return 1 end, frame = function() return edgeFrame end,
+    screen = function() return { getUUID = function() return "1" end } end,
+    isFullScreen = function() return false end }
+local adopt = assert(load("local BSP_EDGE_TOLERANCE = 4\n"
+    .. extract("resize", "local function adoptFrame(win)", "-- Keyboard resize")
+    .. "return adoptFrame", "adopt", "t", setmetatable({
+        S = { windowInfo = {}, applied = {}, fullscreen = {} },
+        Tree = { keyUUID = function() return "1" end,
+            boundingSplit = function() return {} end,
+            moveSplit = function() splitMoved = true end },
+        Layout = { locate = function() return {}, pseudoLeaf, "ws1" end,
+            tileNow = function() retiled = retiled + 1 end },
+        print = function() end,
+    }, { __index = _G })))()
+edgeFrame = { x = 100, y = 100, w = 260, h = 100 } -- right edge dragged out
+adopt(edgeWin)
+assert(pseudoLeaf.pseudo.w == 260 and pseudoLeaf.pseudo.h == 100 and not splitMoved and retiled == 1,
+    "edge resize of a pseudotiled window changes its size")
+edgeFrame = { x = 0, y = 0, w = 500, h = 400 }
+adopt(edgeWin)
+assert(pseudoLeaf.pseudo.w == 400 and pseudoLeaf.pseudo.h == 300, "no bigger than its tile")
+pseudoLeaf.pseudo = { w = 200, h = 100 }
+edgeFrame = { x = 50, y = 20, w = 200, h = 100 }
+adopt(edgeWin)
+assert(pseudoLeaf.pseudo.w == 200 and not splitMoved and retiled == 3, "a move snaps back")
+
 -- Swipes fire once per gesture, only with the configured finger count and
 -- mostly sideways movement; fingers moving left go to the next workspace.
 local switches = {}
@@ -346,4 +378,4 @@ gesture(3, { { 0.5, 0.5 }, { 0.45, 0.5 } })
 assert(#switches == 2, "short movements don't switch")
 assert(onGesture({ getTouches = function() return nil end }) == false, "non-gesture events pass through")
 
-print("Window classification, layout, snapshots, discovery, PiP, BSP navigation, and swipe regressions passed")
+print("Window classification, layout, snapshots, discovery, PiP, BSP navigation, pseudotile resizing and swipe regressions passed")

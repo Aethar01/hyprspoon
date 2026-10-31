@@ -117,6 +117,7 @@ local M = {
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
     toggleOverview = Overview.toggle,
+    togglePseudo = Actions.togglePseudo,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,
     toggleWorkspaceTiling = Actions.toggleWorkspaceTiling,
@@ -137,7 +138,7 @@ local function hotkeyActions()
     local actions = {}
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
         "toggleWorkspaceTiling", "toggleFloat", "focusFloat", "toggleSplit", "balance",
-        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace" }) do
+        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo" }) do
         actions[name] = M[name]
     end
     for suffix, dir in pairs(DIRECTIONS) do
@@ -428,6 +429,7 @@ function M:start(opts)
         if id then
             Discover.cancelLayoutCheck(id)
             S.fullscreen[id], S.offSpace[id], S.slots[id] = nil, nil, nil
+            S.pseudoAway[id] = nil
             for key, maxID in pairs(S.maximized) do
                 if maxID == id then S.maximized[key] = nil end
             end

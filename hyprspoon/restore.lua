@@ -117,7 +117,9 @@ function M.rebuild(key, tree, valid)
             local new = saved.claimed[tostring(node.windowID)]
             if not new or not valid[new] then return nil end
             if not present[new] then arrived = true end
-            return Tree.leaf(new)
+            local leaf = Tree.leaf(new)
+            leaf.pseudo = leaf.pseudo or node.pseudo
+            return leaf
         end
         local a, b = build(node.a), build(node.b)
         if a and b then return { split = node.split, ratio = node.ratio, a = a, b = b } end

@@ -249,4 +249,70 @@ test("workspaces with tiling off have no tiles", function()
     S.untiled = {}
 end)
 
+test("a pseudotiled window is centred in its tile, no bigger than it", function()
+    local tile = { x = 100, y = 50, w = 400, h = 300 }
+    local r = Tree.pseudoRect(tile, { w = 200, h = 100 })
+    assert(r.x == 200 and r.y == 150 and r.w == 200 and r.h == 100)
+    r = Tree.pseudoRect(tile, { w = 600, h = 120 })
+    assert(r.x == 100 and r.w == 400, "clamped to the tile's width")
+    assert(r.y == 140 and r.h == 120)
+    r = Tree.pseudoRect(tile, { w = 600, h = 900 })
+    assert(r.x == 100 and r.y == 50 and r.w == 400 and r.h == 300, "bigger both ways fills it")
+end)
+
+test("rectFor a pseudotiled tile is the window in it", function()
+    local tree = split("vertical", leaf(1), leaf(2))
+    layout(tree, SQUARE)
+    S.trees = { ws1 = tree }
+    S.keyIndex = {}
+    tree.a.pseudoRect = Tree.pseudoRect(tree.a.rect, { w = 100, h = 100 })
+    assert(Tree.rectFor(1) == tree.a.pseudoRect and Tree.rectFor(2) == tree.b.rect)
+end)
+
+test("pseudotiling is saved with the tree", function()
+    local tree = split("vertical", leaf(1), leaf(2))
+    tree.b.pseudo = { w = 300, h = 200 }
+    tree.b.pseudoRect = { x = 0, y = 0, w = 1, h = 1 }
+    S.trees = { ws1 = tree }
+    Tree.saveTreesNow()
+    local saved = settings["hyprspoon.trees"].ws1
+    assert(saved.a.windowID == 1 and saved.a.pseudo == nil)
+    assert(saved.b.windowID == 2 and saved.b.pseudo.w == 300 and saved.b.pseudo.h == 200)
+    assert(saved.b.pseudoRect == nil and saved.b.rect == nil, "where it was laid out isn't")
+end)
+
+test("pseudotiling goes with the window", function()
+    S.pseudoAway = {}
+    local size = { w = 300, h = 200 }
+
+    -- Swapping places.
+    local tree = split("vertical", leaf(1), split("horizontal", leaf(2), leaf(3)))
+    tree.a.pseudo = size
+    Tree.swapIDs(tree, 1, 3)
+    assert(tree.a.windowID == 3 and tree.a.pseudo == nil)
+    assert(tree.b.b.windowID == 1 and tree.b.b.pseudo == size)
+
+    -- Moving within the layout (removed, then put in elsewhere).
+    tree = Tree.removeID(tree, 1)
+    tree = Tree.insertBeside(tree, 2, 1, "left")
+    local _, found = Tree.ancestors(tree, 1)
+    assert(found.pseudo == size and S.pseudoAway[1] == nil)
+
+    -- Leaving the tree while still open (floated, another workspace),
+    -- then coming back.
+    S.openIDs = { [1] = true, [2] = true }
+    tree = Tree.prune(tree, { [2] = true, [3] = true })
+    assert(S.pseudoAway[1] == size)
+    tree = Tree.insertAt(tree, 3, 1)
+    _, found = Tree.ancestors(tree, 1)
+    assert(found.pseudo == size)
+
+    -- Closing: nothing kept.
+    S.openIDs = { [2] = true, [3] = true }
+    Tree.prune(tree, { [2] = true, [3] = true })
+    assert(S.pseudoAway[1] == nil)
+    assert(Tree.leaf(1).pseudo == nil)
+    S.openIDs = nil
+end)
+
 print("Tree tests passed")
