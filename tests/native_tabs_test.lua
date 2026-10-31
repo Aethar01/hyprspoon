@@ -4,6 +4,7 @@ local S = { cfg = { ignoreApps = {} }, trees = {}, setsAway = {}, autoFloat = {}
 local leaves, filter, listed, states, bars = {}, {}, {}, {}, {}
 local repairs, presses, remembered = 0, {}, {}
 local clock, axCalls, appCalls, frameCalls = 1000, 0, 0, 0
+local failList = false
 local function win(id)
     return {
         id = function() return id end, pid = function() return 100 end,
@@ -15,7 +16,9 @@ local function win(id)
     }
 end
 local wins = { win(1), win(2), win(3) }
-local app = { allWindows = function() appCalls = appCalls + 1 return listed end, name = function() return "Test" end,
+local app = { allWindows = function() appCalls = appCalls + 1
+    if failList then error("AXWindows timeout") end
+    return listed end, name = function() return "Test" end,
     bundleID = function() return "test.app" end }
 local native = {
     tabSnapshot = function(callback)
@@ -109,6 +112,17 @@ axCalls, appCalls, frameCalls = 0, 0, 0
 Discover.windowsByScreen()
 assert(axCalls == 0 and appCalls == 0 and frameCalls == 0, "quiet pass performs no accessibility work")
 assert(Discover.nativePeer(wins[1]) == false)
+
+-- Empty and timed-out AXWindows keep every window the filter and snapshot
+-- still confirm, preserving tile identities instead of closing the app.
+for _, failure in ipairs({ "empty", "timeout" }) do
+    clock = clock + 1
+    Discover.markDirty(wins[1])
+    filter, listed, failList = wins, {}, failure == "timeout"
+    byScreen = Discover.windowsByScreen()
+    assert(#byScreen.display == 3 and S.openIDs[1] and S.openIDs[2] and S.openIDs[3], failure)
+end
+listed, failList = wins, false
 
 Tree.kinds.native.cycle(wins[1], leaves[1], "ws1", -1)
 assert(presses[1][1] == 1 and presses[1][2] == -1)

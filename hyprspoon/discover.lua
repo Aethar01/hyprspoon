@@ -90,6 +90,7 @@ local function requestSnapshot(frames)
     frames.tabSnapshot(function(result)
         if stopped or epoch ~= generation then return end
         snapshotPending = false
+        if not result then return end
         local changed = snapshot == nil
         for pid, states in pairs(result or {}) do
             if stateSignature(states) ~= stateSignature(snapshot and snapshot[pid]) then changed = true end
@@ -131,8 +132,10 @@ local function withRecentlyChangedApps(windows)
             local changed = not cached or cached.signature ~= signature
             if changed or (dirtyPids[pid] and now - cached.time >= BSP_APP_CACHE_TTL) then
                 -- Empty/failed AXWindows is uncertainty, not evidence of closure.
-                local wins = appWindows(pid, app) or filtered[pid] or {}
-                cached = { time = now, signature = signature, shown = {}, wins = wins }
+                local listed = appWindows(pid, app)
+                local wins = listed or filtered[pid] or {}
+                cached = { time = now, signature = signature, shown = {}, wins = wins,
+                    failed = listed == nil }
                 appCache[pid] = cached
                 for _, win in ipairs(wins) do
                     local id = win:id()
@@ -278,11 +281,14 @@ local function backgroundTabs(windows)
     local plain = {}
     for _, win in ipairs(windows) do
         local id = win:id()
+        -- Failed AXWindows cannot justify even the frame-based suppression.
+        if appCache[win:pid()] and appCache[win:pid()].failed then goto continue end
         plain[#plain + 1] = {
             id = id, pid = win:pid(), win = win,
             tiled = Tree.rectFor(id) ~= nil,
             inTree = Tree.findByID(id) ~= nil,
         }
+        ::continue::
     end
     local background = Tabs.background(plain,
         function(p) return p.win:frame() end,
