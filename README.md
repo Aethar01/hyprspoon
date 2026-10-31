@@ -55,10 +55,12 @@ make -C ~/.hammerspoon/Spoons/hyprspoon.spoon/hyprspoon/native
 If Hammerspoon isn't in `/Applications`, pass its path:
 `make HS_APP=~/Applications/Hammerspoon.app`.
 
-Every native module is optional. Lua handles frame changes without `frames`;
-slides and borders are off without their modules. Without `frames.liveIDs()`,
-closed windows absent from the on-screen list cannot be confirmed, so their
-parked frames stay saved.
+Every native module is optional. Without one, a slower Lua path takes over,
+and slides and borders are off. The `frames` module moves, resizes and
+focuses windows and follows modifier-drags. It also checks which window
+IDs still exist across all macOS Spaces, so an off-screen window keeps
+its workspace when Hammerspoon reloads, and `rescue()` keeps the parked
+frames of windows it can't reach yet.
 
 ## Permissions
 
@@ -132,6 +134,10 @@ Modifiers held while dragging anywhere on a window, as lists of
 
 ### Workspaces
 
+Workspace assignments and parked frames survive a reload while a native
+full-screen Space or another Desktop is showing. Hidden apps keep their
+assignments too.
+
 | Option | Default | Description |
 |---|---|---|
 | `displays` | `{}` | Workspaces kept on particular displays, by display name or UUID (see below) |
@@ -163,6 +169,7 @@ hs -c 'for _, s in ipairs(hs.screen.allScreens()) do print(s:name(), s:getUUID()
 ### Borders (`border`)
 
 Rings around the windows on show, drawn in the gap outside their edges.
+Native full-screen windows, including Split View, have no rings.
 Colours are `"#rrggbb"` strings or `hs.drawing.color` tables. Set
 `border = false` to disable. Needs the native `border` module.
 
@@ -330,6 +337,11 @@ after updating from source.
 ## Troubleshooting
 
 - **Windows stuck in a corner.** See [Getting windows back](#getting-windows-back).
+- **Empty workspaces left behind.** If a close event was missed, the
+  native `frames.liveIDs()` query confirms which saved windows have closed.
+  Rebuild `frames` if it is missing or outdated. Without this query, or if
+  it fails, uncertain IDs are kept so off-screen windows keep their
+  assignments; a close event or a later successful query clears them.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
@@ -343,9 +355,13 @@ after updating from source.
 - It wraps `hs.reload` to tell a reload apart from a quit, so that windows
   stay parked across a reload.
 - Use one macOS Desktop per display. Window management only sees the
-  current Desktop's windows. Native full-screen windows still get their own
-  Space, which macOS manages. See [Getting windows back](#getting-windows-back)
+  current Desktop's windows. See [Getting windows back](#getting-windows-back)
   for recovery limits after a crash or macOS restart.
+- Native full-screen windows still get their own Space, which macOS
+  manages. Border checks use the Space type before Lua learns a window is
+  full screen. If that private call is unavailable, the native check only
+  hides windows that fill a display; Lua still removes rings once it
+  discovers the full-screen state.
 
 ## Contributing
 
