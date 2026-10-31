@@ -251,6 +251,18 @@ rules = {
 the table before passing it to `bindHotkeys`. Each key is an action name, so
 you can also build your own table from scratch.
 
+The same keymap comes with other modifiers as SUPER:
+
+```lua
+-- Ctrl+Option+Cmd (a Hyper key) as SUPER; Ctrl+Option+Shift where the
+-- table below says Ctrl+Option.
+spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.hyperHotkeys)
+
+-- Any modifiers. Shift is added for the Shift bindings, and Ctrl for the
+-- Ctrl ones unless you give those modifiers as the second argument.
+spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.hotkeysFor({ "cmd" }))
+```
+
 | Keys | Action |
 |---|---|
 | Option+H/J/K/L | Focus left/down/up/right (past the last window, the display that way, even an empty one) |
@@ -274,8 +286,32 @@ you can also build your own table from scratch.
 | Option+Tab | Overview |
 | Option+W | Close the window |
 
-Option+letter shortcuts replace the characters macOS types with Option
-(å, ß, ∂ and so on). Remap the ones you need for typing.
+### Characters each keymap takes over
+
+macOS types a character for most Option and Shift+Option keys, and these
+hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
+(other layouts type other characters):
+
+| Keys | Characters you can no longer type |
+|---|---|
+| Option+1…0 | ¡ ™ £ ¢ ∞ § ¶ • ª º |
+| Shift+Option+1…0 | ⁄ € ‹ › ﬁ ﬂ ‡ ° · ‚ |
+| Option+W F B T G Y R | ∑ ƒ ∫ † © ¥ ® |
+| Shift+Option+F B R | Ï ı ‰ |
+| Option+H J K L | ˙ ∆ ˚ ¬ |
+| Shift+Option+H J K L | Ó Ô  (the Apple logo) Ò |
+| Option+A S D | å ß ∂ |
+| Shift+Option+A S D | Å Í Î |
+| Option+= , . | ≠ ≤ ≥ |
+| Shift+Option+, . | ¯ ˘ |
+| Option+\` | the grave accent dead key (à, è, …) |
+
+Option+arrows also stop moving the text cursor by word or paragraph. The
+Ctrl+Option bindings type nothing, so they don't take anything over.
+
+`hyperHotkeys` takes over no characters: every binding includes Ctrl or Cmd.
+Remap or drop the default bindings you need for typing, or use
+`hyperHotkeys`.
 
 ## Scripting
 
