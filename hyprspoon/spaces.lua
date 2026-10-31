@@ -44,6 +44,10 @@ local Slide = require("hyprspoon.slide")
 -- leave theirs when minimized or made full screen, and join the one showing
 -- when they come back.
 --
+-- Pinned windows (Hyprland's pin) are never parked: their workspace is
+-- whichever one their display shows, so they stay on screen through every
+-- switch. They float, and stay pinned while minimized.
+--
 -- Use one macOS Desktop per display: the window filter only sees the
 -- current Desktop's windows.
 --
@@ -82,6 +86,7 @@ local of = {}     -- window id -> workspace number
 local parked = {} -- window id -> its frame before it was parked
 local info = {}   -- window id -> { app = bundle id, title = } for hyprspoon/restore.lua
 local pins = {}   -- window id -> until when its workspace ignores its display
+local pinned = {} -- window id -> true for a window pinned to every workspace of its display
 local under = {}  -- screen UUID -> numbered workspace beneath the named one it shows
 
 -- Derived by refresh() from the above and the connected displays.
@@ -125,7 +130,8 @@ local saveTimer = nil
 
 local function saveNow()
     if saveTimer then saveTimer:stop() saveTimer = nil end
-    local out = { boot = Tree.bootTime, active = {}, under = {}, home = {}, of = {}, parked = {}, info = {} }
+    local out = { boot = Tree.bootTime, active = {}, under = {}, home = {}, of = {}, parked = {}, info = {},
+        pinned = {} }
     for uuid, n in pairs(active) do out.active[uuid] = n end
     for uuid, n in pairs(under) do out.under[uuid] = n end
     for n, uuid in pairs(home) do out.home[tostring(n)] = uuid end
@@ -134,6 +140,7 @@ local function saveNow()
         out.info[tostring(id)] = info[id]
     end
     for id, f in pairs(parked) do out.parked[tostring(id)] = f end
+    for id in pairs(pinned) do out.pinned[tostring(id)] = true end
     hs.settings.set(STATE_KEY, out)
 end
 
@@ -147,7 +154,7 @@ local function save()
 end
 
 local function loadState()
-    active, under, home, of, parked, pins, info = {}, {}, {}, {}, {}, {}, {}
+    active, under, home, of, parked, pins, pinned, info = {}, {}, {}, {}, {}, {}, {}, {}
     local saved = hs.settings.get(STATE_KEY)
     if type(saved) ~= "table" or type(saved.boot) ~= "number"
        or math.abs(saved.boot - Tree.bootTime) >= 120 then
@@ -165,6 +172,7 @@ local function loadState()
     for id, f in pairs(saved.parked or {}) do
         parked[tonumber(id)] = { x = f.x, y = f.y, w = f.w, h = f.h }
     end
+    for id in pairs(saved.pinned or {}) do pinned[tonumber(id)] = true end
 end
 
 -- The primary display first, then the others left-to-right/top-to-bottom,
@@ -340,6 +348,18 @@ local function isHidden(id)
     return n ~= nil and (shown[n] == nil or behind[n] == true)
 end
 
+-- A pinned window's workspace: the one its display shows now, rather than
+-- one that has gone out of sight.
+local function follow(id)
+    local n = of[id]
+    if pinned[id] and isHidden(id) and active[displayOf(n)] then
+        n = active[displayOf(n)]
+        of[id] = n
+        save()
+    end
+    return n
+end
+
 -- Workspaces that are empty and not showing anywhere are forgotten, so the
 -- number is free to be created afresh on another display.
 local function forgetEmpty()
@@ -458,10 +478,13 @@ local function sync(force)
         for id in pairs(parked) do
             if not live[id] then stale[id] = true end
         end
+        for id in pairs(pinned) do
+            if not live[id] then stale[id] = true end
+        end
     end
     if next(stale) then
         for id in pairs(stale) do
-            of[id], parked[id], pins[id], info[id] = nil, nil, nil, nil
+            of[id], parked[id], pins[id], pinned[id], info[id] = nil, nil, nil, nil, nil
             for key, maxID in pairs(S.maximized) do
                 if maxID == id then S.maximized[key] = nil end
             end
@@ -470,6 +493,8 @@ local function sync(force)
         hideEmptyScratchpads()
     end
 
+    -- Every pinned window, not just those listed: a hidden app's too.
+    for id in pairs(pinned) do follow(id) end
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
         local n = of[id]
@@ -513,6 +538,8 @@ local function claim(win, uuid)
                 or (connected[focusedEmpty] and active[focusedEmpty]) or nil
             rule = { silent = true }
         end
+        -- A pinned window goes to a workspace only where one is showing.
+        if pinned[id] and wanted and not shown[wanted] then wanted = nil end
     end
     if wanted and wanted ~= 0 and wanted ~= active[uuid] then
         of[id] = wanted
@@ -605,11 +632,12 @@ local function focusWorkspace(n, warp, skip)
     end
 end
 
--- The windows of workspace `n`.
+-- The windows of workspace `n` that slide with it: not the pinned ones,
+-- which stay where they are.
 local function windowsOf(n)
     local ids = {}
     for id, m in pairs(of) do
-        if m == n then ids[#ids + 1] = id end
+        if m == n and not pinned[id] then ids[#ids + 1] = id end
     end
     return ids
 end
@@ -803,6 +831,8 @@ function M.moveToWorkspaceSilent(n)
             win:moveToScreen(connected[shown[n]], false, true, 0)
         end
     else
+        -- Pinned, it would come straight back.
+        pinned[id] = nil
         park(win, n)
     end
     save()
@@ -1016,7 +1046,7 @@ end
 -- a window that is already parked (an app moved it back into view).
 function M.place(win, force)
     local id = win and win:id()
-    local n = id and of[id]
+    local n = id and follow(id)
     if not n then
         -- With tiling off nothing else claims a new window straight away;
         -- one a rule sends to a workspace shouldn't wait for a switch.
@@ -1078,8 +1108,8 @@ function hideEmptyScratchpads()
     for uuid, base in pairs(under) do
         local n = active[uuid]
         local empty = true
-        for _, m in pairs(of) do
-            if m == n then empty = false break end
+        for id, m in pairs(of) do
+            if m == n and not pinned[id] then empty = false break end
         end
         if empty then
             hideScratchpad(uuid)
@@ -1090,7 +1120,8 @@ function hideEmptyScratchpads()
     end
 end
 
--- A window closed, or left for a full-screen Space or the Dock.
+-- A window closed, or left for a full-screen Space or the Dock. It stays
+-- pinned (pruned in sync once it's gone for good).
 function M.forget(id)
     if not id or (of[id] == nil and parked[id] == nil) then return end
     of[id], parked[id], pins[id], info[id] = nil, nil, nil, nil
@@ -1192,6 +1223,19 @@ function M.overview()
     for _, f in ipairs(floats) do table.insert(f[1].windows, f[2]) end
     table.sort(list, function(a, b) return M.before(a.n, b.n) end)
     return list
+end
+
+-- Pins window `win` to every workspace of its display, or unpins it.
+function M.setPinned(win, pin)
+    local id = win:id()
+    if not id or (pinned[id] == true) == pin then return end
+    pinned[id] = pin or nil
+    follow(id)
+    save()
+end
+
+function M.isPinned(id)
+    return pinned[id] == true
 end
 
 function M.hasWindows(n)
