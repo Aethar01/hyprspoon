@@ -10,6 +10,7 @@ local Spaces = require("hyprspoon.spaces")
 local Border = require("hyprspoon.border")
 local Ffm = require("hyprspoon.ffm")
 local Layout = require("hyprspoon.layout")
+local Hooks = require("hyprspoon.hooks")
 
 -- ---------------------------------------------------------------------------
 -- Internal focus
@@ -48,6 +49,7 @@ local function noteFocus(win)
     S.ffmFocusedID = id
     Border.focused(win)
     Layout.focused(id)
+    Hooks.fire("focus")
 end
 
 -- The window focused last, if macOS focused `win` because that one is

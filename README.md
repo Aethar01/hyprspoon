@@ -106,6 +106,8 @@ Defaults are in [`hyprspoon/state.lua`](hyprspoon/state.lua).
 | `axTimeout` | `1` | Seconds to wait on an unresponsive app's accessibility API before giving up on a call |
 | `minWidth` / `minHeight` | `240` / `140` | Smallest size mouse and keyboard resizes shrink a window to, in points |
 | `debug` | `false` | Log tiling decisions to the Hammerspoon console |
+| `on` | `{}` | Functions called on changes, by event (see [Status bars](#status-bars)) |
+| `exec` | `{}` | Shell commands run on changes, by event (see [Status bars](#status-bars)) |
 
 ### Tiling (`tiling`)
 
@@ -285,8 +287,74 @@ yourself or call them from the `hs` command-line tool
 
 ```sh
 hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
-hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
+hs -c 'return hs.json.encode(spoon.hyprspoon:query())'
 ```
+
+### Status bars
+
+`spoon.hyprspoon:query()` returns the workspaces, windows and focus as one
+table for `hs.json.encode`. Its shape doesn't change: every key is always
+there, `false` where there's no value.
+
+```jsonc
+{
+  "focus": { "window": 1234, "app": "Safari", "workspace": "2", "display": "<UUID>" },
+  // The primary display first, then left to right.
+  "displays": [
+    { "uuid": "<UUID>", "name": "Built-in Retina Display", "primary": true,
+      "workspace": "2", "focused": true }
+  ],
+  // Workspaces in use, in menu bar order. `number` is what gotoWorkspace
+  // takes; `showing` is true beneath a scratchpad too. Windows: tiles first.
+  "workspaces": [
+    { "name": "2", "number": 2, "display": "<UUID>", "showing": true,
+      "focused": true, "scratchpad": false, "windows": [1234, 1240] }
+  ],
+  // Windows with a workspace (not minimized or full screen). `hidden`:
+  // parked on a workspace not showing, or beneath a scratchpad.
+  "windows": [
+    { "id": 1234, "app": "Safari", "title": "hyprspoon", "workspace": "2",
+      "floating": false, "hidden": false, "focused": true }
+  ]
+}
+```
+
+To hear about changes instead of polling, give `start()` functions in `on`
+and shell commands in `exec`, by event:
+
+| Event | When |
+|---|---|
+| `workspace` | Any change to the workspaces: a switch, one made or forgotten, a window joining or leaving one |
+| `focus` | Another window, workspace or display takes focus |
+| `layout` | A tiling pass moves tiles |
+| `display` | Displays are connected, disconnected or rearranged |
+
+They run on the next turn of the run loop, never in the middle of a switch
+or an event tap, once per turn however many changes there were, and once
+each on `start()`. A function gets `{ event, window, app, workspace,
+display }` (the `focus` table above, plus the event); a command (or a list
+of them) runs through `/bin/sh` with the same in `HYPRSPOON_EVENT`,
+`HYPRSPOON_WINDOW`, `HYPRSPOON_APP`, `HYPRSPOON_WORKSPACE` and
+`HYPRSPOON_DISPLAY`. A command still running isn't started again: it runs
+once more when it's done. Errors go to the Hammerspoon console.
+Hammerspoon's `PATH` is only the system's, so give commands elsewhere in
+full.
+
+```lua
+spoon.hyprspoon:start({
+    on = {
+        workspace = function(e) print("on workspace " .. tostring(e.workspace)) end,
+    },
+    exec = {
+        workspace = "/opt/homebrew/bin/sketchybar --trigger hyprspoon_workspace",
+        focus = '/opt/homebrew/bin/sketchybar --trigger hyprspoon_focus'
+            .. ' WORKSPACE="$HYPRSPOON_WORKSPACE" APP="$HYPRSPOON_APP"',
+    },
+})
+```
+
+[`examples/sketchybar`](examples/sketchybar) is a SketchyBar setup that
+shows the workspaces in use and the focused app this way.
 
 ## Troubleshooting
 

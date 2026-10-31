@@ -1,0 +1,29 @@
+# hyprspoon in SketchyBar: the workspaces in use and the focused app, kept
+# up to date by hyprspoon's exec hooks rather than polling. Add this to
+# ~/.config/sketchybar/sketchybarrc, copy plugins/hyprspoon.sh to
+# ~/.config/sketchybar/plugins/ (and chmod +x it), and give hyprspoon the
+# exec hooks in examples/init.lua.
+
+PLUGIN_DIR="$CONFIG_DIR/plugins"
+
+# Triggered by hyprspoon.
+sketchybar --add event hyprspoon_workspace \
+           --add event hyprspoon_focus
+
+# Workspaces 1 to 10, each shown while in use: highlighted while it's on a
+# display, with a background while it has focus. A click goes there.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  sketchybar --add item space.$i left \
+             --set space.$i drawing=off \
+                   icon="$i" icon.padding_left=8 icon.padding_right=8 \
+                   icon.color=0x80ffffff icon.highlight_color=0xffffffff \
+                   background.drawing=off background.color=0xff6c99ba \
+                   background.corner_radius=5 background.height=22 \
+                   click_script="hs -c 'spoon.hyprspoon.gotoWorkspace($i)'"
+done
+
+# The focused app. Its script updates the workspaces too.
+sketchybar --add item front_app left \
+           --set front_app icon.drawing=off label.padding_left=8 \
+                 script="$PLUGIN_DIR/hyprspoon.sh" \
+           --subscribe front_app hyprspoon_workspace hyprspoon_focus

@@ -5,7 +5,7 @@
 
 -- Lets the `hs` command-line tool drive the window manager, e.g.
 --   hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
---   hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
+--   hs -c 'return hs.json.encode(spoon.hyprspoon:query())'
 require("hs.ipc")
 
 hs.loadSpoon("hyprspoon")
@@ -28,6 +28,14 @@ spoon.hyprspoon:start({
 		{ app = "System Settings", float = true },
 		-- { app = "Slack", workspace = 4, silent = true },
 	},
+	-- Status bars hear about changes as they happen, e.g. SketchyBar with
+	-- examples/sketchybar. Hammerspoon's PATH is only the system's, so
+	-- commands are given in full.
+	-- exec = {
+	-- 	workspace = "/opt/homebrew/bin/sketchybar --trigger hyprspoon_workspace",
+	-- 	focus = '/opt/homebrew/bin/sketchybar --trigger hyprspoon_focus'
+	-- 		.. ' WORKSPACE="$HYPRSPOON_WORKSPACE" APP="$HYPRSPOON_APP"',
+	-- },
 })
 
 -- The default keymap, with Option as SUPER (see defaultHotkeys in the
