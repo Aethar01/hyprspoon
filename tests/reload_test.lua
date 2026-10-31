@@ -30,7 +30,8 @@ local written = nil
 
 -- On the full-screen Space only its window (99) is on screen.
 local onFullScreen = true
-local FULL, DESKTOP = 2070, 1
+local FULL, DESKTOP, SECOND = 2070, 1, 2
+local twoDesktops = false
 
 hs = {
     settings = { get = function() return saved end, set = function(_, v) written = v end },
@@ -50,11 +51,14 @@ hs = {
         data_managedDisplaySpaces = function()
             return { {
                 ["Current Space"] = { ManagedSpaceID = onFullScreen and FULL or DESKTOP },
-                Spaces = { { ManagedSpaceID = DESKTOP, type = 0 }, { ManagedSpaceID = FULL, type = 4 } },
+                Spaces = {
+                    { ManagedSpaceID = DESKTOP, type = 0 },
+                    { ManagedSpaceID = FULL, type = 4 },
+                    twoDesktops and { ManagedSpaceID = SECOND, type = 0 } or nil,
+                },
             } }
         end,
     },
-    window = { list = function() return {} end },
     focus = function() end,
     reload = function() end,
 }
@@ -78,17 +82,29 @@ local fullWin = {
 }
 
 local visible = { fullWin }
+hs.window = {}
 hs.window.list = function()
     local out = {}
     for _, w in ipairs(visible) do out[#out + 1] = { kCGWindowNumber = w:id() } end
     return out
 end
 
+local queries = 0
+local Frames = {}
+local function liveIDs()
+    queries = queries + 1
+    local out = { [99] = true }
+    for _, w in ipairs(wins) do out[w:id()] = true end
+    return out
+end
+Frames.liveIDs = liveIDs
+
 local noop = function() end
 package.loaded["hyprspoon.util"] = {
     focusHistory = {}, winByID = {},
     managedWindows = function() return visible end,
-    rulesFor = function() return {} end,
+    rulesFor = function(w) return w:id() >= 21 and { workspace = 3 } or {} end,
+    native = function(name) assert(name == "frames") return Frames end,
     setFrame = function(w, frame) moved[w:id()] = frame end,
 }
 package.loaded["hyprspoon.tree"] = { bootTime = 0, rectFor = noop, findByID = function() return true end }
@@ -114,22 +130,29 @@ S.settleUntil = 0
 local Spaces = require("hyprspoon.spaces")
 
 local function workspaceOf(id)
-    for _, ws in ipairs(Spaces.overview()) do
-        for _, w in ipairs(ws.windows) do
-            if w.id == id then return ws.n end
-        end
-    end
+    Spaces.stop()
+    return written.of[tostring(id)]
 end
 
 -- Started on the full-screen Space: the full-screen window has left the
 -- workspaces, and the desktop's windows aren't in sight.
 Spaces.start()
 assert(Spaces.keyForUUID("LAPTOP") == "ws2", "the display still shows workspace 2")
+assert(queries == 1, "one liveness query checks every missing ID")
+assert(workspaceOf(18) == nil, "a closed window is pruned even on a full-screen Space")
+
+-- During a swipe back the Desktop can be current before its windows are
+-- listed. A hidden app's window (16) also stays off screen after the swipe.
+onFullScreen = false
+Spaces.start()
+assert(workspaceOf(14) == 3 and workspaceOf(16) == 6, "off-screen windows survive the transition")
 
 -- Back on the desktop: its windows arrive (Spaces.place from the window
 -- events), then the layout claims those showing.
-onFullScreen = false
-visible = wins
+visible = {}
+for _, w in ipairs(wins) do
+    if w:id() ~= 16 then visible[#visible + 1] = w end
+end
 for _, w in ipairs(wins) do Spaces.place(w) end
 for _, w in ipairs(wins) do
     if not Spaces.isHidden(w:id()) then Spaces.claim(w, "LAPTOP") end
@@ -147,13 +170,51 @@ assert(Spaces.keyForUUID("LAPTOP") == "ws2", "the display shows workspace 2")
 Spaces.claim(win(20), "LAPTOP")
 assert(workspaceOf(20) == 2, "a new window joins the workspace showing")
 
--- With the desktop showing, a switch brings 1 back and still forgets the
--- window that closed unseen.
+-- With two Desktops, a window closing unseen is still pruned, while the
+-- hidden app keeps its workspace and parked frame.
+twoDesktops = true
+Spaces.claim(win(21), "LAPTOP")
+table.remove(wins)
+Spaces.start()
+assert(workspaceOf(21) == nil and not Spaces.isHidden(21), "two Desktops do not prevent pruning")
+assert(workspaceOf(16) == 6 and Spaces.isHidden(16), "a hidden app stays assigned and parked")
+
+-- A switch brings workspace 1 back.
 Spaces.gotoWorkspace(1)
 assert(not Spaces.isHidden(11) and Spaces.isHidden(12) and Spaces.isHidden(13))
 Spaces.stop()
 assert(written and written.of["18"] == nil and written.parked["18"] == nil, "a dead window is forgotten")
 assert(written.of["14"] == 3 and written.parked["14"] and written.of["17"] == 101, "the saved state keeps the rest")
 assert(written.active.LAPTOP == 1 and written.parked["11"] == nil and written.parked["12"])
+
+-- Old or absent native modules cannot confirm closure. A failed query
+-- must also preserve saved IDs, even if the on-screen list is empty.
+Spaces.claim(win(22), "LAPTOP")
+table.remove(wins)
+visible = {}
+local function checkFallback(message)
+    Spaces.start()
+    Spaces.stop()
+    assert(written.of["22"] == 3 and written.parked["22"], message)
+end
+Frames.liveIDs = nil
+checkFallback("an old native module keeps uncertain IDs")
+Frames.liveIDs = function() return nil end
+checkFallback("a failed query keeps uncertain IDs")
+local native = Frames
+Frames = nil
+checkFallback("Lua works without the native module")
+Frames = native
+Frames.liveIDs = liveIDs
+Spaces.start()
+Spaces.stop()
+assert(written.of["22"] == nil and written.parked["22"] == nil, "an empty on-screen list still prunes dead IDs")
+
+-- All tracked windows on screen need no further liveness query.
+visible = wins
+local before = queries
+Spaces.start()
+Spaces.stop()
+assert(queries == before, "no all-window query when every tracked ID is on screen")
 
 print("Reload tests passed")

@@ -396,26 +396,6 @@ end
 -- Defined with the window events below; sync uses it after pruning dead IDs.
 local hideEmptyScratchpads
 
--- Whether every window of ours is on screen: each display shows its
--- Desktop, and there's no other. macOS only lists the windows of the
--- Spaces showing as on screen, so with a full-screen Space showing (or
--- another Desktop) ours aren't, though they're still open. Full-screen
--- windows have left the workspaces, so those Spaces not showing is fine.
--- One query for every display (Space type 0 is a Desktop).
-local function desktopsShowing()
-    local displays = hs.spaces.data_managedDisplaySpaces()
-    if not displays then return false end
-    for _, display in ipairs(displays) do
-        local current = display["Current Space"]
-        for _, space in ipairs(display.Spaces or {}) do
-            if (current and space.ManagedSpaceID == current.ManagedSpaceID) ~= (space.type == 0) then
-                return false
-            end
-        end
-    end
-    return true
-end
-
 -- Moves a window into its workspace's corner, remembering where it was the
 -- first time. Its tile is the frame when it has one (no accessibility read).
 -- Parking and unparking go through Util.setFrame like tiling does, so they
@@ -462,26 +442,27 @@ end
 -- Parks the windows of workspaces not showing and brings back the rest.
 -- Parked windows stay put unless `force` (displays changed, so corners did).
 local function sync(force)
-    -- A missed window-filter event can leave a dead window ID in `of` or
-    -- `parked`, keeping its workspace alive. Reconcile those IDs against
-    -- WindowServer whenever workspace state is synced. One CGWindowList
-    -- query, not hs.window.get per ID: that walks every app's windows over
-    -- accessibility each time and stalls the slide animations.
+    -- A missed close event can leave a dead ID keeping its workspace alive.
+    -- Only query all windows if some are off screen; hs.window.list(true)
+    -- omits other Spaces and hidden apps. Neither query uses accessibility.
     local live, stale = {}, {}
     for _, w in ipairs(hs.window.list(true) or {}) do
         if w.kCGWindowNumber then live[w.kCGWindowNumber] = true end
     end
-    if next(live) then
-        for id in pairs(of) do
-            if not live[id] then stale[id] = true end
-        end
-        for id in pairs(parked) do
-            if not live[id] then stale[id] = true end
+    for id in pairs(of) do
+        if not live[id] then stale[id] = true end
+    end
+    for id in pairs(parked) do
+        if not live[id] then stale[id] = true end
+    end
+    if next(stale) then
+        local frames = Util.native("frames")
+        local all = frames and frames.liveIDs and frames.liveIDs()
+        -- Without the native query (or if it fails), keep uncertain IDs.
+        for id in pairs(stale) do
+            if not all or all[id] then stale[id] = nil end
         end
     end
-    -- It lists only windows on screen: one missing may just be on a Space
-    -- not showing (after starting on a full-screen one, all of them).
-    if next(stale) and not desktopsShowing() then stale = {} end
     if next(stale) then
         for id in pairs(stale) do
             of[id], parked[id], pins[id], info[id] = nil, nil, nil, nil
