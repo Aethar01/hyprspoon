@@ -57,6 +57,37 @@ local function hasFloating()
     return false
 end
 
+-- Puts a new float where its rule says: `size` and `position` (from the
+-- display's top left) are points, or fractions of the display from 0 to 1.
+-- Without a position it's centred if the rule's `center` is true, or if
+-- `centre` is and the rule doesn't say.
+local function placeFloat(win, rule, centre)
+    if rule.center ~= nil then centre = rule.center == true end
+    local size, pos = rule.size, rule.position
+    if not size and not pos and not centre then return end
+    local screen = win:screen()
+    if not screen then return end
+    local sf = screen:frame()
+    local function scale(v, whole) return v <= 1 and v * whole or v end
+    if type(size) == "table" then
+        local w, h = size[1] or size.w, size[2] or size.h
+        if type(w) == "number" and type(h) == "number" then
+            win:setSize({ w = scale(w, sf.w), h = scale(h, sf.h) })
+        end
+    end
+    if type(pos) == "table" then
+        local x, y = pos[1] or pos.x, pos[2] or pos.y
+        if type(x) == "number" and type(y) == "number" then
+            win:setTopLeft({ x = sf.x + scale(x, sf.w), y = sf.y + scale(y, sf.h) })
+            return
+        end
+    end
+    if centre then
+        local f = win:frame()
+        win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2, y = sf.y + (sf.h - f.h) / 2 })
+    end
+end
+
 local function shouldFloat(win)
     local id = win:id()
     if S.autoFloat[id] ~= nil then return S.autoFloat[id] end
@@ -68,14 +99,16 @@ local function shouldFloat(win)
     end
 
     if Util.isPictureInPicture(win) then return false end
-    -- Dialogs and panels: the app placed them, so they aren't re-centred.
+    -- Dialogs and panels: the app placed them, so they aren't re-centred
+    -- unless a rule says where they go.
     if Util.windowKind(win) == "subwindow" then
         S.autoFloat[id] = true
+        placeFloat(win, Util.rulesFor(win), false)
         return true
     end
-    local rule = Util.rulesFor(win).float
-    if rule ~= nil then
-        S.autoFloat[id] = rule == true
+    local rule = Util.rulesFor(win)
+    if rule.float ~= nil then
+        S.autoFloat[id] = rule.float == true
     else
         local ok, canFullScreen = pcall(function()
             local ax = hs.axuielement.windowElement(win)
@@ -85,14 +118,7 @@ local function shouldFloat(win)
         if not ok or canFullScreen == nil then return false end
         S.autoFloat[id] = not canFullScreen
     end
-    if S.autoFloat[id] then
-        local screen = win:screen()
-        if screen then
-            local sf, f = screen:frame(), win:frame()
-            win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2,
-                y = sf.y + (sf.h - f.h) / 2 })
-        end
-    end
+    if S.autoFloat[id] then placeFloat(win, rule, true) end
     return S.autoFloat[id]
 end
 
