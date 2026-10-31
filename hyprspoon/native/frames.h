@@ -5,6 +5,7 @@
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <stdbool.h>
+#include <dispatch/dispatch.h>
 
 #include "lauxlib.h"
 #include "lua.h"
@@ -32,3 +33,16 @@ void dragStop(void);
 
 // focus() (focus.c), registered into the module table at the top of the stack.
 void focusRegister(lua_State *L);
+
+// Native-tab queries, queued selection, and the worker-owned AX cache.
+void tabsRegister(lua_State *L);
+void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title);
+bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title);
+
+// The main thread obtains a per-app queue for bounded discovery work.
+dispatch_queue_t framesWorker(pid_t pid);
+void tabsCancel(void);
+void tabsCancelApp(pid_t pid);
+void tabsStop(void);
+
+void tabsRemember(pid_t pid, uint32_t wid, AXUIElementRef element);

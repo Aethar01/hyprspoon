@@ -453,6 +453,8 @@ function M:start(opts)
         if win and Util.windowKind(win) == "ignored" then return end
         if win then
             local id = win:id()
+            Discover.handoff(win)
+            Discover.markDirty(win)
             local requested = id == S.requestedFocus
             if requested then
                 S.requestedFocus = nil
@@ -522,7 +524,7 @@ function M:start(opts)
     -- filter, which holds each move back half a second. Only our windows.
     local events = Util.native("events")
     if events then
-        events.start(function(id)
+        events.start(function(id, visibilityChanged)
             local win = Util.winByID[id]
             if not (win and win:id() == id) then
                 win = nil
@@ -530,7 +532,14 @@ function M:start(opts)
                     if w:id() == id then win = w break end
                 end
             end
-            if win then onWindowMoved(win) end
+            if win then
+                if visibilityChanged then
+                    -- Native merges need no AX destroy or frame change.
+                    Discover.markDirty(win)
+                else
+                    onWindowMoved(win)
+                end
+            end
         end)
         S.running.events = events
     else
@@ -593,6 +602,7 @@ function M:start(opts)
                and Util.focusHistory[1] == win:id() and not win:isFullScreen() then
                 Border.focused(win)
             end
+            if event == hs.window.filter.windowVisible then Discover.handoff(win) end
             -- Windows of a hidden app come back where they were: parked if
             -- their workspace has been left since.
             Spaces.place(win)
@@ -656,7 +666,12 @@ function M:start(opts)
         if event == hs.window.filter.windowNotInCurrentSpace then
             -- Also how a tab swap looks, with the new tab arriving a moment
             -- later: wait for it instead of treating this as a close.
-            Layout.scheduleRetile(false, false, Layout.BSP_TAB_SETTLE)
+            if Discover.isNativeTab(win) then
+                S.offSpace[win:id()] = nil
+                Layout.scheduleRetile(false, true)
+            else
+                Layout.scheduleRetile(false, false, Layout.BSP_TAB_SETTLE)
+            end
         else
             Layout.scheduleRetile(false, true)
         end

@@ -430,6 +430,17 @@ end
 -- Defined with the window events below; sync uses it after pruning dead IDs.
 local hideEmptyScratchpads
 
+-- The filter and winByID can retain AX objects for absorbed windows. Using
+-- one of those objects can select a background tab, even just to park it.
+local function nativeBackground(id)
+    if (S.nativeBackground or {})[id] then return true end
+    local leaf = Tree.setOf(id)
+    if not leaf or leaf.kind ~= "native" or leaf.windowID == id then return false end
+    -- A torn-off tab is on show independently before layout splits it out.
+    for _, w in ipairs(S.nativeShown or {}) do if w.id == id then return false end end
+    return true
+end
+
 -- Moves a window into its workspace's corner, remembering where it was the
 -- first time. Its tile is the frame when it has one (no accessibility read).
 -- Parking and unparking go through Util.setFrame like tiling does, so they
@@ -437,6 +448,7 @@ local hideEmptyScratchpads
 -- instead of being undone by it when switching back and forth quickly.
 local function park(win, n)
     local id = win:id()
+    if nativeBackground(id) then parked[id] = nil return end
     local frame = parked[id]
     if not frame then
         local f = Tree.rectFor(id) or win:frame()
@@ -457,6 +469,7 @@ end
 -- is on a display that has gone.
 local function unpark(win)
     local id = win:id()
+    if nativeBackground(id) then parked[id] = nil return end
     local frame = parked[id]
     parked[id] = nil
     Border.sync()
@@ -546,14 +559,23 @@ end
 
 -- The rest of window `id`'s set goes where it goes: to workspace `n`, and
 -- a parked one to that workspace's corner when that's on another display.
--- Members with no workspace of their own (native tabs never on show) are
--- left to their app, which moves them with their window.
+-- Native tabs get bookkeeping only; their app moves them with the shown
+-- window. Group members keep their independent parking behaviour.
 local function bringMembers(id, n)
     local leaf, key = Tree.setOf(id)
     -- Sync can forget an emptied source workspace before discovery runs.
     -- Detach its set now, while membership and the selected member still exist.
     if leaf and key and key ~= "ws" .. tostring(n) then
         S.trees[key] = Tree.removeID(S.trees[key], leaf.windowID)
+    end
+    if leaf and leaf.kind == "native" then
+        -- Native tabs move only through their shown window. Give even
+        -- never-shown members the workspace and discard old parking state.
+        for _, m in ipairs(leaf.members) do
+            of[m] = n
+            if m ~= leaf.windowID then parked[m], pins[m] = nil, nil end
+        end
+        return
     end
     for _, m in ipairs(Tree.membersOf(id)) do
         local was = of[m]
@@ -573,6 +595,7 @@ end
 -- display keeps its workspace while it gets there.
 local function claim(win, uuid)
     local id = win:id()
+    if nativeBackground(id) then return nil end
     local n = of[id]
     if not connected[uuid] or not active[uuid] then refresh() end
     -- A rule's workspace (see S.cfg.rules), else the one it had before a
@@ -660,16 +683,19 @@ end
 local function focusWorkspace(n, warp, skip)
     local sent = S.spaceFocusWin
     S.spaceFocusWin = nil
-    local target = sent and sent:id() and of[sent:id()] == n and not groupHidden(sent:id()) and sent or nil
+    local target = sent and sent:id() and of[sent:id()] == n and not groupHidden(sent:id())
+        and not nativeBackground(sent:id()) and sent or nil
     if not target then
         for _, fid in ipairs(Util.focusHistory) do
             local win = Util.winByID[fid]
-            if of[fid] == n and not groupHidden(fid) and fid ~= skip and win and win:id() == fid then target = win break end
+            if of[fid] == n and not groupHidden(fid) and not nativeBackground(fid) and fid ~= skip
+               and win and win:id() == fid then target = win break end
         end
     end
     if not target then
         for _, win in ipairs(Util.managedWindows()) do
-            if of[win:id()] == n and not groupHidden(win:id()) and win:id() ~= skip then target = win break end
+            if of[win:id()] == n and not groupHidden(win:id()) and not nativeBackground(win:id())
+               and win:id() ~= skip then target = win break end
         end
     end
 
@@ -698,7 +724,7 @@ end
 local function windowsOf(n)
     local ids = {}
     for id, m in pairs(of) do
-        if m == n and not pinned[id] then ids[#ids + 1] = id end
+        if m == n and not pinned[id] and not nativeBackground(id) then ids[#ids + 1] = id end
     end
     return ids
 end
@@ -754,7 +780,7 @@ local function showScratchpad(n, uuid)
     local top = S.maximized["ws" .. n]
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        if of[id] == n and (not top or id == top) then wins[#wins + 1] = win end
+        if of[id] == n and not nativeBackground(id) and (not top or id == top) then wins[#wins + 1] = win end
     end
     for i, id in ipairs(Util.focusHistory) do rank[id] = rank[id] or i end
     table.sort(wins, function(a, b) return (rank[a:id()] or math.huge) > (rank[b:id()] or math.huge) end)
@@ -1092,7 +1118,7 @@ function M.moveWorkspaceToDisplay(delta)
     settle()
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        if of[id] == n then
+        if of[id] == n and not nativeBackground(id) then
             pins[id] = until_
             S.windowInfo[id], S.applied[id] = nil, nil
             if groupHidden(id) then park(win, n)
@@ -1116,6 +1142,7 @@ end
 -- a window that is already parked (an app moved it back into view).
 function M.place(win, force)
     local id = win and win:id()
+    if id and nativeBackground(id) then parked[id] = nil return end
     local n = id and follow(id)
     if not n then
         -- A pin returning from minimize or full screen rejoins its display.
@@ -1238,6 +1265,33 @@ function M.uuidForKey(key)
     return n and displayOf(n)
 end
 
+-- Background native tabs have no hs.window. Keep their workspace and
+-- restart identity without trying to park, focus or resize them.
+function M.nativeMember(id, shownID, app, title)
+    local previous = of[id]
+    -- A reloaded set knows IDs before it has AX titles for background tabs.
+    title = title or (info[id] and info[id].title)
+    parked[id], pins[id] = nil, nil
+    if shownID and of[shownID] then
+        -- The set's current workspace wins over a background tab's saved
+        -- or stale assignment, including after a move and a reload.
+        of[id] = of[shownID]
+    end
+    if of[id] and info[id] and info[id].app == app and info[id].title == title then
+        if of[id] ~= previous then save() end
+        return
+    end
+    if not info[id] then
+        local proxy = { id = function() return id end, title = function() return title end }
+        local restored = Restore.match(proxy, app)
+        of[id] = of[shownID] or restored
+    elseif not of[id] then
+        of[id] = of[shownID]
+    end
+    info[id] = { app = app, title = title }
+    save()
+end
+
 -- Notes every window's title for matching windows after a restart (see
 -- hyprspoon/restore.lua). Accessibility calls, so only on the way out.
 function M.rememberTitles()
@@ -1348,7 +1402,9 @@ function M.overview()
     local floats = {}
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        local ws = of[id] and byN[of[id]]
+        -- A background native tab has no window on screen of its own: its
+        -- set shows as the tab in front, like a group's hidden members.
+        local ws = of[id] and not nativeBackground(id) and byN[of[id]]
         if ws and not groupHidden(id) then
             local frame = Tree.rectFor(id) or parked[id]
             if not frame then

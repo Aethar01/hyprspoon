@@ -53,7 +53,7 @@ end
 local S = { autoFloat = {}, tilingEnabled = true, running = { windowFilter = {} },
     applied = {}, settleUntil = 0, lastMouseTime = 0 }
 local rules = {}
-local Util = { isPictureInPicture = isPiP, windowKind = function() return "standard" end,
+local Util = { isPictureInPicture = isPiP, forgetManagedWindows = function() end, windowKind = function() return "standard" end,
     rulesFor = function() return rules end,
     dlog = function() end, setFrame = function(win, rect, duration) win:setFrame(rect, duration) end }
 local Tree = { bootTime = 1000 }
@@ -311,8 +311,8 @@ assert(kindOf(5, "AXFloatingWindow", { AXCancelButton = {} }) == "subwindow",
 local appEnv = setmetatable({
     hs = env.hs, Util = Util,
 }, { __index = _G })
-local appWindows = assert(load(extract("discover", "local appWindowCache = {}",
-    "local function withRecentlyChangedApps") .. "return appWindows", "app windows", "t", appEnv))()
+local appWindows = assert(load(extract("discover", "local function appWindows",
+    "local function stateSignature") .. "return appWindows", "app windows", "t", appEnv))()
 local pip = { id = function() return 99 end, title = function() return "Picture-in-Picture" end,
     isStandard = function() return true end, isVisible = function() return true end }
 win.isStandard, win.isVisible = function() return true end, function() return true end

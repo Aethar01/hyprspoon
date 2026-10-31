@@ -107,7 +107,7 @@ package.loaded["hyprspoon.util"] = {
     native = function(name) assert(name == "frames") return Frames end,
     setFrame = function(w, frame) moved[w:id()] = frame end,
 }
-package.loaded["hyprspoon.tree"] = { bootTime = 0, rectFor = noop, findByID = function() return true end }
+package.loaded["hyprspoon.tree"] = { bootTime = 0, setOf = noop, rectFor = noop, findByID = function() return true end }
 package.loaded["hyprspoon.focus"] = { invalidateWindowCache = noop, focus = noop, currentWindow = noop }
 package.loaded["hyprspoon.discover"] = {
     cancelLayoutCheck = noop,

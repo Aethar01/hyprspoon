@@ -229,12 +229,24 @@ local function reconcileTree(key, windows)
     for i, fid in ipairs(Util.focusHistory) do rank[fid] = rank[fid] or i end
     local sets = {}
     for _, leaf in ipairs(Tree.leaves(previous)) do
+        -- AXWindows can lag WindowServer at the first switch. Reserve the
+        -- plain tile as a native set until its new shown member arrives.
+        if not leaf.members and (S.nativeBackground or {})[leaf.windowID] and not valid[leaf.windowID] then
+            leaf.members, leaf.kind = { leaf.windowID }, "native"
+        end
         if leaf.members then sets[#sets + 1] = leaf end
     end
     local refocusSet = nil
     for _, leaf in ipairs(sets) do
         local old = leaf.windowID
         local pick = Tree.memberOnShow(leaf, valid, rank)
+        if leaf.kind == "native" and leaf.rect then
+            -- A torn-off selected tab cascades away. The member still at
+            -- the tile keeps it, even if the torn-off one retains focus.
+            for _, id in ipairs(leaf.members) do
+                if valid[id] and Tabs.centredIn(byID[id]:frame(), leaf.rect) then pick = id break end
+            end
+        end
         if pick and pick ~= old then
             if not open[old] and not away(old) and wasFocused(old) then refocusSet = pick end
             showMember(leaf, pick, key)
@@ -285,7 +297,7 @@ local function reconcileTree(key, windows)
                 byID[newID] = win
                 Util.winByID[newID] = win
                 Util.pidByID[newID] = win:pid()
-                if leaf.members then
+                if leaf.members or open[oldID] then
                     -- In a set the new tab joins it as the old one's tab,
                     -- and the old one leaves only if it closed.
                     Tree.addTab(leaf, newID, oldID)
@@ -461,10 +473,12 @@ local function reconcileTree(key, windows)
             else
                 -- A new window is usually focused before we retile, so walk
                 -- the focus history for the most recent window already tiled.
-                local target = nil
+                local target = S.nativeTornBeside and S.nativeTornBeside[id]
+                if S.nativeTornBeside then S.nativeTornBeside[id] = nil end
+                if target and not Tree.treeContains(tree, target) then target = nil end
 
                 for _, fid in ipairs(Util.focusHistory) do
-                    if fid ~= id and Tree.treeContains(tree, fid) then
+                    if not target and fid ~= id and Tree.treeContains(tree, fid) then
                         target = fid
                         break
                     end

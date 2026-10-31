@@ -62,7 +62,7 @@ for id = 1, 9 do window(id) end
 
 local noop = function() end
 local Util = {
-    focusHistory = {}, focusTimes = {}, winByID = {}, pidByID = {},
+    forgetManagedWindows = noop, focusHistory = {}, focusTimes = {}, winByID = {}, pidByID = {},
     dlog = noop, idList = function() return "" end,
     native = noop,
     rulesFor = function() return {} end,
@@ -291,6 +291,21 @@ test("a set sent to another workspace goes whole", function()
     assert(same(S.trees.ws2.members, { 2, 3 }))
 end)
 
+test("a native set keeps its shown member through a workspace round trip", function()
+    pass({ A = { 1, 2 } })
+    local native = S.trees.ws1.b
+    native.members, native.kind = { 2, 3, 4 }, "native"
+    for _, n in ipairs({ 2, 1 }) do
+        for _, id in ipairs(native.members) do workspaceOf[id] = n end
+        if n == 2 then pass({ A = { 1 }, B = { 2 } }, {}, { 3, 4 })
+        else pass({ A = { 1, 2 } }, {}, { 3, 4 }) end
+        local found, key = Tree.setOf(2)
+        assert(found and key == "ws" .. n)
+        assert(found.windowID == 2 and same(found.members, { 2, 3, 4 }))
+    end
+    assert(wins[3].moves == 0 and wins[4].moves == 0)
+end)
+
 test("a set going full screen keeps its slot and comes back whole", function()
     pass({ A = { 1, 2, 4 } })
     local tree = S.trees.ws1
@@ -480,3 +495,27 @@ test("group handoff preserves the old focus until requested", function()
 end)
 
 print("Layout tests passed")
+
+test("an unknown native switch creates a set and hands the ring over in the same pass", function()
+    wins[3] = window(3, 2)
+    S.trees.ws1 = split(leaf(1), leaf(2))
+    Util.pidByID[2] = 2
+    Util.focusHistory = { 2, 1 }
+    onShow = { A = { 1, 2 } }
+    Layout.tileNow()
+    local rect = S.trees.ws1.b.rect
+    S.nativeBackground = { [2] = { pid = 2 } }
+    onShow, ghosts = { A = { 1 } }, { 2 }
+    Layout.tileNow()
+    assert(S.trees.ws1.b.windowID == 2, "the first switch reserves its tile while AXWindows catches up")
+    wins[3].frame_ = { x = rect.x, y = rect.y, w = rect.w, h = rect.h }
+    onShow, ghosts = { A = { 1, 3 } }, { 2 }
+    local otherMoves = wins[1].moves
+    Layout.tileNow()
+    local current = S.trees.ws1.b
+    assert(current.windowID == 3 and current.kind == "native")
+    assert(Tree.treeContains(S.trees.ws1, 2), "the old tab remains a member")
+    assert(ring[#ring][1] == 2 and ring[#ring][2] == 3)
+    assert(current.rect.x == rect.x and current.rect.w == rect.w)
+    assert(wins[3].moves == 0 and wins[1].moves == otherMoves, "a switch places no windows")
+end)

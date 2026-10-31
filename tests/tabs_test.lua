@@ -119,14 +119,14 @@ test("tearing a tab off: a window at its own frame is live", function()
     -- Tab 2 dragged out lands elsewhere; the rest stay together.
     local bg = background({
         win(1, { tiled = true, inTree = true, listed = true }),
-        win(2, { frame = { x = 400, y = 300, w = 800, h = 600 } }),
+        win(2, { listed = true, frame = { x = 400, y = 300, w = 800, h = 600 } }),
         win(3),
     })
     assert(ids(bg) == "3", ids(bg))
     -- With only two tabs, neither shares a frame with the other any more.
     bg = background({
         win(1, { tiled = true, inTree = true, listed = true }),
-        win(2, { frame = { x = 400, y = 300, w = 800, h = 600 } }),
+        win(2, { listed = true, frame = { x = 400, y = 300, w = 800, h = 600 } }),
     })
     assert(ids(bg) == "")
 end)
@@ -148,22 +148,19 @@ test("frames are compared rounded to whole pixels", function()
     -- A whole pixel apart is a separate window.
     bg = background({
         win(1, { tiled = true, inTree = true, listed = true }),
-        win(2, { frame = { x = 11, y = 10, w = 800, h = 600 } }),
+        win(2, { listed = true, frame = { x = 11, y = 10, w = 800, h = 600 } }),
     })
     assert(ids(bg) == "")
 end)
 
-test("Merge All Windows: windows that still hold their own tiles are not touched", function()
-    -- All three have merged into one frame, but every one still has a tile
-    -- until the next reconcile prunes them, so none is called a background
-    -- tab and the app isn't even asked for frames.
+test("Merge All Windows: absorbed tiles are suppressed even at stale frames", function()
     local bg, calls = background({
         win(1, { tiled = true, inTree = true, listed = true }),
-        win(2, { tiled = true, inTree = true }),
+        win(2, { tiled = true, inTree = true, frame = { x = 900, y = 400, w = 200, h = 200 } }),
         win(3, { tiled = true, inTree = true }),
     })
-    assert(ids(bg) == "")
-    assert(calls.frames == 0 and calls.lists == 0)
+    assert(ids(bg) == "2,3", ids(bg))
+    assert(calls.lists == 1)
 end)
 
 test("Merge All Windows: with an untiled window among them, the unlisted tabs go to the background", function()
@@ -212,9 +209,8 @@ test("each app is judged and asked on its own", function()
         win(4, { pid = OTHER, tiled = true, inTree = true }),
         win(5, { pid = 300, frame = { x = 0, y = 0, w = 50, h = 50 } }),
     })
-    assert(ids(bg) == "2", ids(bg))
-    -- One list query for the one app with a shared frame.
-    assert(calls.lists == 1, calls.lists)
+    assert(ids(bg) == "2,4", ids(bg))
+    assert(calls.lists == 2, calls.lists)
 end)
 
 -- Tile handoff. A tile is a rect; candidates are { id =, pid = } with a frame
@@ -337,4 +333,66 @@ end)
 test("centredIn uses a half-open rect like the pointer test", function()
     assert(Tabs.centredIn({ x = 0, y = 0, w = 10, h = 10 }, { x = 0, y = 0, w = 10, h = 10 }))
     assert(not Tabs.centredIn({ x = 10, y = 0, w = 0, h = 10 }, { x = 0, y = 0, w = 10, h = 10 }))
+end)
+
+test("native detection excludes helpers, minimized, hidden and parked windows", function()
+    local bg = Tabs.detect({ [1] = "shown", [2] = "tab", [3] = "other", [4] = "tab", [5] = "other" },
+        { [1] = true, [2] = true, [3] = true, [5] = true })
+    assert(ids(bg) == "2")
+end)
+
+test("a known member stays with its set despite its stale frame or title", function()
+    local leaf = { windowID = 1, members = { 1, 2 } }
+    local assigned = Tabs.assign({ [2] = { title = "duplicate" } }, {
+        { id = 1, count = 2, frame = FRAME }, { id = 3, count = 2, frame = FRAME },
+    }, function(id) return id == 2 and leaf end)
+    assert(assigned[2] == 1)
+end)
+
+test("Merge All Windows learns absorbed tiles regardless of their old frames", function()
+    local assigned = Tabs.assign({ [2] = {}, [3] = {} }, {
+        { id = 1, count = 3, frame = FRAME },
+    }, function(id) return { windowID = id, rect = { x = 900, y = 900, w = 100, h = 100 } } end)
+    assert(assigned[2] == 1 and assigned[3] == 1)
+end)
+
+test("a switch learns membership from the vacated tile", function()
+    local assigned = Tabs.assign({ [1] = {} }, {
+        { id = 2, count = 2, frame = FRAME },
+        { id = 3, count = 2, frame = { x = 2000, y = 0, w = 100, h = 100 } },
+    }, function() return { windowID = 1, rect = FRAME } end)
+    assert(assigned[1] == 2)
+end)
+
+test("a verified unseen tab can join an unambiguous bar by title", function()
+    local assigned = Tabs.assign({ [7] = { title = "document" } }, {
+        { id = 1, count = 2, frame = FRAME, titles = { "document", "other" } },
+        { id = 2, count = 2, frame = FRAME, titles = { "unrelated", "window" } },
+    }, function() end)
+    assert(assigned[7] == 1)
+end)
+
+test("identical Terminal titles do not combine independent sets", function()
+    local assigned = Tabs.assign({ [7] = { title = "shell" } }, {
+        { id = 1, count = 2, frame = FRAME, titles = { "shell", "shell" } },
+        { id = 2, count = 2, frame = FRAME, titles = { "shell", "shell" } },
+    }, function() end)
+    assert(next(assigned) == nil)
+end)
+
+test("the bar count bounds membership learning", function()
+    local assigned = Tabs.assign({ [2] = {}, [3] = {} }, {
+        { id = 1, count = 2, frame = FRAME },
+    }, function() end)
+    assert(assigned[2] == 1 and assigned[3] == nil)
+end)
+
+test("tear-off releases only the additional members now on screen", function()
+    assert(table.concat(Tabs.strays({ 1, 2, 3 }, 1, { [1] = true, [2] = true }), ",") == "2")
+    assert(#Tabs.strays({ 1, 2, 3 }, 2, { [2] = true }) == 0)
+end)
+
+test("restart matching includes verified background tabs without an hs.window", function()
+    assert(Tabs.restorePresent(2, { [1] = true }, {}, { [2] = {} }))
+    assert(not Tabs.restorePresent(3, { [1] = true }, {}, { [2] = {} }))
 end)

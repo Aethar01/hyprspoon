@@ -9,6 +9,8 @@ os.time = function() return NOW end
 -- Saved by the boot before (kern.boottime 500; this boot's is 1000).
 local settings = {
     ["hyprspoon.treesBoot"] = 500,
+    ["hyprspoon.setsAway"] = { { windowID = 61, members = { 61, 62 }, kind = "native" } },
+    ["hyprspoon.floats"] = { entries = { ["61"] = { float = true } } },
     ["hyprspoon.pseudoAway"] = { ["14"] = { w = 300, h = 200 } },
     ["hyprspoon.trees"] = {
         ws1 = { split = "vertical", ratio = 0.3,
@@ -30,6 +32,8 @@ local settings = {
         of = { ["11"] = 1, ["12"] = 1, ["13"] = 1, ["14"] = 2, ["31"] = 3, ["32"] = 3, ["33"] = 3,
             ["34"] = 3, ["41"] = 4, ["42"] = 4, ["51"] = 5, ["52"] = 5, ["53"] = 5 },
         info = {
+            ["61"] = { app = "float", title = "f1" },
+            ["62"] = { app = "float", title = "f2" },
             ["11"] = { app = "term", title = "editor" },
             ["12"] = { app = "term", title = "shell" },
             ["13"] = { app = "browser", title = "docs" },
@@ -125,6 +129,13 @@ assert(Restore.match(win(141, "n1"), "notes") == 4)
 tree = Restore.rebuild("ws4", nil, { [141] = true })
 assert(tree.windowID == 141 and tree.members == nil and tree.kind == nil)
 
+-- A confirmed background tab is matched without becoming visible first.
+assert(Restore.match(win(142, "n2"), "notes") == 4)
+S.nativeBackground = { [142] = { title = "n2" } }
+tree = Restore.rebuild("ws4", tree, { [141] = true })
+assert(tree.kind == "native" and tree.windowID == 141 and #tree.members == 2)
+assert(tree.members[2] == 142, "background membership survives restart")
+
 -- Members hidden since (parked by their group) stay in it as more windows
 -- come back, and a set made meanwhile goes back in whole.
 local function leafOf(t, id)
@@ -146,6 +157,12 @@ assert(leafOf(tree, 153).windowID == 153 and leafOf(tree, 153) ~= group)
 local again = leafOf(tree, 161)
 assert(again.windowID == 160 and #again.members == 2 and again.kind == "group", "the new set stays whole")
 assert(#Tree.leaves(tree) == 3, "no tile of its own for a hidden member")
+
+assert(Restore.match(win(161, "f1"), "float") == nil)
+assert(Restore.match(win(162, "f2"), "float") == nil)
+assert(S.autoFloat[161] and S.autoFloat[162])
+assert(S.setsAway[161] == S.setsAway[162] and #S.setsAway[161].members == 2,
+    "a floating native set is restored away from the tiled trees")
 
 -- Time's up: nothing more is matched or rebuilt.
 NOW = NOW + 200

@@ -46,6 +46,7 @@ static LuaCallback onMoved = LUA_CALLBACK_NONE;
 // Windows moved since the last delivery.
 #define MAX_PENDING 256
 static uint32_t pending[MAX_PENDING];
+static bool visibility[MAX_PENDING];
 static int pendingCount = 0;
 
 // Both fire on the main queue to deliver what's pending (`later` once the
@@ -79,13 +80,16 @@ static void deliver(void *unused) {
     }
     lastDelivered = now;
     uint32_t moved[MAX_PENDING];
+    bool changed[MAX_PENDING];
     int count = pendingCount;
     memcpy(moved, pending, sizeof(uint32_t) * count);
+    memcpy(changed, visibility, sizeof(bool) * count);
     pendingCount = 0;
     for (int i = 0; i < count; i++) {
         if (!luaCallbackPush(&onMoved)) break;
         lua_pushinteger(onMoved.L, moved[i]);
-        luaCallbackCall(&onMoved, 1);
+        lua_pushboolean(onMoved.L, changed[i]);
+        luaCallbackCall(&onMoved, 2);
     }
 }
 
@@ -113,21 +117,24 @@ static int compareWids(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 
-static void note(uint32_t wid) {
+static void note(uint32_t wid, bool changed) {
     if (wid == muted) return;
     bool listed = false;
     for (int i = 0; i < pendingCount; i++) {
         if (pending[i] == wid) {
+            visibility[i] |= changed;
             listed = true;
             break;
         }
     }
-    if (!listed && pendingCount < MAX_PENDING) pending[pendingCount++] = wid;
+    if (!listed && pendingCount < MAX_PENDING) {
+        pending[pendingCount] = wid;
+        visibility[pendingCount++] = changed;
+    }
     if (delivery) dispatch_source_merge_data(delivery, 1);
 }
 
 static void onWindowEvent(uint32_t event, void *data, size_t length, void *context) {
-    (void)event;
     (void)context;
     if (!data || length < sizeof(uint32_t)) return;
     uint32_t wid;
@@ -137,11 +144,15 @@ static void onWindowEvent(uint32_t event, void *data, size_t length, void *conte
         // Only masking adds windows Lua didn't ask about. Keep this out of
         // note(): unmuting must still deliver the dragged window's last move.
         if (filtering && !bsearch(&wid, watched, watchedCount, sizeof(uint32_t), compareWids)) return;
-        note(wid);
+        note(wid, event == SL_EVENT_WINDOW_HIDE || event == SL_EVENT_WINDOW_UNHIDE
+            || event == SL_EVENT_WINDOW_REORDER);
     }
 }
 
-static const uint32_t events[] = { SL_EVENT_WINDOW_MOVE, SL_EVENT_WINDOW_RESIZE };
+// Merging native tabs orders absorbed windows out without an AX destroy.
+// Observe visibility separately so it cannot be mistaken for a user resize.
+static const uint32_t events[] = { SL_EVENT_WINDOW_MOVE, SL_EVENT_WINDOW_RESIZE,
+    SL_EVENT_WINDOW_HIDE, SL_EVENT_WINDOW_UNHIDE, SL_EVENT_WINDOW_REORDER };
 #define EVENT_COUNT (sizeof(events) / sizeof(events[0]))
 
 static bool registered = false;
@@ -180,7 +191,7 @@ static void stop(void) {
 // Lua API
 // ---------------------------------------------------------------------------
 
-// start(onMoved): calls onMoved(windowId) as watched windows move or resize.
+// start(onMoved): calls onMoved(windowId, visibilityChanged) for watched windows.
 static int l_start(lua_State *L) {
     luaL_checktype(L, 1, LUA_TFUNCTION);
     stop();
@@ -219,7 +230,7 @@ static int l_mute(lua_State *L) {
     uint32_t wid = (uint32_t)luaL_optinteger(L, 1, 0);
     uint32_t was = muted;
     muted = wid;
-    if (was && was != wid) note(was);
+    if (was && was != wid) note(was, false);
     return 0;
 }
 

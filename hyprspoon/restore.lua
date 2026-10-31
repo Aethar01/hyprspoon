@@ -5,6 +5,7 @@ package.loaded["hyprspoon.restore"] = M
 
 local Tree = require("hyprspoon.tree")
 local S = require("hyprspoon.state")
+local Tabs = require("hyprspoon.tabs")
 
 -- ---------------------------------------------------------------------------
 -- Restoring after a restart
@@ -54,7 +55,14 @@ do
             saved = { boot = boot, untilTime = os.time() + GRACE, windows = {},
                 trees = hs.settings.get("hyprspoon.trees") or {},
                 pseudoAway = hs.settings.get("hyprspoon.pseudoAway") or {},
-                active = ws.active or {}, claimed = {} }
+                active = ws.active or {}, claimed = {}, nativeFloats = {} }
+            local floats = hs.settings.get("hyprspoon.floats") or {}
+            for _, leaf in ipairs(hs.settings.get("hyprspoon.setsAway") or {}) do
+                local entry = (floats.entries or {})[tostring(leaf.windowID)]
+                if leaf.kind == "native" and entry and entry.float then
+                    saved.nativeFloats[#saved.nativeFloats + 1] = leaf
+                end
+            end
             for id, d in pairs(ws.info) do
                 if type(d) == "table" and d.app then
                     saved.windows[tostring(id)] = { app = d.app, title = d.title,
@@ -97,6 +105,26 @@ function M.match(win, app)
     end
     if not best then return nil end
     saved.claimed[best] = win:id()
+    for _, oldSet in ipairs(saved.nativeFloats or {}) do
+        local members, floating = {}, false
+        for _, old in ipairs(oldSet.members) do
+            if tostring(old) == best then floating = true end
+            local new = saved.claimed[tostring(old)]
+            if new then members[#members + 1] = new end
+        end
+        if floating then
+            S.autoFloat = S.autoFloat or {}
+            S.autoFloat[win:id()] = true
+            -- Real shown windows persist the manual override for reloads;
+            -- background identities are plain tables without an application.
+            if win.application then require("hyprspoon.float").rememberFloat(win) end
+        end
+        if floating and #members > 1 then
+            local shown = saved.claimed[tostring(oldSet.windowID)] or members[1]
+            local leaf = { windowID = shown, members = members, kind = "native", pseudo = oldSet.pseudo }
+            for _, id in ipairs(members) do S.setsAway[id] = leaf end
+        end
+    end
     if saved.pseudoAway and saved.pseudoAway[best] then
         S.pseudoAway[win:id()] = saved.pseudoAway[best]
     end
@@ -123,7 +151,7 @@ function M.rebuild(key, tree, valid)
     local arrived = false
     local function newID(old)
         local new = saved.claimed[tostring(old)]
-        if new and (valid[new] or present[new]) then return new end
+        if new and Tabs.restorePresent(new, valid, present, S.nativeBackground or {}) then return new end
     end
     local function build(node)
         if not node then return nil end

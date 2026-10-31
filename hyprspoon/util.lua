@@ -170,10 +170,23 @@ end
 
 local function managedWindows()
     if managedCache then return managedCache end
-    local out, complete = {}, true
+    local out, complete, seen = {}, true, {}
     for _, win in ipairs(S.running.windowFilter and S.running.windowFilter:getWindows() or {}) do
+        seen[win:id()] = true
         if windowKind(win) ~= "ignored" then out[#out + 1] = win end
         if not windowKinds[win:id()] then complete = false end
+    end
+    -- The filter never reports some windows an app shows: the window left
+    -- holding the other tabs after a native tab is torn off. Discovery finds
+    -- them in the app's own window list (S.nativeShown), and everything
+    -- that walks the managed windows (query, the overview, workspace moves)
+    -- needs them too. Discovery forgets this list when that set changes.
+    for _, w in ipairs(S.nativeShown or {}) do
+        local win = w.win
+        if win and not seen[w.id] and win:id() == w.id and windowKind(win) ~= "ignored" then
+            seen[w.id] = true
+            out[#out + 1] = win
+        end
     end
     if complete and S.running.windowFilter then managedCache = out end
     return out

@@ -6,7 +6,9 @@
 // uses it to confirm which saved windows still exist.
 //
 // Lua functions: set(pid, wid, x, y, w, h, duration), liveIDs(),
-// focus(pid, wid, raise) (focus.c), dragBegin(options) and dragEnd(x, y)
+// tabSnapshot(callback), tabWindows(pid, wanted, callback),
+// tabState(pid) (compatibility), tabButtons(pid, wid, delta), tabShow(...)
+// (tabs.c), focus(pid, wid, raise) (focus.c), dragBegin(options) and dragEnd(x, y)
 // (drag.c). liveIDs() returns a set {[windowID] = true} across all Spaces
 // and hidden apps, or nil if the query fails. It uses no accessibility calls.
 // Without this module, frame changes, focus and drags run through Lua and
@@ -116,6 +118,8 @@ typedef struct {
     // for runs, see framesRaise), and whether the app's loop is on its queue.
     uint32_t raise;
     bool raiseQueued;
+    uint32_t tabShown;
+    CFStringRef tabTitle;
     bool running;
 } App;
 
@@ -127,11 +131,18 @@ static void releaseApp(void *context) {
     App *app = context;
     if (app->windows) CFRelease(app->windows);
     if (app->element) CFRelease(app->element);
+    if (app->tabTitle) CFRelease(app->tabTitle);
     app->windows = NULL;
     app->element = NULL;
 }
 
+static void drained(void *context) { (void)context; }
+
 static void drop(App *app) {
+    tabsCancelApp(app->pid);
+    // A running scan can enqueue one final chunk behind this first barrier
+    // while cancellation arrives. The second barrier drains that chunk too.
+    dispatch_sync_f(app->queue, NULL, drained);
     dispatch_sync_f(app->queue, app, releaseApp);
     dispatch_release(app->queue);
     free(app);
@@ -166,6 +177,11 @@ static App *appFor(pid_t pid, bool create) {
     return app;
 }
 
+dispatch_queue_t framesWorker(pid_t pid) {
+    App *app = appFor(pid, true);
+    return app ? app->queue : NULL;
+}
+
 // ---------------------------------------------------------------------------
 // Accessibility, on the app's queue
 // ---------------------------------------------------------------------------
@@ -195,6 +211,7 @@ static AXUIElementRef windowElement(App *app, uint32_t wid) {
                 CGWindowID id = 0;
                 if (_AXUIElementGetWindow(w, &id) == kAXErrorSuccess && id) {
                     AXUIElementSetMessagingTimeout(w, 1.0);
+                    tabsRemember(app->pid, id, w);
                     CFNumberRef k = widNumber(id);
                     CFDictionarySetValue(app->windows, k, w);
                     CFRelease(k);
@@ -329,17 +346,25 @@ static void appLoop(void *context) {
         bool raise = app->raiseQueued && !stop;
         uint32_t raiseWid = app->raise;
         app->raiseQueued = false;
+        uint32_t tabShown = app->tabShown;
+        CFStringRef tabTitle = app->tabTitle;
+        app->tabTitle = NULL;
+        app->tabShown = 0;
         if (stop || (takenCount == 0 && animCount == 0 && !raise)) {
             app->running = false;
             os_unfair_lock_unlock(&requestsLock);
+            if (tabTitle) CFRelease(tabTitle);
             break;
         }
         os_unfair_lock_unlock(&requestsLock);
 
         if (raise) {
             AXUIElementRef win = windowElement(app, raiseWid);
-            if (win) AXUIElementPerformAction(win, kAXRaiseAction);
+            AXError result = win ? AXUIElementPerformAction(win, kAXRaiseAction) : kAXErrorFailure;
+            if (result != kAXErrorSuccess && tabShown) tabsSelect(app->pid, tabShown, tabTitle);
         }
+
+        if (tabTitle) CFRelease(tabTitle);
 
         for (int i = 0; i < takenCount; i++) {
             Taken *t = &taken[i];
@@ -443,15 +468,22 @@ void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sol
 // (7s of every 20 measured), and every other accessibility call to it,
 // Hammerspoon's main thread's included, waited behind them. So a raise
 // still waiting is replaced by the next one for the same app.
-void framesRaise(pid_t pid, uint32_t wid) {
+void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title) {
     App *app = appFor(pid, true);
     if (!app) return;
     os_unfair_lock_lock(&requestsLock);
     app->raise = wid;
+    if (app->tabTitle) CFRelease(app->tabTitle);
+    app->tabTitle = title ? CFRetain(title) : NULL;
+    app->tabShown = shown;
     app->raiseQueued = true;
     bool start = wake(app);
     os_unfair_lock_unlock(&requestsLock);
     if (start) dispatch_async_f(app->queue, app, appLoop);
+}
+
+void framesRaise(pid_t pid, uint32_t wid) {
+    framesShowTab(pid, wid, 0, NULL);
 }
 
 static void nothing(void *context) {
@@ -501,7 +533,9 @@ static int l_gc(lua_State *L) {
     (void)L;
     dragStop();
     atomic_store(&stopping, true);
+    tabsCancel();
     for (int i = 0; i < appCount; i++) drop(apps[i]);
+    tabsStop();
     appCount = 0;
     requestCount = 0;
     return 0;
@@ -520,6 +554,7 @@ int luaopen_hyprspoon_native_frames(lua_State *L) {
     luaL_newlib(L, funcs);
     dragRegister(L);
     focusRegister(L);
+    tabsRegister(L);
 
     lua_newuserdata(L, 1);
     lua_newtable(L);
