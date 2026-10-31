@@ -117,10 +117,13 @@ pointer = LAPTOP
 -- Focusing left from the laptop's empty workspace lands on the TV's, empty
 -- too, and a window opening on the laptop goes there.
 assert(Spaces.focusDisplayToward("left"), "an empty display can take focus")
+assert(Spaces.focusedWorkspace(nil) == tv, "the empty display's workspace has focus")
 assert(not Spaces.focusDisplayToward("up"), "no display that way")
 Spaces.claim(win(42), "LAPTOP")
 assert(moved[42] == "TV" and Spaces.hasWindows(tv), "a new window opens on the focused empty display")
 Spaces.windowFocused(42)
+assert(Spaces.focusedWorkspace(win(42)) == tv, "then the focused window's")
+assert(Spaces.focusedWorkspace(nil) == 2, "with none, the pointer's display's")
 Spaces.claim(win(44), "LAPTOP")
 assert(moved[44] == nil and Spaces.hasWindows(2), "until a window takes focus")
 

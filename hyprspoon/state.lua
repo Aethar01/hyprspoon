@@ -121,6 +121,20 @@ S.defaults = {
     --   }
     rules = {},
 
+    -- For status bars: functions called, and shell commands run, on the
+    -- next turn of the run loop after `workspace`, `focus`, `layout` or
+    -- `display` changes (see hyprspoon/hooks.lua), once per turn however
+    -- many there were, and once each on start(). A function gets { event =,
+    -- window = id, app =, workspace = name, display = UUID } (false for
+    -- none); a command (or a list of them) runs through /bin/sh with the
+    -- same as HYPRSPOON_EVENT, HYPRSPOON_WINDOW, HYPRSPOON_APP,
+    -- HYPRSPOON_WORKSPACE and HYPRSPOON_DISPLAY. Hammerspoon's PATH is
+    -- only the system's, so give commands elsewhere in full. E.g.
+    --   on = { workspace = function(e) print("now on " .. e.workspace) end },
+    --   exec = { focus = "/opt/homebrew/bin/sketchybar --trigger hyprspoon_focus" },
+    on = {},
+    exec = {},
+
     tiling = {
         outerGap = 10,  -- gap between tiles and the screen edge
         innerGap = 5,   -- gap between tiles
