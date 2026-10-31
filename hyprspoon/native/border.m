@@ -2,6 +2,14 @@
 //
 // Loaded by hyprspoon/border.lua as hyprspoon.native.border (build: make -C hyprspoon/native).
 //
+// Lua functions: set(ids), focus(id, duration), active(), overview(on),
+// watch(ids), previewer(), style(options), stop(). Without this module,
+// border.lua draws no rings.
+//
+// Rings on full-screen Spaces (Split View too) are hidden, even before Lua
+// knows the target is full screen. If SLSSpaceGetType is unavailable, only
+// targets that fill a display are hidden here; Lua also filters full screen.
+//
 // Every window hyprspoon/border.lua lists gets a ring: the focused window's in the
 // active colour, the rest in the inactive one, blending between the two as
 // focus moves. Each ring is a window of our own (see Ring), ordered just
