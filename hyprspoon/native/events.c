@@ -94,8 +94,18 @@ static void deliverLater(void *unused) {
 // every frame would otherwise reach Lua). Main thread.
 static uint32_t muted = 0;
 
+// The windows Lua asked about (main thread). WindowServer may report more:
+// with experimental.borderMask, hyprspoon.native.border asks about every
+// window on screen, on the same connection.
+#define MAX_WATCHED 512
+static uint32_t watched[MAX_WATCHED];
+static int watchedCount = 0;
+
 static void note(uint32_t wid) {
     if (wid == muted) return;
+    bool ours = false;
+    for (int i = 0; i < watchedCount && !ours; i++) ours = watched[i] == wid;
+    if (!ours) return;
     bool listed = false;
     for (int i = 0; i < pendingCount; i++) {
         if (pending[i] == wid) {
@@ -174,9 +184,8 @@ static int l_start(lua_State *L) {
 // watch({wid, ...}): the windows to hear about (see skylight.h).
 static int l_watch(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
-    uint32_t wids[512];
-    int count = luaWindowIds(L, 1, wids, 512);
-    SLSRequestNotificationsForWindows(cid, wids, count);
+    watchedCount = luaWindowIds(L, 1, watched, MAX_WATCHED);
+    SLSRequestNotificationsForWindows(cid, watched, watchedCount);
     return 0;
 }
 
@@ -208,6 +217,7 @@ int luaopen_hyprspoon_native_events(lua_State *L) {
     const char *missing = loadSymbols();
     if (missing) return luaL_error(L, "hyprspoon.native.events: SkyLight has no %s", missing);
     cid = SLSMainConnectionID();
+    watchedCount = 0;
 
     static const luaL_Reg funcs[] = {
         { "start", l_start },

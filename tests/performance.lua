@@ -66,6 +66,10 @@ function M.run(rounds, outPath)
     add('snapshot.fresh', function() m.Focus.windowSnapshot(true) end)
     add('snapshot.cached', function() m.Focus.windowSnapshot() end)
     add('spaces.active', function() hs.spaces.activeSpaceOnScreen(hs.screen.mainScreen()) end)
+    -- With experimental.borderMask: a snapshot and every ring's mask, as
+    -- after a burst of window changes (budget 0.5ms with 30 windows).
+    local border = S.cfg.border and S.cfg.experimental and S.cfg.experimental.borderMask and Util.native('border')
+    if border and border.remask then add('border.mask', function() border.remask() end) end
     local windows = hs.window.orderedWindows()
     local apps = {}
     for _, win in ipairs(windows) do

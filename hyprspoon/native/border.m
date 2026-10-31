@@ -16,13 +16,18 @@
 // CPU per focus change (measured), and a resize is a new layer size. The
 // price: WindowServer draws such a window above the normal windows whatever
 // its place in the stacking, so a ring shows over windows that cover its
-// own (which also shows where windows are while rearranging).
+// own (which also shows where windows are while rearranging), unless
+// masked (see Masks).
 //
 // The rings are moved on a queue of their own, through a WindowServer
 // connection of their own (as JankyBorders does), so none of it holds up
 // Hammerspoon's main thread, where Lua and the event taps run.
 // Notifications only note which windows changed; a burst of them becomes
 // one update at the latest bounds.
+//
+// Experimental (experimental.borderMask in hyprspoon/state.lua): each
+// ring's layer gets a mask cutting out the windows above its own (see
+// Masks), from one snapshot of the windows on screen per update.
 //
 // SkyLight's window calls are private (the same ones JankyBorders uses).
 // They are looked up when the module loads, which fails with an error
@@ -39,6 +44,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "lauxlib.h"
 #include "lua.h"
@@ -134,6 +140,8 @@ typedef struct {
     bool resizing;   // hidden while the system resizes its target (see catchUp)
     bool previewing; // drawn around `preview` (a drag's frame), not the target
     CGRect preview;
+    CALayer *mask;   // its mask's layers (see Masks), made when first needed
+    uint64_t maskKey; // what the mask was last worked out from; 0 for none
     // How active it looks, 0 to 1, going from `from` to `to` over
     // `duration` from `start` (see mixAt).
     float from, to;
@@ -231,6 +239,11 @@ static void commitChanges(void) {
     [CATransaction flush];
 }
 
+// See Masks.
+static bool snapshotTaken;
+static void maskRing(Ring *ring);
+static bool seenLevel(uint32_t wid, int64_t *level);
+
 // The ring around the target's outline: inside, the target's corner
 // radius; outside, that grown by the width. The target sits `padding` in
 // from the window's top-left corner.
@@ -241,6 +254,8 @@ static void layout(Ring *ring) {
     ring->layer.frame = CGRectMake(pad - w, pad - w, ring->bounds.size.width + 2 * w, ring->bounds.size.height + 2 * w);
     ring->layer.borderWidth = w;
     ring->layer.cornerRadius = ring->radius + w;
+    // Its mask changes with it, in the same transaction.
+    if (snapshotTaken) maskRing(ring);
     commitChanges();
 }
 
@@ -357,7 +372,7 @@ static void order(CFTypeRef t, Ring *ring) {
     bool show = !overview && !ring->hidden && !ring->fills && !ring->resizing;
     if (show) {
         int64_t level = 0;
-        SLSGetWindowLevel(drawCid, ring->target, &level);
+        if (!seenLevel(ring->target, &level)) SLSGetWindowLevel(drawCid, ring->target, &level);
         SLSTransactionSetWindowLevel(t, ring->wid, (int)level);
         SLSTransactionOrderWindow(t, ring->wid, ORDER_ABOVE, ring->target);
     } else if (ring->shown) {
@@ -486,6 +501,8 @@ static Ring *newRing(uint32_t target) {
     [ring->layer removeAllAnimations];
     ring->layer.borderColor = color;
     CGColorRelease(color);
+    ring->layer.mask = nil;
+    ring->maskKey = 0;
     commitChanges();
     ring->radius = cornerRadius(target);
     joinTargetSpace(ring);
@@ -494,6 +511,391 @@ static Ring *newRing(uint32_t target) {
         return NULL;
     }
     return ring;
+}
+
+// ---------------------------------------------------------------------------
+// Masks (experimental)
+// ---------------------------------------------------------------------------
+//
+// With experimental.borderMask, each ring's layer gets a mask: its outline
+// minus the outlines of the windows stacked above its target, so a ring
+// no longer shows over a float, a panel or Spotlight covering its window.
+// The rings stay CoreAnimation windows; only the mask changes.
+//
+// Each update reads the windows on screen once, front to back (the
+// snapshot), and works out every ring's mask from it: everything before a
+// ring's target in the snapshot is above it. A ring under a see-through
+// window shows through it, dimmed: the mask is a layer of shapes, the
+// uncovered parts at full alpha and each part under see-through windows at
+// the product of how much shows through each.
+//
+// WindowServer only reports the windows asked about (see skylight.h), so
+// with masks on every window in the snapshot is asked about too, and any
+// window coming or going is a cue to update. Off, none of this runs: no
+// snapshot, no notifications beyond the managed windows'.
+
+static struct {
+    bool on;
+    bool showDrags;     // drags = "show": no masks while a drag is under way
+    bool suspended;     // showDrags, and a drag is under way
+} masks;
+
+typedef struct {
+    uint32_t wid;
+    CGRect bounds;
+    int32_t level;
+    CGFloat alpha;
+} Seen;
+
+#define MAX_SEEN 256
+static Seen seen[MAX_SEEN]; // front to back
+static int seenCount = 0;
+static bool snapshotTaken = false; // `seen` is this update's
+
+// Rules' `opacity` for windows that have one (Util.rulesFor), from set().
+#define MAX_OPACITIES MAX_RINGS
+static struct { uint32_t wid; CGFloat opacity; } opacities[MAX_OPACITIES];
+static int opacityCount = 0;
+
+// Corner radii of windows without rings, asked once each.
+#define MAX_RADII 256
+static struct { uint32_t wid; CGFloat radius; } radii[MAX_RADII];
+static int radiusCount = 0;
+
+static CGFloat radiusOf(uint32_t wid) {
+    Ring *ring = ringFor(wid);
+    if (ring) return ring->radius;
+    for (int i = 0; i < radiusCount; i++) {
+        if (radii[i].wid == wid) return radii[i].radius;
+    }
+    if (radiusCount == MAX_RADII) radiusCount = 0;
+    radii[radiusCount].wid = wid;
+    radii[radiusCount].radius = cornerRadius(wid);
+    return radii[radiusCount++].radius;
+}
+
+static bool isRingWindow(uint32_t wid) {
+    for (int i = 0; i < ringCount; i++) {
+        if (rings[i].wid == wid) return true;
+    }
+    return false;
+}
+
+static int number(CFDictionaryRef info, CFStringRef key, CFNumberType type, void *out) {
+    CFNumberRef n = CFDictionaryGetValue(info, key);
+    return n && CFNumberGetValue(n, type, out);
+}
+
+// The windows on screen, front to back, leaving out what covers nothing:
+// the rings, Hammerspoon's own overlays (highlights, the HUD), invisible
+// windows, the cursor's, and the windows the Dock and Notification Centre
+// keep over whole displays (as hover.c).
+static void takeSnapshot(void) {
+    snapshotTaken = true;
+    seenCount = 0;
+    CFArrayRef list = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!list) return;
+    CGDirectDisplayID displays[16];
+    uint32_t displayCount = 0;
+    if (CGGetActiveDisplayList(16, displays, &displayCount) != kCGErrorSuccess) displayCount = 0;
+    pid_t self = getpid();
+    for (CFIndex i = 0; i < CFArrayGetCount(list) && seenCount < MAX_SEEN; i++) {
+        CFDictionaryRef info = CFArrayGetValueAtIndex(list, i);
+        int32_t pid = 0, level = 0, wid = 0;
+        double alpha = 1;
+        CGRect bounds;
+        CFDictionaryRef b = CFDictionaryGetValue(info, kCGWindowBounds);
+        if (!number(info, kCGWindowNumber, kCFNumberSInt32Type, &wid) || !b
+            || !CGRectMakeWithDictionaryRepresentation(b, &bounds)) {
+            continue;
+        }
+        number(info, kCGWindowOwnerPID, kCFNumberSInt32Type, &pid);
+        number(info, kCGWindowLayer, kCFNumberSInt32Type, &level);
+        number(info, kCGWindowAlpha, kCFNumberDoubleType, &alpha);
+        if (alpha <= 0 || level >= kCGScreenSaverWindowLevel) continue;
+        if (pid == self && (level > 0 || isRingWindow((uint32_t)wid))) continue;
+        bool coversDisplay = false;
+        for (uint32_t d = 0; d < displayCount && level > 0 && !coversDisplay; d++) {
+            coversDisplay = CGRectContainsRect(bounds, CGDisplayBounds(displays[d]));
+        }
+        if (coversDisplay) continue;
+        seen[seenCount++] = (Seen){ (uint32_t)wid, bounds, level, alpha };
+    }
+    CFRelease(list);
+}
+
+// The window's level from this update's snapshot, saving a call per ring.
+static bool seenLevel(uint32_t wid, int64_t *level) {
+    if (!snapshotTaken) return false;
+    for (int i = 0; i < seenCount; i++) {
+        if (seen[i].wid == wid) {
+            *level = seen[i].level;
+            return true;
+        }
+    }
+    return false;
+}
+
+// How much of a ring shows under the window: 0 if it's opaque. A rule's
+// `opacity` wins over what the window reports.
+static CGFloat showsThrough(const Seen *window) {
+    for (int i = 0; i < opacityCount; i++) {
+        if (opacities[i].wid == window->wid) return fmin(fmax(1 - opacities[i].opacity, 0), 1);
+    }
+    // Content that's see-through with the window's alpha at 1 (a terminal
+    // background) can't be told from outside the app: SLSGetWindowOpacity
+    // only answers for our own windows (#1). It counts as opaque.
+    return window->alpha < 1 ? 1 - window->alpha : 0;
+}
+
+// A window above a ring's target, in the ring layer's coordinates.
+typedef struct {
+    CGRect rect;
+    CGFloat radius;
+    CGFloat shows; // how much of the ring shows under it
+} Cover;
+
+#define MAX_COVERS 32
+
+// The windows above the ring's target that overlap the ring.
+static int coversOf(Ring *ring, Cover *covers) {
+    CGFloat w = style.width;
+    CGRect area = CGRectInset(ring->bounds, -w, -w);
+    int target = -1;
+    for (int i = 0; i < seenCount; i++) {
+        if (seen[i].wid == ring->target) {
+            target = i;
+            break;
+        }
+    }
+    int count = 0;
+    for (int i = 0; i < target && count < MAX_COVERS; i++) {
+        CGRect rect = seen[i].bounds;
+        // A window being dragged covers its drag's frame (as its ring does).
+        Ring *other = ringFor(seen[i].wid);
+        if (other && other->previewing) rect = other->preview;
+        if (!CGRectIntersectsRect(rect, area)) continue;
+        CGFloat shows = showsThrough(&seen[i]);
+        if (shows >= 1) continue;
+        covers[count++] = (Cover){ CGRectOffset(rect, -area.origin.x, -area.origin.y), radiusOf(seen[i].wid), shows };
+    }
+    return count;
+}
+
+// A key for what the mask is worked out from, to skip working out the
+// same one again (most rings, most updates). Never 0.
+static uint64_t maskKey(Ring *ring, const Cover *covers, int count) {
+    uint64_t h = 1469598103934665603ULL;
+    const unsigned char *p = (const unsigned char *)&ring->bounds.size;
+    for (size_t i = 0; i < sizeof(CGSize); i++) h = (h ^ p[i]) * 1099511628211ULL;
+    p = (const unsigned char *)covers;
+    for (size_t i = 0; i < sizeof(Cover) * count; i++) h = (h ^ p[i]) * 1099511628211ULL;
+    return h ? h : 1;
+}
+
+static void addOutline(CGMutablePathRef path, const Cover *cover) {
+    CGFloat r = fmin(cover->radius, fmin(cover->rect.size.width, cover->rect.size.height) / 2);
+    CGPathAddRoundedRect(path, NULL, cover->rect, r, r);
+}
+
+static bool pathEmpty(CGPathRef path) {
+    return !path || CGRectIsEmpty(CGPathGetPathBoundingBox(path));
+}
+
+// A part of the ring's layer, and how much of the ring shows there.
+typedef struct {
+    CGPathRef path;
+    CGFloat shows;
+} Piece;
+
+#define MAX_PIECES 16
+
+// The parts of `size` left uncovered or under see-through windows only
+// (the caller releases them). Outlines are filled non-zero, so where
+// windows overlap they still cover once: even-odd would show the ring
+// again.
+static int pieces(CGSize size, const Cover *covers, int count, Piece *out) API_AVAILABLE(macos(13.0)) {
+    CGMutablePathRef opaque = CGPathCreateMutable();
+    bool anyOpaque = false;
+    for (int i = 0; i < count; i++) {
+        if (covers[i].shows > 0) continue;
+        addOutline(opaque, &covers[i]);
+        anyOpaque = true;
+    }
+    CGPathRef whole = CGPathCreateWithRect((CGRect){ CGPointZero, size }, NULL);
+    int n = 0;
+    out[n++] = (Piece){ anyOpaque ? CGPathCreateCopyBySubtractingPath(whole, opaque, false) : CGPathRetain(whole), 1 };
+    CGPathRelease(whole);
+    CGPathRelease(opaque);
+    // Each see-through window splits the parts it overlaps, so where
+    // several overlap their shares multiply.
+    for (int i = 0; i < count; i++) {
+        if (covers[i].shows <= 0) continue;
+        CGMutablePathRef outline = CGPathCreateMutable();
+        addOutline(outline, &covers[i]);
+        for (int j = 0, before = n; j < before && n < MAX_PIECES; j++) {
+            if (pathEmpty(out[j].path)) continue;
+            CGPathRef under = CGPathCreateCopyByIntersectingPath(out[j].path, outline, false);
+            if (pathEmpty(under)) {
+                CGPathRelease(under);
+                continue;
+            }
+            CGPathRef rest = CGPathCreateCopyBySubtractingPath(out[j].path, outline, false);
+            CGPathRelease(out[j].path);
+            out[j].path = rest;
+            out[n++] = (Piece){ under, out[j].shows * covers[i].shows };
+        }
+        CGPathRelease(outline);
+    }
+    return n;
+}
+
+// Gives the ring the mask for this update's snapshot (inside a transaction).
+static void maskRing(Ring *ring) {
+    Cover covers[MAX_COVERS];
+    int count = ring->shown && !masks.suspended ? coversOf(ring, covers) : 0;
+    uint64_t key = count ? maskKey(ring, covers, count) : 0;
+    if (key == ring->maskKey) return;
+    ring->maskKey = key;
+    if (!count) {
+        ring->layer.mask = nil;
+        return;
+    }
+    if (@available(macOS 13.0, *)) {
+        Piece parts[MAX_PIECES];
+        CGSize size = ring->layer.bounds.size;
+        int n = pieces(size, covers, count, parts);
+        if (!ring->mask) ring->mask = [[CALayer alloc] init];
+        ring->mask.frame = (CGRect){ CGPointZero, size };
+        NSArray *old = ring->mask.sublayers;
+        NSMutableArray *shapes = [NSMutableArray arrayWithCapacity:n];
+        for (int i = 0; i < n; i++) {
+            if (!pathEmpty(parts[i].path) && parts[i].shows > 0) {
+                CAShapeLayer *shape = shapes.count < old.count ? old[shapes.count] : [CAShapeLayer layer];
+                shape.frame = ring->mask.bounds;
+                shape.path = parts[i].path;
+                shape.fillColor = CGColorGetConstantColor(kCGColorBlack);
+                shape.opacity = (float)parts[i].shows;
+                [shapes addObject:shape];
+            }
+            CGPathRelease(parts[i].path);
+        }
+        // None at all: the ring is covered whole.
+        ring->mask.sublayers = shapes;
+        ring->layer.mask = ring->mask;
+    }
+}
+
+static bool pathOperations(void) {
+    if (@available(macOS 13.0, *)) return true;
+    return false;
+}
+
+static bool dragUnderWay(void) {
+    for (int i = 0; i < ringCount; i++) {
+        if (rings[i].target && rings[i].previewing) return true;
+    }
+    return false;
+}
+
+// Every ring's mask, in one transaction.
+static void maskAll(void) {
+    beginChanges();
+    for (int i = 0; i < ringCount; i++) {
+        if (rings[i].target) maskRing(&rings[i]);
+    }
+    commitChanges();
+}
+
+static void dropMasks(void) {
+    beginChanges();
+    for (int i = 0; i < ringCount; i++) {
+        rings[i].layer.mask = nil;
+        rings[i].maskKey = 0;
+    }
+    commitChanges();
+}
+
+// The windows asked about: the managed ones from Lua (main thread), and
+// with masks on, the rest of those on screen, from the snapshot (`extra`,
+// under watchLock). `watchAsk` asks again on the main thread when `extra`
+// changes; it exists only while masks are on.
+#define MAX_WATCHED 512
+static uint32_t managed[MAX_WATCHED];
+static int managedCount = 0;
+static os_unfair_lock watchLock = OS_UNFAIR_LOCK_INIT;
+static uint32_t extra[MAX_SEEN];
+static int extraCount = 0;
+static dispatch_source_t watchAsk = NULL;
+static uint32_t asked[MAX_SEEN]; // the queue's last `extra`, sorted
+static int askedCount = 0;
+
+static void requestWatch(void) {
+    uint32_t wids[MAX_WATCHED + MAX_SEEN];
+    int count = managedCount;
+    memcpy(wids, managed, sizeof(uint32_t) * count);
+    if (watchAsk) {
+        os_unfair_lock_lock(&watchLock);
+        for (int i = 0; i < extraCount; i++) {
+            bool listed = false;
+            for (int j = 0; j < managedCount && !listed; j++) listed = managed[j] == extra[i];
+            if (!listed) wids[count++] = extra[i];
+        }
+        os_unfair_lock_unlock(&watchLock);
+    }
+    SLSRequestNotificationsForWindows(mainCid, wids, count);
+}
+
+static void onWatchAsk(void *unused) {
+    (void)unused;
+    requestWatch();
+}
+
+// Main thread, once masks are off on the queue (which then leaves it be).
+// Cancelled on the main queue, its handler can't run after.
+static void stopWatchAsk(void) {
+    if (!watchAsk) return;
+    dispatch_source_cancel(watchAsk);
+    dispatch_release(watchAsk);
+    watchAsk = NULL;
+}
+
+static int compareWids(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+// After a snapshot: asks about windows that came on screen.
+static void watchSeen(void) {
+    uint32_t wids[MAX_SEEN];
+    for (int i = 0; i < seenCount; i++) wids[i] = seen[i].wid;
+    qsort(wids, seenCount, sizeof(uint32_t), compareWids);
+    if (seenCount == askedCount && memcmp(wids, asked, sizeof(uint32_t) * seenCount) == 0) return;
+    memcpy(asked, wids, sizeof(uint32_t) * seenCount);
+    askedCount = seenCount;
+    os_unfair_lock_lock(&watchLock);
+    memcpy(extra, wids, sizeof(uint32_t) * seenCount);
+    extraCount = seenCount;
+    os_unfair_lock_unlock(&watchLock);
+    if (watchAsk) dispatch_source_merge_data(watchAsk, 1);
+}
+
+// Around each update on the queue: the snapshot before its changes, and
+// every ring's mask for where things ended up after. Nothing with masks off.
+static void beginMasking(void) {
+    if (!masks.on) return;
+    masks.suspended = masks.showDrags && dragUnderWay();
+    takeSnapshot();
+}
+
+static void finishMasking(void) {
+    if (!masks.on) return;
+    if (!snapshotTaken) takeSnapshot();
+    masks.suspended = masks.showDrags && dragUnderWay();
+    maskAll();
+    watchSeen();
+    snapshotTaken = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,12 +921,14 @@ static void checkRelease(void *unused) {
     if (buttonHeld()) return;
     dispatch_suspend(releaseCheck);
     releaseCheckRunning = false;
+    beginMasking();
     for (int i = 0; i < ringCount; i++) {
         Ring *ring = &rings[i];
         if (!ring->target || !ring->resizing) continue;
         ring->resizing = false;
         place(ring, true);
     }
+    finishMasking();
 }
 
 // The target of `ring` changed size: true if the system is resizing it
@@ -618,6 +1022,7 @@ static void checkOverview(void *unused) {
     }
     if (showing == overview) return;
     overview = showing;
+    beginMasking();
     // Back from it, each ring goes where its window is now.
     if (!showing) {
         for (int i = 0; i < ringCount; i++) {
@@ -625,7 +1030,10 @@ static void checkOverview(void *unused) {
         }
     }
     restackAll();
+    finishMasking();
 }
+
+static void noteCovering(void);
 
 // A window was created or destroyed anywhere (main thread).
 static void onWindowCreatedOrDestroyed(uint32_t event, void *data, size_t length, int cid) {
@@ -634,6 +1042,8 @@ static void onWindowCreatedOrDestroyed(uint32_t event, void *data, size_t length
     (void)length;
     (void)cid;
     if (queue && !atomic_exchange(&overviewCheckQueued, true)) dispatch_async_f(queue, NULL, checkOverview);
+    // It may cover a ring, or uncover one (watchAsk exists only with masks on).
+    if (watchAsk) noteCovering();
 }
 
 // ---------------------------------------------------------------------------
@@ -728,6 +1138,9 @@ static void catchUp(void *unused) {
     noted.restack = noted.queued = false;
     os_unfair_lock_unlock(&notedLock);
 
+    // Whatever changed, any ring's mask may have: one snapshot for the
+    // burst. Moves of windows without rings count only for this.
+    beginMasking();
     for (int i = 0; i < otherCount; i++) handleEvent(other[i].event, other[i].wid);
     if (preview.changed) {
         Ring *ring = ringFor(preview.wid);
@@ -747,6 +1160,16 @@ static void catchUp(void *unused) {
     if (restack) {
         restackAll();
     }
+    finishMasking();
+}
+
+// A window came or went: an update for the masks alone.
+static void noteCovering(void) {
+    os_unfair_lock_lock(&notedLock);
+    bool enqueue = !noted.queued && queue;
+    noted.queued = true;
+    os_unfair_lock_unlock(&notedLock);
+    if (enqueue) dispatch_async_f(queue, NULL, catchUp);
 }
 
 // The RingPreview handed to drag.c (see preview.h).
@@ -826,7 +1249,8 @@ static void registerEvents(bool on) {
 // The focused window as last told by Lua, for active() (main thread).
 static uint32_t activeAsked = 0;
 
-// set({wid, ...}): ring exactly these windows.
+// set({wid, ...}, {[wid] = opacity} or nil): ring exactly these windows.
+// The second lists the windows with an `opacity` rule, for the masks.
 static int l_set(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     int n = (int)luaL_len(L, 1);
@@ -839,7 +1263,28 @@ static int l_set(lua_State *L) {
         lua_pop(L, 1);
         if (wid) wids[count++] = wid;
     }
+    bool rules = lua_istable(L, 2);
+    __typeof__(opacities[0]) *given = NULL;
+    int givenCount = 0;
+    if (rules) {
+        given = calloc(MAX_OPACITIES, sizeof(given[0]));
+        lua_pushnil(L);
+        while (lua_next(L, 2)) {
+            if (givenCount < MAX_OPACITIES && lua_isinteger(L, -2) && lua_isnumber(L, -1)) {
+                given[givenCount].wid = (uint32_t)lua_tointeger(L, -2);
+                given[givenCount].opacity = lua_tonumber(L, -1);
+                givenCount++;
+            }
+            lua_pop(L, 1);
+        }
+    }
     dispatch_async(queue, ^{
+        if (rules) {
+            memcpy(opacities, given, sizeof(given[0]) * givenCount);
+            opacityCount = givenCount;
+            free(given);
+        }
+        beginMasking();
         bool keep[MAX_RINGS] = { false };
         for (int i = 0; i < count; i++) {
             Ring *ring = ringFor(wids[i]);
@@ -849,6 +1294,7 @@ static int l_set(lua_State *L) {
         for (int i = 0; i < ringCount; i++) {
             if (rings[i].target && !keep[i]) freeRing(&rings[i]);
         }
+        finishMasking();
         free(wids);
     });
     return 0;
@@ -882,12 +1328,62 @@ static int l_previewer(lua_State *L) {
 }
 
 // watch({wid, ...}): the windows to hear about (see skylight.h). Restacks of
-// any of them may put it between a ring and its window.
+// any of them may put it between a ring and its window. With masks on, the
+// rest of the windows on screen are asked about too.
 static int l_watch(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
-    uint32_t wids[512];
-    int count = luaWindowIds(L, 1, wids, 512);
-    SLSRequestNotificationsForWindows(mainCid, wids, count);
+    managedCount = luaWindowIds(L, 1, managed, MAX_WATCHED);
+    requestWatch();
+    return 0;
+}
+
+// mask{ drags = "mask" | "show" } or mask(false):
+// turns the masks (experimental.borderMask) on or off. Returns whether
+// they're on: they need macOS 13's path operations.
+static int l_mask(lua_State *L) {
+    bool on = lua_toboolean(L, 1);
+    bool showDrags = false;
+    if (lua_istable(L, 1)) {
+        lua_getfield(L, 1, "drags");
+        showDrags = strcmp(luaL_optstring(L, -1, "mask"), "show") == 0;
+        lua_pop(L, 1);
+    }
+    on = on && pathOperations();
+    if (on && !watchAsk) {
+        watchAsk = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_OR, 0, 0, dispatch_get_main_queue());
+        dispatch_source_set_event_handler_f(watchAsk, onWatchAsk);
+        dispatch_resume(watchAsk);
+    }
+    dispatch_sync(queue, ^{
+        masks.on = on;
+        masks.showDrags = showDrags;
+        askedCount = 0;
+        if (on) finishMasking();
+        else dropMasks();
+    });
+    // Off: back to asking about the managed windows only. The queue no
+    // longer touches watchAsk.
+    if (!on) {
+        stopWatchAsk();
+        os_unfair_lock_lock(&watchLock);
+        extraCount = 0;
+        os_unfair_lock_unlock(&watchLock);
+        requestWatch();
+    }
+    lua_pushboolean(L, on);
+    return 1;
+}
+
+// remask(): works every ring's mask out afresh from a new snapshot, as
+// after a burst of changes, and waits for it (tests/performance.lua times
+// it).
+static int l_remask(lua_State *L) {
+    (void)L;
+    dispatch_sync(queue, ^{
+        if (!masks.on) return;
+        for (int i = 0; i < ringCount; i++) rings[i].maskKey = UINT64_MAX;
+        finishMasking();
+    });
     return 0;
 }
 
@@ -917,6 +1413,7 @@ static void releaseAll(void) {
     beginChanges();
     for (int i = 0; i < ringCount; i++) {
         [rings[i].layer removeAllAnimations];
+        rings[i].layer.mask = nil;
         [rings[i].layer removeFromSuperlayer];
         rings[i].context.layer = nil;
     }
@@ -927,6 +1424,7 @@ static void releaseAll(void) {
         if ([rings[i].context respondsToSelector:@selector(invalidate)]) {
             [rings[i].context performSelector:@selector(invalidate)];
         }
+        [rings[i].mask release];
         [rings[i].layer release];
         [rings[i].root release];
         [rings[i].context release];
@@ -990,6 +1488,7 @@ static int l_gc(lua_State *L) {
             overviewCheckRunning = false;
         }
         overview = false;
+        masks.on = false;
         if (releaseCheck) {
             if (!releaseCheckRunning) dispatch_resume(releaseCheck); // can't cancel a suspended source
             dispatch_source_cancel(releaseCheck);
@@ -1004,6 +1503,7 @@ static int l_gc(lua_State *L) {
             drain = NULL;
         }
     });
+    stopWatchAsk(); // after masks.on went false on the queue
     dispatch_release(queue);
     queue = NULL;
     SLSReleaseConnection(drawCid);
@@ -1034,6 +1534,9 @@ int luaopen_hyprspoon_native_border(lua_State *L) {
     active = activeAsked = 0;
     noted.movedCount = noted.otherCount = 0;
     noted.restack = noted.queued = noted.preview.changed = false;
+    memset(&masks, 0, sizeof(masks));
+    snapshotTaken = false;
+    seenCount = opacityCount = radiusCount = managedCount = extraCount = askedCount = 0;
     registerEvents(true);
 
     static const luaL_Reg funcs[] = {
@@ -1043,6 +1546,8 @@ int luaopen_hyprspoon_native_border(lua_State *L) {
         { "overview", l_overview },
         { "watch", l_watch },
         { "previewer", l_previewer },
+        { "mask", l_mask },
+        { "remask", l_remask },
         { "style", l_style },
         { "stop", l_stop },
         { NULL, NULL },
