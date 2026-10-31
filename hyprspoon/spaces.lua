@@ -1211,6 +1211,7 @@ end
 -- Background native tabs have no hs.window. Keep their workspace and
 -- restart identity without trying to park, focus or resize them.
 function M.nativeMember(id, shownID, app, title)
+    if of[id] and info[id] and info[id].app == app and info[id].title == title then return end
     if not info[id] then
         local proxy = { id = function() return id end, title = function() return title end }
         of[id] = Restore.match(proxy, app) or of[shownID]

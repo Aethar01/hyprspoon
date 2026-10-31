@@ -110,7 +110,8 @@ local function withRecentlyChangedApps(windows)
             local count = 0
             for _ in pairs(background) do count = count + 1 end
             local now = hs.timer.secondsSinceEpoch()
-            if states and count ~= expected and frames.tabWindows and now - (repairedAt[pid] or -math.huge) >= 1 then
+            if states and #shown > 0 and count ~= expected and frames.tabWindows
+               and now - (repairedAt[pid] or -math.huge) >= 1 then
                 repairedAt[pid] = now
                 -- Unknown off-screen windows need AXStandardWindow confirmation.
                 -- Repair only a count mismatch, not every layout pass.
