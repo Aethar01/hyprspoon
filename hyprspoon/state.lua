@@ -107,17 +107,29 @@ S.defaults = {
     -- anything noisy). Fewer watched windows means fewer events to process.
     ignoreApps = {},
 
-    -- Per-window rules, like Hyprland's windowrules. Each matches on `app`
-    -- (the app's name) and/or `title` (a Lua pattern), and sets:
+    -- Per-window rules, like Hyprland's windowrules. Each matches on any of
+    -- `app` (the app's name), `title` (a Lua pattern), and `role` and
+    -- `subrole` (the accessibility role, e.g. "AXWindow", and subrole, e.g.
+    -- "AXDialog"), and sets:
     --   float = true/false   float it, or tile it even if it would float
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
+    --   size = { w, h }      a float's size when it first appears, in points
+    --                        or, from 0 to 1, fractions of the display
+    --   position = { x, y }  likewise its top left, measured from the
+    --                        display's top left
+    --   center = true/false  centre a new float (they are by default, but
+    --                        not dialogs), or leave it where the app put it
+    --   noborder = true      no ring around it
+    --   opacity = 0..1       how see-through the window itself is, for
+    --                        border masking (not read yet)
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {
     --       { app = "1Password", float = true },
     --       { app = "Slack", workspace = 4, silent = true },
+    --       { app = "Activity Monitor", float = true, size = { 0.5, 0.6 } },
     --   }
     rules = {},
 

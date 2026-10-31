@@ -16,7 +16,8 @@ A Hyprland-inspired tiling window manager for macOS, as a
   inactive colours.
 - **Modifier + drag** anywhere on a window to move or resize it.
 - **Focus follows mouse** (optional), and cursor warping on keyboard focus.
-- **Window rules**: float a window or send it to a workspace by app or title.
+- **Window rules**: float, size, place or send a window to a workspace by app,
+  title or role.
 - **An overview** of every workspace, in place of Mission Control.
 - **Layouts survive** reloads and restarts.
 - **Scriptable** from the `hs` command line, like `hyprctl`.
@@ -225,14 +226,20 @@ or `false`.
 | `rules` | `{}` | Per-window rules, like Hyprland's windowrules (below) |
 | `ignoreApps` | `{}` | App names whose windows are never watched or tiled, e.g. `{"Raycast"}` |
 
-Each rule matches on `app` (the app's name) and/or `title` (a Lua
-pattern), and sets any of:
+Each rule matches on any of `app` (the app's name), `title` (a Lua
+pattern), `role` and `subrole` (the window's accessibility role and subrole,
+e.g. `"AXWindow"` and `"AXDialog"`), and sets any of:
 
 | Field | Description |
 |---|---|
 | `float` | `true` to float the window, `false` to tile it even if it would float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
+| `size` | A float's size when it first appears, `{ w, h }`: points, or fractions of the display from 0 to 1, e.g. `{ 0.5, 0.6 }` |
+| `position` | A float's top left when it first appears, `{ x, y }` from the display's top left, in points or fractions like `size` |
+| `center` | `true` to centre a new float (floats are by default, dialogs aren't), `false` to leave it where the app put it |
+| `noborder` | `true` for no ring around the window |
+| `opacity` | How see-through the window itself is, from 0 to 1, for border masking (not read yet) |
 
 Rules are read once per window, when it first appears; later matching rules
 win.
@@ -242,6 +249,8 @@ rules = {
     { app = "1Password", float = true },
     { app = "Slack", workspace = 4, silent = true },
     { app = "Finder", title = "^Copy", float = true },
+    { app = "Activity Monitor", float = true, size = { 0.5, 0.6 } },
+    { subrole = "AXDialog", noborder = true },
 }
 ```
 
