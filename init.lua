@@ -117,6 +117,7 @@ local M = {
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
     toggleOverview = Overview.toggle,
+    togglePin = Actions.togglePin,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,
     toggleWorkspaceTiling = Actions.toggleWorkspaceTiling,
@@ -136,7 +137,7 @@ local RESIZE_STEPS = { Left = { -10, 0 }, Right = { 10, 0 }, Up = { 0, -10 }, Do
 local function hotkeyActions()
     local actions = {}
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
-        "toggleWorkspaceTiling", "toggleFloat", "focusFloat", "toggleSplit", "balance",
+        "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
         "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace" }) do
         actions[name] = M[name]
     end

@@ -265,7 +265,7 @@ you can also build your own table from scratch.
 | Option+\` | Back to the previous workspace |
 | Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) |
 | Option+B | Toggle tiling (Shift: just this workspace) |
-| Option+T | Toggle floating |
+| Option+T | Toggle floating (`togglePin`, unbound, pins the window to every workspace of its display) |
 | Option+G | Cycle through floating windows |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) |
 | Option+Y | Flip the split |

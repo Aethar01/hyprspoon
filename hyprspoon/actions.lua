@@ -369,26 +369,55 @@ function M.move(direction)
     Util.warpToWindow(win)
 end
 
+-- Floats a tile, centred on its display, or tiles a float. A pinned
+-- window that becomes a tile is unpinned: only floats are pinned.
+local function setFloat(win, float)
+    local id = win:id()
+    S.autoFloat[id] = float
+    Float.rememberFloat(win)
+
+    if float then
+        local screen, f = win:screen(), win:frame()
+        local sf = screen:frame()
+        win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2, y = sf.y + (sf.h - f.h) / 2 })
+        win:raise()
+    else
+        Spaces.setPinned(win, false)
+    end
+
+    Focus.invalidateWindowCache()
+    Layout.tileNow()
+end
+
 -- Toggle floating for the focused window (overrides the automatic choice).
 -- Floating windows are centred and kept above the tiles.
 function M.toggleFloat()
     local win = Focus.currentWindow()
     if not win or not S.tilingEnabled then return end
-
-    local id = win:id()
     Float.shouldFloat(win) -- load any saved decision before overriding it
-    S.autoFloat[id] = not S.autoFloat[id]
-    Float.rememberFloat(win)
+    setFloat(win, not S.autoFloat[win:id()])
+end
 
-    if S.autoFloat[id] then
-        local screen, f = win:screen(), win:frame()
-        local sf = screen:frame()
-        win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2, y = sf.y + (sf.h - f.h) / 2 })
-        win:raise()
+-- Pin the focused window to every workspace of its display, or unpin it,
+-- like Hyprland's pin. A tile floats first.
+function M.togglePin()
+    local win = Focus.currentWindow()
+    if not win then return end
+    local id = win:id()
+    local pin = not Spaces.isPinned(id)
+    if pin then
+        Float.shouldFloat(win) -- load any saved decision before overriding it
+        if not S.autoFloat[id] then
+            -- With tiling off it's left where it is, to float once it's on.
+            if S.tilingEnabled then
+                setFloat(win, true)
+            else
+                S.autoFloat[id] = true
+                Float.rememberFloat(win)
+            end
+        end
     end
-
-    Focus.invalidateWindowCache()
-    Layout.tileNow()
+    Spaces.setPinned(win, pin)
 end
 
 -- Cycle focus through the floating windows. Works however they're stacked
