@@ -398,6 +398,15 @@ local function reconcileTree(key, windows)
     end
 
     local tree = Restore.rebuild(key, previous, valid)
+    -- Park restored members before this pass places any windows.
+    for _, leaf in ipairs(Tree.leaves(tree)) do
+        local handler = Tree.kinds[leaf.kind]
+        if leaf.kind == "group" and handler and handler.strays then
+            handler.strays(leaf, key, {})
+            -- A close can unpark its replacement during this very pass.
+            byID[leaf.windowID] = byID[leaf.windowID] or Util.windowFor(leaf.windowID)
+        end
+    end
     local present = Tree.collectIDs(tree)
     -- A window going in can bring its whole set back (see Tree.leaf).
     local function nowPresent(id)
@@ -576,6 +585,10 @@ local function applyTree(node, rect, byID, full)
             local p = Tree.pseudoRect(rect, node.pseudo)
             rect = hs.geometry.rect(p.x, p.y, p.w, p.h)
             node.pseudoRect = rect
+        end
+        if node.kind == "group" and (node.groupInset or 0) > 0 then
+            local height = math.min(node.groupInset, math.max(0, rect.h - 1))
+            rect = hs.geometry.rect(rect.x, rect.y + height, rect.w, rect.h - height)
         end
         local win = byID[node.windowID]
         if win then

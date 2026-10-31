@@ -345,7 +345,13 @@ end
 
 -- True for a window parked on a workspace that isn't showing, or beneath
 -- a scratchpad.
+local function groupHidden(id)
+    local leaf = Tree.setOf and Tree.setOf(id)
+    return leaf ~= nil and leaf.kind == "group" and leaf.windowID ~= id
+end
+
 local function isHidden(id)
+    if groupHidden(id) then return true end
     local n = id and of[id]
     return n ~= nil and (shown[n] == nil or behind[n] == true)
 end
@@ -516,7 +522,7 @@ local function sync(force)
         local id = win:id()
         local n = of[id]
         if n then
-            if shown[n] then
+            if shown[n] and not groupHidden(id) then
                 if parked[id] then unpark(win) end
             elseif force or not parked[id] then
                 park(win, n)
@@ -642,16 +648,16 @@ end
 local function focusWorkspace(n, warp, skip)
     local sent = S.spaceFocusWin
     S.spaceFocusWin = nil
-    local target = sent and sent:id() and of[sent:id()] == n and sent or nil
+    local target = sent and sent:id() and of[sent:id()] == n and not groupHidden(sent:id()) and sent or nil
     if not target then
         for _, fid in ipairs(Util.focusHistory) do
             local win = Util.winByID[fid]
-            if of[fid] == n and fid ~= skip and win and win:id() == fid then target = win break end
+            if of[fid] == n and not groupHidden(fid) and fid ~= skip and win and win:id() == fid then target = win break end
         end
     end
     if not target then
         for _, win in ipairs(Util.managedWindows()) do
-            if of[win:id()] == n and win:id() ~= skip then target = win break end
+            if of[win:id()] == n and not groupHidden(win:id()) and win:id() ~= skip then target = win break end
         end
     end
 
@@ -1077,7 +1083,8 @@ function M.moveWorkspaceToDisplay(delta)
         if of[id] == n then
             pins[id] = until_
             S.windowInfo[id], S.applied[id] = nil, nil
-            win:moveToScreen(connected[to], false, true, 0)
+            if groupHidden(id) then park(win, n)
+            else win:moveToScreen(connected[to], false, true, 0) end
         end
     end
     lastSwitch = hs.timer.secondsSinceEpoch()
@@ -1108,7 +1115,7 @@ function M.place(win, force)
         end
         return
     end
-    if shown[n] then
+    if shown[n] and not groupHidden(id) then
         if parked[id] then unpark(win) end
     elseif not parked[id] then
         park(win, n)
@@ -1133,6 +1140,8 @@ function M.focusedParked(win)
         if n then focusWorkspace(n, false, going) end
         return
     end
+    local leaf, key = Tree.setOf and Tree.setOf(win:id())
+    if leaf and leaf.kind == "group" then Layout.showMember(leaf, win:id(), key) end
     S.spaceFocusWin = win
     local n = of[win:id()]
     -- Beneath a scratchpad: that goes.
@@ -1319,7 +1328,7 @@ function M.overview()
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
         local ws = of[id] and byN[of[id]]
-        if ws then
+        if ws and not groupHidden(id) then
             local frame = Tree.rectFor(id) or parked[id]
             if not frame then
                 local f = win:frame()
@@ -1398,6 +1407,10 @@ function M.stop()
     if saveTimer then saveNow() end
 end
 
+M.park = function(win, n, force)
+    if n and (force or not parked[win:id()]) then park(win, n) save() end
+end
+M.unpark = unpark
 M.isHidden = isHidden
 M.claim = claim
 M.displayOf = displayOf

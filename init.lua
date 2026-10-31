@@ -43,6 +43,7 @@
 --   slide     workspaces sliding in and out as they switch
 --   overview  every workspace at a glance, in place of Mission Control
 --   hooks     callbacks and shell commands on changes, and query() for status bars
+--   group     window groups and the group-bar API
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
@@ -90,6 +91,7 @@ local Border = require("hyprspoon.border")
 local Slide = require("hyprspoon.slide")
 local Overview = require("hyprspoon.overview")
 local Hooks = require("hyprspoon.hooks")
+local Group = require("hyprspoon.group")
 
 -- The public API. Actions are plain functions (no `self`), so they can be
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
@@ -108,6 +110,8 @@ local M = {
     -- windows, show the next or previous one, or take the focused one out
     -- into a tile of its own. No arguments; nothing happens for a window
     -- that's alone in its tile.
+    toggleGroup = Actions.toggleGroup,
+    moveIntoGroup = Actions.moveIntoGroup,
     groupNext = Actions.groupNext,
     groupPrev = Actions.groupPrev,
     moveOutOfGroup = Actions.moveOutOfGroup,
@@ -166,12 +170,13 @@ local function hotkeyActions()
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
         "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
         "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo",
-        "groupNext", "groupPrev", "moveOutOfGroup" }) do
+        "toggleGroup", "groupNext", "groupPrev", "moveOutOfGroup" }) do
         actions[name] = M[name]
     end
     for suffix, dir in pairs(DIRECTIONS) do
         actions["focus" .. suffix] = function() M.focus(dir) end
         actions["swap" .. suffix] = function() M.swap(dir) end
+        actions["moveIntoGroup" .. suffix] = function() M.moveIntoGroup(dir) end
         actions["move" .. suffix] = function() M.move(dir) end
         actions["preselect" .. suffix] = function() M.preselect(dir) end
         local step = RESIZE_STEPS[suffix]
