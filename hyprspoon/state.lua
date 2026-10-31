@@ -111,7 +111,7 @@ S.defaults = {
     -- `app` (the app's name), `title` (a Lua pattern), and `role` and
     -- `subrole` (the accessibility role, e.g. "AXWindow", and subrole, e.g.
     -- "AXDialog"), and sets:
-    --   float = true/false   float it, or tile it even if it would float
+    --   float = true/false   float/tile a standard window; dialogs always float
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
@@ -126,6 +126,14 @@ S.defaults = {
     --   opacity = 0..1       how see-through the window itself is, for
     --                        border masking (experimental, PR #38;
     --                        not read on this branch)
+    -- Match fields must all match; only title is a pattern, the others are
+    -- exact strings. With no match fields, a rule matches all managed windows.
+    -- size/position also accept { w = ..., h = ... } / { x = ..., y = ... };
+    -- both coordinates must be numbers. A position wins over centring.
+    -- Placement fields do not enable floating. Without them, standard floats
+    -- centre and dialogs keep their app's position. noborder defaults false;
+    -- opacity has no effect. Saved manual float choices override float rules
+    -- and skip placement. No fields are set by default (rules = {}).
     -- Placement clamps the requested frame to the display's usable area,
     -- with a minimum size of one point. Reloads keep existing float frames.
     -- Rules are read once per window, when it first appears (titles that

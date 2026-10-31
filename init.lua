@@ -22,9 +22,9 @@
 
 -- Modules (all under hyprspoon/):
 --   state     configuration defaults and state shared between the modules
---   util      logging, window classification, focus records, pointer warping
+--   util      logging, window classification and rules, focus records, pointer warping
 --   tree      BSP tree structure, persistence and per-workspace keys
---   float     automatic and manual floating windows, kept above the tiles
+--   float     automatic and manual floats, initial rule placement, kept above tiles
 --   focus     internal focus tracking and the window snapshot for hit testing
 --   discover  finding the manageable windows on each screen
 --   layout    laying the trees out onto windows, and scheduling retiles
