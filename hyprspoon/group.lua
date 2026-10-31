@@ -23,6 +23,28 @@ local function units(leaf)
     return out
 end
 
+-- Key by the unit list so membership changes cannot reuse another unit's choice.
+local lastShown = setmetatable({}, { __mode = "k" })
+local function remember(leaf, id)
+    local tabs = Tree.tabsOf(leaf, id)
+    if tabs then lastShown[tabs] = id end
+end
+
+local function preferred(leaf, id)
+    local tabs = Tree.tabsOf(leaf, id)
+    if not tabs then return id end
+    local onScreen = {}
+    for _, win in ipairs(hs.window.list(true) or {}) do onScreen[win.kCGWindowNumber] = true end
+    for _, tab in ipairs(tabs) do
+        if onScreen[tab] then lastShown[tabs] = tab return tab end
+    end
+    local saved = lastShown[tabs]
+    for _, tab in ipairs(tabs) do
+        if tab == saved and Util.windowFor(tab) then return tab end
+    end
+    return id
+end
+
 local function sameUnit(leaf, a, b)
     for _, id in ipairs(Tree.tabsOf(leaf, a) or { a }) do
         if id == b then return true end
@@ -45,6 +67,8 @@ local function hide(leaf, key, strays)
 end
 
 function M.show(leaf, key, from, to)
+    remember(leaf, from)
+    remember(leaf, to)
     if sameUnit(leaf, from, to) then return end
     local win = Util.windowFor(to)
     if win then Spaces.unpark(win) end
@@ -61,6 +85,7 @@ function M.cycle(win, leaf, key, delta)
         return not same[m] and Util.windowFor(m) ~= nil
     end)
     if not id then return end
+    id = preferred(leaf, id)
     Layout.showMember(leaf, id, key)
     Layout.tileNow(false)
     Focus.focus(Util.windowFor(id))
@@ -111,6 +136,7 @@ function M.toggle(win)
             leaf.tabs = { tabs }
         end
         leaf.members, leaf.kind = leaf.members or { leaf.windowID }, "group"
+        remember(leaf, leaf.windowID)
         hide(leaf)
     else
         local lists = units(leaf)
@@ -166,7 +192,11 @@ end
 function M.info(id)
     local leaf, key = Tree.setOf(id)
     if not leaf or leaf.kind ~= "group" then return nil end
-    return { members = units(leaf), shown = leaf.windowID, rect = key and leaf.rect or nil, key = key }
+    remember(leaf, leaf.windowID)
+    local members, selected = units(leaf), {}
+    for i, list in ipairs(members) do selected[i] = preferred(leaf, list[1]) end
+    return { members = members, selected = selected, shown = leaf.windowID,
+        rect = key and leaf.rect or nil, key = key }
 end
 
 function M.selectMember(id)
