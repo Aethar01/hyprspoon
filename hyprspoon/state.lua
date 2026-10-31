@@ -3,10 +3,6 @@
 local S = {}
 package.loaded["hyprspoon.state"] = S
 
--- Groups have no options yet. toggleGroup, groupNext/groupPrev,
--- moveIntoGroup(direction) and moveOutOfGroup are unbound actions. Hidden
--- group members use workspace parking; native tabs count as one member.
--- The group bar's configuration belongs to #14.
 S.defaults = {
     -- Focus the window under the pointer as it moves.
     focusFollowsMouse = false,
@@ -107,6 +103,17 @@ S.defaults = {
         radius = 12,
         fade = 0.15,
     },
+
+    -- Title strips for tiled groups; group.bar = false disables them.
+    -- Backgrounds reuse border.active/inactive (default colours when borders
+    -- are off). Native tab sets outside groups never get a strip.
+    group = { bar = {
+        height = 24, -- points reserved above the shown window; 0 hides it
+        font = false, -- false uses the system menu-bar font, or a font name
+        size = 12, -- title font size in points
+        padding = 8, -- horizontal padding inside each equal-width segment
+        text = { white = 1 }, -- title colour: "#rrggbb" or hs.drawing.color table
+    } },
 
     -- App names whose windows are never managed or tiled (palettes, overlays,
     -- anything noisy). Border masking still watches them as occluders.

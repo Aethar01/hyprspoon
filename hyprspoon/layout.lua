@@ -15,6 +15,7 @@ local Border = require("hyprspoon.border")
 local Drop = require("hyprspoon.drop")
 local Restore = require("hyprspoon.restore")
 local Hooks = require("hyprspoon.hooks")
+local Groupbar = require("hyprspoon.groupbar")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -588,10 +589,13 @@ local function applyTree(node, rect, byID, full)
             rect = hs.geometry.rect(p.x, p.y, p.w, p.h)
             node.pseudoRect = rect
         end
+        Groupbar.prepare(node, rect)
         if node.kind == "group" and (node.groupInset or 0) > 0 then
             local height = math.min(node.groupInset, math.max(0, rect.h - 1))
             rect = hs.geometry.rect(rect.x, rect.y + height, rect.w, rect.h - height)
         end
+        -- Resize adoption compares with the content frame, including a bar.
+        node.windowRect = rect
         local win = byID[node.windowID]
         if win then
             local id = node.windowID
@@ -745,6 +749,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
             + (S.instantLayout and 0 or S.cfg.tiling.animationDuration)
         Focus.invalidateWindowCache()
     end
+    Groupbar.update()
     if changed then Hooks.fire("layout") end
 
     -- A closed window hands focus back to its tree sibling without moving
@@ -894,6 +899,7 @@ local function restoreFloatingFrames()
 
     S.floatingFrames = {}
     S.applied = {}
+    Groupbar.update()
 end
 
 -- The tree path and leaf for a tiled window, or nil if it isn't tiled.
@@ -949,6 +955,7 @@ local function toggleWorkspaceTiling(key)
         return true
     end
     S.untiled[key] = true
+    Groupbar.update()
     S.maximized[key] = nil
     S.keyIndex = {}
     signatures[key] = nil

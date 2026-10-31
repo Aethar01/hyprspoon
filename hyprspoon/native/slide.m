@@ -104,6 +104,25 @@ static mach_port_t drainPort = MACH_PORT_NULL;
 static dispatch_source_t settled = NULL;
 static unsigned settling = 0;
 
+// Deliver visibility on the main thread, coalescing spring completion with
+// any replacement slide. Lua never runs on the animation queue.
+static LuaCallback onChange = LUA_CALLBACK_NONE;
+static dispatch_source_t visibility = NULL;
+static atomic_bool overlayShown = false;
+
+static void notifyVisibility(void *unused) {
+    (void)unused;
+    if (luaCallbackPush(&onChange)) {
+        lua_pushboolean(onChange.L, atomic_load(&overlayShown));
+        luaCallbackCall(&onChange, 1);
+    }
+}
+
+static int l_onChange(lua_State *L) {
+    luaCallbackSet(&onChange, L, 1);
+    return 0;
+}
+
 static void drainEvents(void *unused) {
     (void)unused;
     struct {
@@ -391,6 +410,8 @@ static void orderWindow(bool in) {
     SLSTransactionCommit(t, 0);
     CFRelease(t);
     shown = in;
+    atomic_store(&overlayShown, in);
+    if (visibility) dispatch_source_merge_data(visibility, 1);
 }
 
 // Takes the slide's layers down, in a transaction of their own, flushed,
@@ -716,6 +737,7 @@ static void releaseAll(void) {
 // library: the queue is drained, and a pending finish cancelled.
 static int l_gc(lua_State *L) {
     (void)L;
+    luaCallbackClear(&onChange);
     dispatch_sync(queue, ^{
         dispatch_source_cancel(settled);
         dispatch_release(settled);
@@ -727,6 +749,9 @@ static int l_gc(lua_State *L) {
             drain = NULL;
         }
     });
+    dispatch_source_cancel(visibility);
+    dispatch_release(visibility);
+    visibility = NULL;
     dispatch_release(queue);
     queue = NULL;
     SLSReleaseConnection(cid);
@@ -750,6 +775,10 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         dispatch_resume(drain);
         dispatch_async_f(queue, NULL, drainEvents);
     }
+    visibility = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler_f(visibility, notifyVisibility);
+    dispatch_resume(visibility);
+    atomic_store(&overlayShown, false);
     settled = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
     dispatch_source_set_timer(settled, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
     dispatch_source_set_event_handler_f(settled, finish);
@@ -762,6 +791,7 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
     placedScale = 0;
 
     static const luaL_Reg funcs[] = {
+        { "onChange", l_onChange },
         { "capture", l_capture },
         { "forget", l_forget },
         { "wallpaper", l_wallpaper },
