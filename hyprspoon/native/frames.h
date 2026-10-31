@@ -5,6 +5,7 @@
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <stdbool.h>
+#include <dispatch/dispatch.h>
 
 #include "lauxlib.h"
 #include "lua.h"
@@ -35,10 +36,12 @@ void focusRegister(lua_State *L);
 
 // Native-tab queries and a retained AXWindow omitted from AXWindows.
 void tabsRegister(lua_State *L);
-AXUIElementRef tabsFind(pid_t pid, uint32_t wid);
 void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title);
 bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title);
 
 // Schedule bounded discovery work on the same per-app worker as frames.
-bool framesQueue(pid_t pid, void *context, void (*work)(void *));
+dispatch_queue_t framesWorker(pid_t pid);
+void tabsCancel(void);
 void tabsStop(void);
+
+void tabsRemember(pid_t pid, uint32_t wid, AXUIElementRef element);

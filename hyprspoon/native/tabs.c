@@ -4,6 +4,8 @@
 #include "skylight.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdatomic.h>
+#include <os/lock.h>
 #include "luacall.h"
 
 extern AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *);
@@ -40,24 +42,6 @@ static AXUIElementRef remoteWindow(pid_t pid, uint64_t index) {
     return el;
 }
 
-AXUIElementRef tabsFind(pid_t pid, uint32_t wid) {
-    double end = CFAbsoluteTimeGetCurrent() + 0.25;
-    for (uint64_t i = 0; i <= 0x7fff && CFAbsoluteTimeGetCurrent() < end; i++) {
-        AXUIElementRef el = remoteWindow(pid, i);
-        if (!el) continue;
-        AXUIElementSetMessagingTimeout(el, 0.05);
-        CGWindowID id = 0;
-        if (_AXUIElementGetWindow(el, &id) == kAXErrorSuccess && id == wid
-            && equalsAttribute(el, kAXRoleAttribute, kAXWindowRole)) {
-            // Frame operations use the ordinary worker timeout, not the scan timeout.
-            AXUIElementSetMessagingTimeout(el, 1.0);
-            return el;
-        }
-        CFRelease(el);
-    }
-    return NULL;
-}
-
 static void pushString(lua_State *L, CFTypeRef value) {
     char text[4096];
     if (value && CFGetTypeID(value) == CFStringGetTypeID()
@@ -74,8 +58,13 @@ typedef struct TabQuery {
     CFMutableDictionaryRef result;
     CFRunLoopSourceRef source;
     LuaCallback callback;
+    dispatch_queue_t queue;
+    uint64_t cursor;
+    uint32_t raise, shown;
+    CFStringRef title;
 } TabQuery;
 static TabQuery *queries;
+static atomic_bool cancelling;
 
 static void pushDictionary(lua_State *L, CFDictionaryRef dict) {
     lua_newtable(L);
@@ -106,12 +95,40 @@ static void put(CFMutableDictionaryRef dict, int64_t id, CFTypeRef value) {
     CFRelease(key);
 }
 
+// All cache users run on the owning app's serial worker. The dictionary
+// itself is shared by app queues, so retain elements while holding its lock.
+static CFMutableDictionaryRef cachedWindows;
+static os_unfair_lock cacheLock = OS_UNFAIR_LOCK_INIT;
+
+void tabsRemember(pid_t pid, uint32_t wid, AXUIElementRef element) {
+    CFStringRef key = CFStringCreateWithFormat(NULL, NULL, CFSTR("%d:%u"), pid, wid);
+    os_unfair_lock_lock(&cacheLock);
+    if (!cachedWindows) cachedWindows = dictionary();
+    if (CFDictionaryGetCount(cachedWindows) >= 512) CFDictionaryRemoveAllValues(cachedWindows);
+    if (element) CFDictionarySetValue(cachedWindows, key, element);
+    else CFDictionaryRemoveValue(cachedWindows, key);
+    os_unfair_lock_unlock(&cacheLock);
+    CFRelease(key);
+}
+
+static AXUIElementRef cachedWindow(pid_t pid, uint32_t wid) {
+    CFStringRef key = CFStringCreateWithFormat(NULL, NULL, CFSTR("%d:%u"), pid, wid);
+    os_unfair_lock_lock(&cacheLock);
+    AXUIElementRef win = cachedWindows ? (AXUIElementRef)CFDictionaryGetValue(cachedWindows, key) : NULL;
+    if (win) CFRetain(win);
+    os_unfair_lock_unlock(&cacheLock);
+    CFRelease(key);
+    return win;
+}
+
 static void freeQuery(TabQuery *q) {
     CFRunLoopSourceInvalidate(q->source);
     CFRelease(q->source);
     luaCallbackClear(&q->callback);
     if (q->wanted) CFRelease(q->wanted);
     if (q->result) CFRelease(q->result);
+    if (q->title) CFRelease(q->title);
+    if (q->queue) dispatch_release(q->queue);
     free(q);
 }
 
@@ -128,7 +145,13 @@ static void queryDone(void *context) {
     freeQuery(q);
 }
 
+void tabsCancel(void) {
+    atomic_store(&cancelling, true);
+}
+
 void tabsStop(void) {
+    if (cachedWindows) CFRelease(cachedWindows);
+    cachedWindows = NULL;
     while (queries) {
         TabQuery *q = queries;
         queries = q->next;
@@ -142,11 +165,13 @@ static void finishQuery(TabQuery *q) {
 }
 
 static TabQuery *newQuery(lua_State *L, pid_t pid, int callback) {
-    luaL_checktype(L, callback, LUA_TFUNCTION);
+    if (callback) luaL_checktype(L, callback, LUA_TFUNCTION);
     TabQuery *q = calloc(1, sizeof(*q));
     q->pid = pid;
     q->callback = (LuaCallback)LUA_CALLBACK_NONE;
-    luaCallbackSet(&q->callback, L, callback);
+    if (callback) luaCallbackSet(&q->callback, L, callback);
+    q->queue = framesWorker(pid);
+    if (q->queue) dispatch_retain(q->queue);
     CFRunLoopSourceContext context = {0};
     context.info = q;
     context.perform = queryDone;
@@ -159,11 +184,25 @@ static TabQuery *newQuery(lua_State *L, pid_t pid, int callback) {
 
 static void scanWindows(void *context) {
     TabQuery *q = context;
-    q->result = dictionary();
-    double end = CFAbsoluteTimeGetCurrent() + 0.25;
-    CFIndex remaining = CFDictionaryGetCount(q->wanted);
-    for (uint64_t i = 0; i <= 0x7fff && remaining && CFAbsoluteTimeGetCurrent() < end; i++) {
-        AXUIElementRef el = remoteWindow(q->pid, i);
+    if (!q->result) {
+        q->result = dictionary();
+        AXUIElementRef cached = q->raise ? cachedWindow(q->pid, q->raise) : NULL;
+        if (cached) {
+            AXUIElementSetMessagingTimeout(cached, 0.05);
+            bool ok = AXUIElementPerformAction(cached, kAXRaiseAction) == kAXErrorSuccess;
+            AXUIElementSetMessagingTimeout(cached, 1.0);
+            CFRelease(cached);
+            if (ok) { finishQuery(q); return; }
+            tabsRemember(q->pid, q->raise, NULL);
+        }
+    }
+    // Yield between small chunks so drag-end waits and reload cannot sit
+    // behind a full token sweep. The complete range is still searched.
+    double end = CFAbsoluteTimeGetCurrent() + 0.01;
+    CFIndex remaining = CFDictionaryGetCount(q->wanted) - CFDictionaryGetCount(q->result);
+    while (q->cursor <= 0x7fff && remaining && !atomic_load(&cancelling)
+           && CFAbsoluteTimeGetCurrent() < end) {
+        AXUIElementRef el = remoteWindow(q->pid, q->cursor++);
         if (!el) continue;
         AXUIElementSetMessagingTimeout(el, 0.01);
         CGWindowID wid = 0;
@@ -177,12 +216,25 @@ static void scanWindows(void *context) {
                 CFTypeRef title = attribute(el, kAXTitleAttribute);
                 CFDictionarySetValue(q->result, key, title ? title : CFSTR(""));
                 if (title) CFRelease(title);
+                AXUIElementSetMessagingTimeout(el, 1.0);
+                tabsRemember(q->pid, wid, el);
                 remaining--;
+                if (q->raise == wid) {
+                    AXUIElementSetMessagingTimeout(el, 0.05);
+                    if (AXUIElementPerformAction(el, kAXRaiseAction) != kAXErrorSuccess)
+                        tabsSelect(q->pid, q->shown, q->title);
+                    AXUIElementSetMessagingTimeout(el, 1.0);
+                }
             }
             CFRelease(key);
         }
         CFRelease(el);
     }
+    if (remaining && q->cursor <= 0x7fff && !atomic_load(&cancelling)) {
+        dispatch_async_f(q->queue, q, scanWindows);
+        return;
+    }
+    if (remaining && q->raise && !atomic_load(&cancelling)) tabsSelect(q->pid, q->shown, q->title);
     finishQuery(q);
 }
 
@@ -196,7 +248,8 @@ static int l_tabWindows(lua_State *L) {
         put(q->wanted, luaL_checkinteger(L, -2), kCFBooleanTrue);
         lua_pop(L, 1);
     }
-    if (!framesQueue(pid, q, scanWindows)) finishQuery(q);
+    if (q->queue) dispatch_async_f(q->queue, q, scanWindows);
+    else finishQuery(q);
     return 0;
 }
 
@@ -254,7 +307,8 @@ static void readSnapshot(void *context) {
 
 static int l_tabSnapshot(lua_State *L) {
     TabQuery *q = newQuery(L, 0, 1);
-    if (!framesQueue(0, q, readSnapshot)) finishQuery(q);
+    if (q->queue) dispatch_async_f(q->queue, q, readSnapshot);
+    else finishQuery(q);
     return 0;
 }
 
@@ -343,8 +397,16 @@ static int l_tabShow(lua_State *L) {
     uint32_t wid = (uint32_t)luaL_checkinteger(L, 2);
     uint32_t shown = (uint32_t)luaL_checkinteger(L, 3);
     CFStringRef title = CFStringCreateWithCString(NULL, luaL_optstring(L, 4, ""), kCFStringEncodingUTF8);
-    framesShowTab(pid, wid, shown, title);
-    if (title) CFRelease(title);
+    // Only tabShow (a known background member) can request remote lookup.
+    // Ordinary closed-window/other-Space frame misses never scan tokens.
+    TabQuery *q = newQuery(L, pid, 0);
+    q->wanted = dictionary();
+    put(q->wanted, wid, kCFBooleanTrue);
+    q->raise = wid;
+    q->shown = shown;
+    q->title = title;
+    if (q->queue) dispatch_async_f(q->queue, q, scanWindows);
+    else finishQuery(q);
     return 0;
 }
 
@@ -380,6 +442,7 @@ static int l_tabButtons(lua_State *L) {
 }
 
 void tabsRegister(lua_State *L) {
+    atomic_store(&cancelling, false);
     slOpen();
     mainConnection = dlsym(RTLD_DEFAULT, "SLSMainConnectionID");
     windowSpaces = dlsym(RTLD_DEFAULT, "SLSCopySpacesForWindows");
