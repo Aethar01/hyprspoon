@@ -81,7 +81,7 @@ local win = { id = function() return 1 end, screen = function() return nil end,
 -- savedFloats is a file-local in hyprspoon/float.lua; provide it with a setter.
 local shouldFloat, setSavedFloats = assert(load("local savedFloats = {}\n"
     .. extract("float", "local function appName(win)", "local function rememberFloat(win)")
-    .. extract("float", "local function shouldFloat(win)", "local function raiseFloatingNow()")
+    .. extract("float", "local function placeFloat(win", "local function raiseFloatingNow()")
     .. "return shouldFloat, function(t) savedFloats = t end", "float", "t", env))()
 local function classify(value)
     fullScreen, axReads = value, 0
@@ -110,7 +110,94 @@ rules = { float = true }
 assert(classify(true) == true and axReads == 0, "a float rule overrides full-screen support")
 rules = { float = false }
 assert(classify(false) == false and S.autoFloat[1] == false and axReads == 0, "a tile rule keeps it tiled")
+
+-- New floats are sized and placed by their rule, in points or fractions of
+-- the display; without a position they're centred, dialogs only on request.
+local placed, sized
+local sf = { x = 100, y = 50, w = 1000, h = 800 }
+win.screen = function() return { frame = function() return sf end } end
+win.frame = function() return { x = 0, y = 0, w = sized and sized.w or 200, h = sized and sized.h or 100 } end
+win.setTopLeft = function(_, p) placed = p end
+win.setSize = function(_, s) sized = s end
+local function place(rule, canFullScreen)
+    rules, placed, sized = rule, nil, nil
+    return classify(canFullScreen or false)
+end
+place({})
+assert(placed.x == 500 and placed.y == 400 and sized == nil, "floats are centred")
+place({ size = { 0.5, 0.25 } })
+assert(sized.w == 500 and sized.h == 200 and placed.x == 350 and placed.y == 350,
+    "fractions size against the display, then centre")
+place({ size = { w = 640, h = 480 }, position = { 0, 0.5 } })
+assert(sized.w == 640 and sized.h == 480 and placed.x == 100 and placed.y == 450,
+    "points size, and position is from the display's top left")
+place({ position = { 20, 30 }, center = true })
+assert(placed.x == 120 and placed.y == 80, "a position wins over centring")
+place({ center = false })
+assert(placed == nil and sized == nil, "center = false leaves it where the app put it")
+place({ size = { 0.5, 0.5 } }, true)
+assert(S.autoFloat[1] == false and sized == nil, "tiles aren't sized")
+Util.windowKind = function() return "subwindow" end
+place({})
+assert(placed == nil, "dialogs aren't centred")
+place({ center = true })
+assert(placed.x == 500 and placed.y == 400, "unless a rule says so")
+Util.windowKind = function() return "standard" end
+win.screen, win.frame, win.setTopLeft, win.setSize = function() return nil end, nil, nil, nil
 rules = {}
+
+-- Rules match on app, title, role and subrole, and merge with later ones
+-- winning; the matching fields themselves aren't copied.
+local ruleEnv = setmetatable({ S = { cfg = { rules = {} } } }, { __index = _G })
+local rulesFor = assert(load(extract("util", "local windowRules = {}",
+    "-- The filter's windows minus") .. "return rulesFor", "rules", "t", ruleEnv))()
+local nextID, roleReads = 100, 0
+local function ruleWin(app, winTitle, role, subrole)
+    nextID = nextID + 1
+    local id = nextID
+    return { id = function() return id end, title = function() return winTitle end,
+        role = function() roleReads = roleReads + 1 return role end,
+        subrole = function() return subrole end,
+        application = function() return { name = function() return app end } end }
+end
+ruleEnv.S.cfg.rules = {
+    { app = "Finder", float = true, opacity = 0.9 },
+    { app = "Finder", title = "^Copy", float = false, size = { 0.5, 0.6 } },
+    { subrole = "AXDialog", noborder = true, center = true },
+    { role = "AXSheet", workspace = 3 },
+    { app = "Finder", role = "AXWindow", subrole = "AXDialog", position = { 10, 20 } },
+}
+local r = rulesFor(ruleWin("Finder", "Copying", "AXWindow", "AXStandardWindow"))
+assert(r.float == false and r.size[1] == 0.5 and r.opacity == 0.9, "later matches win")
+assert(r.noborder == nil and r.workspace == nil and r.position == nil, "role and subrole must match")
+assert(r.app == nil and r.title == nil and r.role == nil and r.subrole == nil,
+    "matching fields aren't effects")
+r = rulesFor(ruleWin("Finder", "Info", "AXWindow", "AXDialog"))
+assert(r.float == true and r.size == nil and r.noborder and r.center and r.position[2] == 20,
+    "role, subrole and app together")
+r = rulesFor(ruleWin("Safari", "x", "AXSheet", "AXDialog"))
+assert(r.workspace == 3 and r.noborder and r.float == nil, "role and subrole alone")
+roleReads = 0
+ruleEnv.S.cfg.rules = { { app = "Finder", role = "AXWindow", float = true } }
+local safari = ruleWin("Safari", "x", "AXWindow")
+assert(next(rulesFor(safari)) == nil and roleReads == 0, "role isn't read once the app rules it out")
+assert(rulesFor(safari) == rulesFor(safari), "worked out once per window")
+
+-- Windows with a `noborder` rule get no ring.
+local ringRules = { {}, { noborder = true }, { noborder = false } }
+local ringWins = {}
+for id = 1, 3 do ringWins[id] = { id = function() return id end } end
+local ringEnv = setmetatable({
+    S = { fullscreen = {} },
+    Util = { managedWindows = function() return ringWins end,
+        rulesFor = function(w) return ringRules[w:id()] end },
+    Spaces = { isHidden = function() return false end },
+    Tree = { behindMaximized = function() return false end, filling = function() return false end },
+}, { __index = _G })
+local onShow = assert(load(extract("border", "local suspended = false",
+    "-- Window set changes come in bursts.") .. "return onShow", "border", "t", ringEnv))()
+local shown = onShow()
+assert(#shown == 2 and shown[1] == 1 and shown[2] == 3, "noborder windows get no ring")
 
 -- Dialog/panel roles are managed only when they have a close button, are
 -- modal, or have a default or cancel button.
@@ -346,4 +433,4 @@ gesture(3, { { 0.5, 0.5 }, { 0.45, 0.5 } })
 assert(#switches == 2, "short movements don't switch")
 assert(onGesture({ getTouches = function() return nil end }) == false, "non-gesture events pass through")
 
-print("Window classification, layout, snapshots, discovery, PiP, BSP navigation, and swipe regressions passed")
+print("Window classification, rules, layout, snapshots, discovery, PiP, BSP navigation, borders, and swipe regressions passed")
