@@ -56,7 +56,7 @@ local rules = {}
 local Util = { isPictureInPicture = isPiP, windowKind = function() return "standard" end,
     rulesFor = function() return rules end,
     dlog = function() end, setFrame = function(win, rect, duration) win:setFrame(rect, duration) end }
-local Tree = {}
+local Tree = { bootTime = 1000 }
 local Focus = { invalidateWindowCache = function() end }
 local Discover = { layoutChecks = {} }
 local hiddenIDs = {}
@@ -78,11 +78,18 @@ local title = "test"
 local win = { id = function() return 1 end, screen = function() return nil end,
     title = function() return title end,
     application = function() return { name = function() return "test" end } end }
--- savedFloats is a file-local in hyprspoon/float.lua; provide it with a setter.
-local shouldFloat, setSavedFloats = assert(load("local savedFloats = {}\n"
-    .. extract("float", "local function appName(win)", "local function rememberFloat(win)")
-    .. extract("float", "local function placeFloat(win", "local function raiseFloatingNow()")
-    .. "return shouldFloat, function(t) savedFloats = t end", "float", "t", env))()
+local floatSettings = {}
+env.hs.settings = {
+    get = function(key) return floatSettings[key] end,
+    set = function(key, value) floatSettings[key] = value end,
+}
+-- Reload the production persistence code, with a setter for isolated cases.
+local function loadFloat()
+    return assert(load(extract("float", "-- Manual overrides persist", "-- Floating windows stay above")
+        .. "return shouldFloat, function(t) savedFloats, placedFloats = t, {} end, forgetFloat",
+        "float", "t", env))()
+end
+local shouldFloat, setSavedFloats = loadFloat()
 local function classify(value)
     fullScreen, axReads = value, 0
     S.autoFloat = {}
@@ -143,6 +150,33 @@ assert(placed == nil, "dialogs aren't centred")
 place({ center = true })
 assert(placed.x == 500 and placed.y == 400, "unless a rule says so")
 Util.windowKind = function() return "standard" end
+
+-- Reloading reclassifies automatic floats without sizing or moving them.
+for _, rule in ipairs({ {}, { size = { 400, 300 }, position = { 20, 30 } }, { center = true } }) do
+    place(rule)
+    placed, sized, S.autoFloat = nil, nil, {}
+    local reloaded, _, forget = loadFloat()
+    assert(reloaded(win) == true and placed == nil and sized == nil,
+        "automatic floats keep their user-adjusted frames across reloads")
+    S.autoFloat = {}
+    rules = { float = false }
+    reloaded = loadFloat()
+    assert(reloaded(win) == false, "placement history isn't a manual float override")
+    forget(1)
+    rules, S.autoFloat = rule, {}
+    reloaded = loadFloat()
+    assert(reloaded(win) == true and placed ~= nil, "closed window IDs can be placed again")
+end
+place({ center = true })
+Util.windowKind = function() return "subwindow" end
+placed, sized, S.autoFloat = nil, nil, {}
+local reloaded = loadFloat()
+assert(reloaded(win) == true and placed == nil and sized == nil, "dialogs also keep their frames on reload")
+Util.windowKind = function() return "standard" end
+Tree.bootTime, S.autoFloat = 2000, {}
+reloaded = loadFloat()
+assert(reloaded(win) == true and placed ~= nil, "placement history is discarded after a reboot")
+Tree.bootTime = 1000
 win.screen, win.frame, win.setTopLeft, win.setSize = function() return nil end, nil, nil, nil
 rules = {}
 

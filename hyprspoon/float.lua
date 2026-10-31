@@ -14,21 +14,22 @@ local Spaces = require("hyprspoon.spaces")
 -- attribute is final as soon as the window exists, so one read decides.
 S.autoFloat = {}
 
--- Manual overrides persist across reloads. Window IDs can be reused after a
--- reboot, so entries also record the app and are discarded if the machine
--- has restarted since.
+-- Manual overrides persist across reloads, as does placement history. Window
+-- IDs can be reused after a reboot, so entries also record the app and are
+-- discarded if the machine has restarted since.
 local FLOATS_KEY = "hyprspoon.floats"
-local savedFloats = {}
+local savedFloats, placedFloats = {}, {}
 do
     local saved = hs.settings.get(FLOATS_KEY)
     if type(saved) == "table" and type(saved.boot) == "number"
        and math.abs(saved.boot - Tree.bootTime) < 120 and type(saved.entries) == "table" then
         savedFloats = saved.entries
+        if type(saved.placed) == "table" then placedFloats = saved.placed end
     end
 end
 
 local function saveFloats()
-    hs.settings.set(FLOATS_KEY, { boot = Tree.bootTime, entries = savedFloats })
+    hs.settings.set(FLOATS_KEY, { boot = Tree.bootTime, entries = savedFloats, placed = placedFloats })
 end
 
 local function appName(win)
@@ -44,8 +45,9 @@ end
 
 local function forgetFloat(id)
     S.autoFloat[id] = nil
-    if savedFloats[tostring(id)] ~= nil then
+    if savedFloats[tostring(id)] ~= nil or placedFloats[tostring(id)] ~= nil then
         savedFloats[tostring(id)] = nil
+        placedFloats[tostring(id)] = nil
         saveFloats()
     end
 end
@@ -62,6 +64,13 @@ end
 -- Without a position it's centred if the rule's `center` is true, or if
 -- `centre` is and the rule doesn't say.
 local function placeFloat(win, rule, centre)
+    -- Classification runs again on reload, but an existing float keeps the
+    -- frame the user gave it. Keep this separate from manual overrides so
+    -- automatic floats still pick up changes to their classification rules.
+    local id, app = tostring(win:id()), appName(win)
+    if placedFloats[id] == app then return end
+    placedFloats[id] = app
+    saveFloats()
     if rule.center ~= nil then centre = rule.center == true end
     local size, pos = rule.size, rule.position
     if not size and not pos and not centre then return end
