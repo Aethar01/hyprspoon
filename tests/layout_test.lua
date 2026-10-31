@@ -356,4 +356,37 @@ test("a new native tab in a set joins it beside the tab it covers", function()
     wins[5].pid = function() return 5 end
 end)
 
+test("groupNext, groupPrev and moveOutOfGroup go to the focused set's kind", function()
+    package.loaded["hyprspoon.resize"] = {}
+    local Focus = package.loaded["hyprspoon.focus"]
+    local Actions = require("hyprspoon.actions")
+    S.trees.ws1 = split(leaf(1), set(2, { 2, 3 }, "group"))
+    Focus.currentWindow = function() return wins[2] end
+    Actions.groupNext() -- nothing registered: nothing happens
+    local calls = {}
+    Tree.registerKind("group", {
+        cycle = function(win, l, key, delta) calls[#calls + 1] = { "cycle", win, l, key, delta } end,
+        moveOut = function(win, l, key) calls[#calls + 1] = { "moveOut", win, l, key } end,
+    })
+    Actions.groupNext()
+    Actions.groupPrev()
+    Actions.moveOutOfGroup()
+    assert(#calls == 3)
+    assert(calls[1][1] == "cycle" and calls[1][2] == wins[2] and calls[1][3] == S.trees.ws1.b)
+    assert(calls[1][4] == "ws1" and calls[1][5] == 1 and calls[2][5] == -1)
+    assert(calls[3][1] == "moveOut" and calls[3][3] == S.trees.ws1.b)
+
+    -- A floating set is away from the trees: no key.
+    S.trees.ws1 = Tree.removeID(S.trees.ws1, 2)
+    Actions.groupNext()
+    assert(calls[4][3].windowID == 2 and calls[4][4] == nil)
+
+    -- A window alone in its tile, or no window: nothing.
+    Focus.currentWindow = function() return wins[1] end
+    Actions.groupNext()
+    Focus.currentWindow = noop
+    Actions.moveOutOfGroup()
+    assert(#calls == 4)
+end)
+
 print("Layout tests passed")

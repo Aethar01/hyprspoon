@@ -432,6 +432,8 @@ check the chords you choose.
 | Option+T | Toggle floating | `toggleFloat` |
 | (unbound) | Pin or unpin the focused window on its display | `togglePin` |
 | (unbound) | Pseudotile the focused tile: keep its own size, centred in the tile | `togglePseudo` |
+| (unbound) | Show the next / previous window sharing the focused tile | `groupNext`, `groupPrev` |
+| (unbound) | Take the focused window out of the tile it shares, into its own | `moveOutOfGroup` |
 | Option+G | Cycle through floating windows | `focusFloat` |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
 | Option+Y | Flip the split | `toggleSplit` |
@@ -500,6 +502,10 @@ With no focused window it does nothing. It also works with tiling off.
 
 `togglePseudo()` takes no arguments. It acts on the focused tile and does
 nothing for a floating window, with tiling off, or with no focused tile.
+
+`groupNext()`, `groupPrev()` and `moveOutOfGroup()` take no arguments. They
+act on a tile holding several windows, one on show, and do nothing for a
+window that's alone in its tile.
 
 `spoon.hyprspoon:rescue()` returns the number of parked windows brought
 back. See [Getting windows back](#getting-windows-back) for a command that

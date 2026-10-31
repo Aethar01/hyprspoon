@@ -449,6 +449,34 @@ function M.focusFloat()
     Util.warpToWindow(target)
 end
 
+-- Tiles holding several windows (see hyprspoon/tree.lua): these act on the
+-- focused window's set through the handler its kind registered with
+-- Tree.registerKind (native tabs in hyprspoon/tabs.lua, groups in
+-- hyprspoon/group.lua), in a tree or floating. Nothing happens for a
+-- window in no set, or a kind with no handler for it.
+local function onSet(action, ...)
+    local win = Focus.currentWindow()
+    if not win then return end
+    local leaf, key = Tree.setOf(win:id())
+    local handler = leaf and Tree.kinds[leaf.kind]
+    if handler and handler[action] then handler[action](win, leaf, key, ...) end
+end
+
+-- Show the next window in the focused tile's set.
+function M.groupNext()
+    onSet("cycle", 1)
+end
+
+-- Show the previous window in the focused tile's set.
+function M.groupPrev()
+    onSet("cycle", -1)
+end
+
+-- Take the focused window out of its set, into a tile of its own.
+function M.moveOutOfGroup()
+    onSet("moveOut")
+end
+
 -- Pseudotile the focused tile, or stop: it keeps its own size (the one it
 -- had before it was tiled), centred in its tile. Resizing it by its edges
 -- changes that size rather than the tile.
