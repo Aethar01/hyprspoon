@@ -444,6 +444,7 @@ function M:start(opts)
         if win and Util.windowKind(win) == "ignored" then return end
         if win then
             local id = win:id()
+            Discover.handoff(win)
             Discover.markDirty(win)
             local requested = id == S.requestedFocus
             if requested then
@@ -586,6 +587,7 @@ function M:start(opts)
                and Util.focusHistory[1] == win:id() and not win:isFullScreen() then
                 Border.focused(win)
             end
+            if event == hs.window.filter.windowVisible then Discover.handoff(win) end
             -- Windows of a hidden app come back where they were: parked if
             -- their workspace has been left since.
             Spaces.place(win)

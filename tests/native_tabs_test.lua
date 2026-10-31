@@ -67,6 +67,7 @@ Tree.registerKind = function(kind, handler) Tree.kinds[kind] = handler end
 package.loaded["hyprspoon.state"] = S
 package.loaded["hyprspoon.tree"] = Tree
 package.loaded["hyprspoon.util"] = {
+    winByID = {},
     native = function() return native end, managedWindows = function() return filter end,
     isPictureInPicture = function() return false end,
 }
@@ -144,6 +145,23 @@ for _, failure in ipairs({ "empty", "timeout" }) do
     assert(#byScreen.display == 3 and S.openIDs[1] and S.openIDs[2] and S.openIDs[3], failure)
 end
 listed, failList = wins, false
+
+-- A focus/visible event hands off synchronously, while the snapshot still
+-- calls the arriving member background. No timer, AX call or layout runs.
+local handoffs = 0
+package.loaded["hyprspoon.layout"].showMember = function(leaf, id, key)
+    assert(key == "ws1" and not S.nativeBackground[id])
+    leaf.windowID = id
+    handoffs = handoffs + 1
+end
+leaves = { { windowID = 1, members = { 1, 2 }, kind = "native" }, { windowID = 3 } }
+S.nativeBackground[2], S.offSpace[2] = { pid = 100 }, true
+local beforeAX, beforeFrames = axCalls, frameCalls
+assert(Discover.handoff(wins[2]))
+assert(leaves[1].windowID == 2 and handoffs == 1 and not S.offSpace[2])
+assert(Discover.handoff(wins[2]) and handoffs == 1, "duplicate visible event is harmless")
+assert(not Discover.handoff(wins[3]), "ordinary windows still use discovery")
+assert(axCalls == beforeAX and frameCalls == beforeFrames)
 
 -- App-driven switch: the focus event arrives before AXWindows/filter catch
 -- up. Nothing runs a full immediate layout; snapshot completion schedules

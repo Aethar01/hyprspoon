@@ -86,6 +86,23 @@ local function stateSignature(states)
     return table.concat(parts, ",")
 end
 
+-- Focus/visibility is already evidence that a known tab is on show. Hand
+-- over before the coalesced layout or AXWindows catches up, and clear the
+-- old snapshot's background flag so the kind handler never raises it again.
+local function handoff(win)
+    if not win then return false end
+    local id = win:id()
+    local _, leaf, key = Tree.findByID(id)
+    if not leaf or leaf.kind ~= "native" then return false end
+    S.nativeBackground[id], S.offSpace[id] = nil, nil
+    Util.winByID[id] = win
+    if leaf.windowID ~= id then
+        require("hyprspoon.layout").showMember(leaf, id, key)
+        Tree.saveTrees()
+    end
+    return true
+end
+
 local function requestSnapshot(frames)
     if stopped or snapshotPending or not (frames and frames.tabSnapshot) then return end
     snapshotPending = true
@@ -497,6 +514,7 @@ function M.observe()
     requestSnapshot(Util.native("frames"))
 end
 
+M.handoff = handoff
 M.nativeWindows = nativeWindows
 M.stop = stop
 M.layoutChecks = layoutChecks
