@@ -138,6 +138,9 @@ local function showPresel()
     preselCanvas:show()
 end
 
+-- Windows a pseudo rule (see S.cfg.rules) has been applied to.
+local pseudoRuled = {}
+
 local function reconcileTree(key, windows)
     local valid = {}
     local byID = {}
@@ -271,6 +274,15 @@ local function reconcileTree(key, windows)
                     S.trees[otherKey] = Tree.removeID(other, id)
                     signatures[otherKey] = nil
                 end
+            end
+
+            -- A pseudo rule pseudotiles a window the first time it goes
+            -- into a tree, at the size it opened with (its leaf takes it
+            -- from pseudoAway).
+            if not pseudoRuled[id] and Util.rulesFor(win).pseudo then
+                pseudoRuled[id] = true
+                local f = S.floatingFrames[id]
+                S.pseudoAway[id] = S.pseudoAway[id] or { w = f.w, h = f.h }
             end
 
             if not tree then
