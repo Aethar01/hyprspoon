@@ -4,6 +4,7 @@ local M = {}
 package.loaded["hyprspoon.restore"] = M
 
 local Tree = require("hyprspoon.tree")
+local S = require("hyprspoon.state")
 
 -- ---------------------------------------------------------------------------
 -- Restoring after a restart
@@ -22,8 +23,8 @@ local KEY = "hyprspoon.restore"
 local GRACE = 120
 
 -- { boot =, untilTime =, trees = { key -> tree }, windows = { "id" -> {
--- app =, title =, ws = } }, active = { uuid -> n }, claimed = { "old id"
--- -> new id } }, or nil when there's nothing (left) to restore.
+-- app =, title =, ws = } }, pseudoAway = { "id" -> size }, active = { uuid -> n },
+-- claimed = { "old id" -> new id } }, or nil when there's nothing (left) to restore.
 local saved = nil
 
 local function persist()
@@ -52,6 +53,7 @@ do
            and type(ws) == "table" and type(ws.info) == "table" and next(ws.info) then
             saved = { boot = boot, untilTime = os.time() + GRACE, windows = {},
                 trees = hs.settings.get("hyprspoon.trees") or {},
+                pseudoAway = hs.settings.get("hyprspoon.pseudoAway") or {},
                 active = ws.active or {}, claimed = {} }
             for id, d in pairs(ws.info) do
                 if type(d) == "table" and d.app then
@@ -92,6 +94,9 @@ function M.match(win, app)
     end
     if not best then return nil end
     saved.claimed[best] = win:id()
+    if saved.pseudoAway and saved.pseudoAway[best] then
+        S.pseudoAway[win:id()] = saved.pseudoAway[best]
+    end
     local all = true
     for old in pairs(saved.windows) do
         if not saved.claimed[old] then all = false break end

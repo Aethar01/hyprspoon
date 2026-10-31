@@ -24,6 +24,7 @@ local TREES_BOOT_KEY = "hyprspoon.treesBoot"
 local MAXIMIZED_KEY = "hyprspoon.maximized"
 local UNTILED_KEY = "hyprspoon.untiled"
 local FILLED_KEY = "hyprspoon.filled"
+local PSEUDO_AWAY_KEY = "hyprspoon.pseudoAway"
 local bootTime = tonumber(
     (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 
@@ -39,6 +40,13 @@ S.filled = {}
 -- Tree keys of workspaces whose windows float while tiling is on. Their
 -- trees are kept (and ignored) for when tiling comes back.
 S.untiled = {}
+-- A pseudotiled window keeps its own size, centred in its tile: its leaf's
+-- `pseudo` is that size, { w =, h = }. It goes with the window, not the
+-- tile, so a window leaving its tree while still open (moving, floating,
+-- going to another workspace or full screen) leaves it here, window id ->
+-- size, for the leaf it gets when it goes back in.
+S.pseudoAway = {}
+
 do
     local savedBoot = hs.settings.get(TREES_BOOT_KEY)
     if type(savedBoot) == "number" and math.abs(savedBoot - bootTime) < 120 then
@@ -46,6 +54,9 @@ do
         S.maximized = hs.settings.get(MAXIMIZED_KEY) or {}
         S.untiled = hs.settings.get(UNTILED_KEY) or {}
         S.filled = hs.settings.get(FILLED_KEY) or {}
+        for id, size in pairs(hs.settings.get(PSEUDO_AWAY_KEY) or {}) do
+            S.pseudoAway[tonumber(id)] = size
+        end
     end
 end
 
@@ -76,13 +87,28 @@ local function saveTreesNow()
         filled[key] = S.filled[key]
     end
     for key in pairs(S.untiled) do untiled[key] = true end
-    local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled, filled = filled })
+    -- Like workspace state, prune against WindowServer rather than walking
+    -- every app's windows over accessibility. An empty list may be transient.
+    local live, pseudoAway = {}, {}
+    for _, win in ipairs(hs.window.list(true) or {}) do
+        if win.kCGWindowNumber then live[win.kCGWindowNumber] = true end
+    end
+    for id, size in pairs(S.pseudoAway) do
+        if next(live) and not live[id] then
+            S.pseudoAway[id] = nil
+        else
+            pseudoAway[tostring(id)] = size
+        end
+    end
+    local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled,
+        filled = filled, pseudoAway = pseudoAway })
     if encoded == savedTrees then return end
     savedTrees = encoded
     hs.settings.set(TREES_KEY, out)
     hs.settings.set(MAXIMIZED_KEY, maximized)
     hs.settings.set(UNTILED_KEY, untiled)
     hs.settings.set(FILLED_KEY, filled)
+    hs.settings.set(PSEUDO_AWAY_KEY, pseudoAway)
     hs.settings.set(TREES_BOOT_KEY, bootTime)
 end
 
@@ -93,13 +119,6 @@ local function saveTrees()
         saveTreesNow()
     end)
 end
-
--- A pseudotiled window keeps its own size, centred in its tile: its leaf's
--- `pseudo` is that size, { w =, h = }. It goes with the window, not the
--- tile, so a window leaving its tree while still open (moving, floating,
--- going to another workspace or full screen) leaves it here, window id ->
--- size, for the leaf it gets when it goes back in.
-S.pseudoAway = {}
 
 local function bspLeaf(windowID)
     local pseudo = S.pseudoAway[windowID]

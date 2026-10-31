@@ -13,6 +13,7 @@ hs = {
     json = { encode = function() return tostring({}) end },
     timer = { doAfter = function() return { stop = function() end } end },
     screen = { allScreens = function() return {} end },
+    window = { list = function() return { { kCGWindowNumber = 1 }, { kCGWindowNumber = 2 } } end },
 }
 
 package.loaded["hyprspoon.util"] = {
@@ -279,6 +280,35 @@ test("pseudotiling is saved with the tree", function()
     assert(saved.a.windowID == 1 and saved.a.pseudo == nil)
     assert(saved.b.windowID == 2 and saved.b.pseudo.w == 300 and saved.b.pseudo.h == 200)
     assert(saved.b.pseudoRect == nil and saved.b.rect == nil, "where it was laid out isn't")
+end)
+
+test("pseudotiling outside a tree survives reloads and discards closed windows", function()
+    local tree = leaf(1)
+    tree.pseudo = { w = 300, h = 200 }
+    S.trees = { ws1 = Tree.removeID(tree, 1) }
+    S.pseudoAway[99] = { w = 100, h = 100 }
+    Tree.saveTreesNow()
+    assert(S.pseudoAway[99] == nil, "closed windows are pruned from memory")
+    assert(settings["hyprspoon.pseudoAway"]["99"] == nil, "closed windows aren't saved")
+
+    package.loaded["hyprspoon.tree"] = nil
+    Tree = require("hyprspoon.tree")
+    assert(S.pseudoAway[99] == nil, "closed windows aren't kept")
+    local restored = Tree.leaf(1)
+    assert(restored.pseudo and restored.pseudo.w == 300 and restored.pseudo.h == 200,
+        "a floated pseudotiled window keeps its size after a reload")
+    assert(S.pseudoAway[1] == nil, "the leaf takes the saved size")
+    Tree.saveTreesNow()
+    package.loaded["hyprspoon.tree"] = nil
+    Tree = require("hyprspoon.tree")
+    assert(S.pseudoAway[1] == nil, "consumed sizes aren't saved again")
+
+    S.pseudoAway[1] = { w = 300, h = 200 }
+    Tree.saveTreesNow()
+    settings["hyprspoon.treesBoot"] = 500
+    package.loaded["hyprspoon.tree"] = nil
+    Tree = require("hyprspoon.tree")
+    assert(next(S.pseudoAway) == nil, "old boot's IDs aren't reused")
 end)
 
 test("pseudotiling goes with the window", function()

@@ -9,6 +9,7 @@ os.time = function() return NOW end
 -- Saved by the boot before (kern.boottime 500; this boot's is 1000).
 local settings = {
     ["hyprspoon.treesBoot"] = 500,
+    ["hyprspoon.pseudoAway"] = { ["14"] = { w = 300, h = 200 } },
     ["hyprspoon.trees"] = {
         ws1 = { split = "vertical", ratio = 0.3,
             a = { windowID = 11 },
@@ -56,6 +57,12 @@ assert(Restore.savedActive().DISPLAY == 1)
 -- titles except one: that one matches by title, the rest in old-id order.
 assert(Restore.match(win(103, "docs"), "browser") == 1)
 assert(Restore.match(win(104, "logs"), "term") == 2, "an exact title wins")
+assert(S.pseudoAway[14] == nil, "old boot's IDs aren't reused")
+package.loaded["hyprspoon.restore"] = nil
+Restore = require("hyprspoon.restore")
+local floated = Tree.leaf(104)
+assert(floated.pseudo and floated.pseudo.w == 300 and floated.pseudo.h == 200,
+    "a matched floating window keeps its pseudotile size, including across grace-period reloads")
 assert(Restore.match(win(101, "zsh"), "term") == 1, "else the oldest unmatched window")
 assert(Restore.match(win(105, "new"), "other") == nil, "unknown apps aren't matched")
 
