@@ -3,6 +3,10 @@
 local S = {}
 package.loaded["hyprspoon.state"] = S
 
+-- Groups have no options yet. toggleGroup, groupNext/groupPrev,
+-- moveIntoGroup(direction) and moveOutOfGroup are unbound actions. Hidden
+-- group members use workspace parking; native tabs count as one member.
+-- The group bar's configuration belongs to #14.
 S.defaults = {
     -- Focus the window under the pointer as it moves.
     focusFollowsMouse = false,

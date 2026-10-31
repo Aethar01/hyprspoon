@@ -432,6 +432,8 @@ check the chords you choose.
 | Option+T | Toggle floating | `toggleFloat` |
 | (unbound) | Pin or unpin the focused window on its display | `togglePin` |
 | (unbound) | Pseudotile the focused tile: keep its own size, centred in the tile | `togglePseudo` |
+| (unbound) | Create or dissolve the focused tile’s group | `toggleGroup` |
+| (unbound) | Join the existing group in a direction | `moveIntoGroupLeft`, `moveIntoGroupRight`, `moveIntoGroupUp`, `moveIntoGroupDown` |
 | (unbound) | Show the next / previous window sharing the focused tile | `groupNext`, `groupPrev` |
 | (unbound) | Take the focused window out of the tile it shares, into its own | `moveOutOfGroup` |
 | Option+G | Cycle through floating windows | `focusFloat` |
@@ -503,9 +505,21 @@ With no focused window it does nothing. It also works with tiling off.
 `togglePseudo()` takes no arguments. It acts on the focused tile and does
 nothing for a floating window, with tiling off, or with no focused tile.
 
-`groupNext()`, `groupPrev()` and `moveOutOfGroup()` take no arguments. They
-act on a tile holding several windows, one on show, and do nothing for a
-window that's alone in its tile.
+`toggleGroup()` turns the focused tile into a group, or dissolves its group
+back into tiles. A group keeps one window on show and parks the others off
+screen. `moveIntoGroup("left" | "right" | "up" | "down")` joins the group in
+that direction; an ordinary neighbour is left alone. The hotkey names are
+`moveIntoGroupLeft`, `moveIntoGroupRight`, `moveIntoGroupUp`, and
+`moveIntoGroupDown`. These actions are unbound in every supplied keymap.
+
+`groupNext()` and `groupPrev()` cycle the focused tile's members.
+`moveOutOfGroup()` splits the selected member into a tile beside the group.
+Native tab sets join and leave as one member. Groups remain groups down to
+one member, survive reloads and restarts, and show the next open member when
+the shown window closes. Floating groups survive reloads; restoring floating
+groups after a restart is not supported yet. Creation, dissolution, joining
+and splitting act on tiles; cycling also works for floating groups.
+No group rule or group bar options are added yet (the bar is tracked in #14).
 
 `spoon.hyprspoon:rescue()` returns the number of parked windows brought
 back. See [Getting windows back](#getting-windows-back) for a command that

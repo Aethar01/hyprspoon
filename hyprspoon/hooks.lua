@@ -169,7 +169,8 @@ end
 --               workspace and in the current Space's managed-window filter
 --               (not hidden apps, minimized or full-screen windows). Grouped
 --               by workspace in the order above. focus.window may be an
---               unmanaged window absent from this list.
+--               unmanaged window absent from this list. Hidden group
+--               members are omitted, as they are from the overview.
 -- Titles take an accessibility call per window.
 function M.query()
     local focus, focusedN = focused()
