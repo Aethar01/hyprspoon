@@ -13,11 +13,20 @@ hs = {
     json = { encode = function() return tostring({}) end },
     timer = { doAfter = function() return { stop = function() end } end },
     screen = { allScreens = function() return {} end },
+    window = { list = function() return { { kCGWindowNumber = 1 }, { kCGWindowNumber = 2 } } end },
 }
 
+-- Every window that still exists, on any Space: 1 and 2 are on screen, 50
+-- is on another Space. nil stands for a missing native module.
+local allWindows = { [1] = true, [2] = true, [50] = true }
 package.loaded["hyprspoon.util"] = {
     pointInFrame = function(p, f)
         return p.x >= f.x and p.x < f.x + f.w and p.y >= f.y and p.y < f.y + f.h
+    end,
+    native = function(name)
+        if name == "frames" and allWindows then
+            return { liveIDs = function() return allWindows end }
+        end
     end,
 }
 package.loaded["hyprspoon.spaces"] = {
@@ -247,6 +256,115 @@ test("workspaces with tiling off have no tiles", function()
     assert(Tree.findByID(3) == nil and Tree.rectFor(3) == nil)
     assert(Tree.findByID(1), "other workspaces still tile")
     S.untiled = {}
+end)
+
+test("a pseudotiled window is centred in its tile, no bigger than it", function()
+    local tile = { x = 100, y = 50, w = 400, h = 300 }
+    local r = Tree.pseudoRect(tile, { w = 200, h = 100 })
+    assert(r.x == 200 and r.y == 150 and r.w == 200 and r.h == 100)
+    r = Tree.pseudoRect(tile, { w = 600, h = 120 })
+    assert(r.x == 100 and r.w == 400, "clamped to the tile's width")
+    assert(r.y == 140 and r.h == 120)
+    r = Tree.pseudoRect(tile, { w = 600, h = 900 })
+    assert(r.x == 100 and r.y == 50 and r.w == 400 and r.h == 300, "bigger both ways fills it")
+end)
+
+test("rectFor a pseudotiled tile is the window in it", function()
+    local tree = split("vertical", leaf(1), leaf(2))
+    layout(tree, SQUARE)
+    S.trees = { ws1 = tree }
+    S.keyIndex = {}
+    tree.a.pseudoRect = Tree.pseudoRect(tree.a.rect, { w = 100, h = 100 })
+    assert(Tree.rectFor(1) == tree.a.pseudoRect and Tree.rectFor(2) == tree.b.rect)
+end)
+
+test("pseudotiling is saved with the tree", function()
+    local tree = split("vertical", leaf(1), leaf(2))
+    tree.b.pseudo = { w = 300, h = 200 }
+    tree.b.pseudoRect = { x = 0, y = 0, w = 1, h = 1 }
+    S.trees = { ws1 = tree }
+    Tree.saveTreesNow()
+    local saved = settings["hyprspoon.trees"].ws1
+    assert(saved.a.windowID == 1 and saved.a.pseudo == nil)
+    assert(saved.b.windowID == 2 and saved.b.pseudo.w == 300 and saved.b.pseudo.h == 200)
+    assert(saved.b.pseudoRect == nil and saved.b.rect == nil, "where it was laid out isn't")
+end)
+
+test("pseudotiling outside a tree survives reloads and discards closed windows", function()
+    local tree = leaf(1)
+    tree.pseudo = { w = 300, h = 200 }
+    S.trees = { ws1 = Tree.removeID(tree, 1) }
+    S.pseudoAway[99] = { w = 100, h = 100 }
+    Tree.saveTreesNow()
+    assert(S.pseudoAway[99] == nil, "closed windows are pruned from memory")
+    assert(settings["hyprspoon.pseudoAway"]["99"] == nil, "closed windows aren't saved")
+
+    package.loaded["hyprspoon.tree"] = nil
+    Tree = require("hyprspoon.tree")
+    assert(S.pseudoAway[99] == nil, "closed windows aren't kept")
+    local restored = Tree.leaf(1)
+    assert(restored.pseudo and restored.pseudo.w == 300 and restored.pseudo.h == 200,
+        "a floated pseudotiled window keeps its size after a reload")
+    assert(S.pseudoAway[1] == nil, "the leaf takes the saved size")
+    Tree.saveTreesNow()
+    package.loaded["hyprspoon.tree"] = nil
+    Tree = require("hyprspoon.tree")
+    assert(S.pseudoAway[1] == nil, "consumed sizes aren't saved again")
+
+    S.pseudoAway[1] = { w = 300, h = 200 }
+    Tree.saveTreesNow()
+    settings["hyprspoon.treesBoot"] = 500
+    package.loaded["hyprspoon.tree"] = nil
+    Tree = require("hyprspoon.tree")
+    assert(next(S.pseudoAway) == nil, "old boot's IDs aren't reused")
+end)
+
+test("pseudotiling of a window off screen is kept until it's known closed", function()
+    S.trees = {}
+    S.pseudoAway = { [50] = { w = 100, h = 100 }, [99] = { w = 100, h = 100 } }
+    local all = allWindows
+    allWindows = nil
+    Tree.saveTreesNow()
+    assert(S.pseudoAway[50] and S.pseudoAway[99], "without the all-window query nothing is dropped")
+    allWindows = all
+    Tree.saveTreesNow()
+    assert(S.pseudoAway[50], "a window on another Space keeps its size")
+    assert(S.pseudoAway[99] == nil, "a closed one doesn't")
+    S.pseudoAway = {}
+end)
+
+test("pseudotiling goes with the window", function()
+    S.pseudoAway = {}
+    local size = { w = 300, h = 200 }
+
+    -- Swapping places.
+    local tree = split("vertical", leaf(1), split("horizontal", leaf(2), leaf(3)))
+    tree.a.pseudo = size
+    Tree.swapIDs(tree, 1, 3)
+    assert(tree.a.windowID == 3 and tree.a.pseudo == nil)
+    assert(tree.b.b.windowID == 1 and tree.b.b.pseudo == size)
+
+    -- Moving within the layout (removed, then put in elsewhere).
+    tree = Tree.removeID(tree, 1)
+    tree = Tree.insertBeside(tree, 2, 1, "left")
+    local _, found = Tree.ancestors(tree, 1)
+    assert(found.pseudo == size and S.pseudoAway[1] == nil)
+
+    -- Leaving the tree while still open (floated, another workspace),
+    -- then coming back.
+    S.openIDs = { [1] = true, [2] = true }
+    tree = Tree.prune(tree, { [2] = true, [3] = true })
+    assert(S.pseudoAway[1] == size)
+    tree = Tree.insertAt(tree, 3, 1)
+    _, found = Tree.ancestors(tree, 1)
+    assert(found.pseudo == size)
+
+    -- Closing: nothing kept.
+    S.openIDs = { [2] = true, [3] = true }
+    Tree.prune(tree, { [2] = true, [3] = true })
+    assert(S.pseudoAway[1] == nil)
+    assert(Tree.leaf(1).pseudo == nil)
+    S.openIDs = nil
 end)
 
 print("Tree tests passed")

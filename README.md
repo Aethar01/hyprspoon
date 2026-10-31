@@ -4,8 +4,9 @@ A Hyprland-inspired tiling window manager for macOS, as a
 [Hammerspoon](https://www.hammerspoon.org) Spoon.
 
 - **BSP tiling**, toggled globally or per workspace, with gaps, rotate,
-  mirror, balance and preselection. Drag a tile onto another to move it, and
-  resize splits with the mouse, the keyboard or the windows' own edges.
+  mirror, balance, preselection and pseudotiling. Drag a tile onto another
+  to move it, and resize splits with the mouse, the keyboard or the
+  windows' own edges.
 - **Workspaces of its own**, numbered 1 to 10 plus named scratchpads, switched
   instantly by hotkey or a three-finger swipe. They don't use macOS
   Spaces, so there's no Mission Control animation. Give displays their
@@ -16,7 +17,8 @@ A Hyprland-inspired tiling window manager for macOS, as a
   inactive colours.
 - **Modifier + drag** anywhere on a window to move or resize it.
 - **Focus follows mouse** (optional), and cursor warping on keyboard focus.
-- **Window rules**: float a window or send it to a workspace by app or title.
+- **Window rules**: float, pin, pseudotile, size, place or send a window to
+  a workspace by app, title or role.
 - **An overview** of every workspace, in place of Mission Control.
 - **Layouts survive** reloads and restarts.
 - **Scriptable** from the `hs` command line, like `hyprctl`.
@@ -56,7 +58,11 @@ If Hammerspoon isn't in `/Applications`, pass its path:
 `make HS_APP=~/Applications/Hammerspoon.app`.
 
 Every native module is optional. Without one, a slower Lua path takes over,
-and slides and borders are off.
+and slides and borders are off. The `frames` module moves, resizes and
+focuses windows and follows modifier-drags. It also checks which window
+IDs still exist across all macOS Spaces, so an off-screen window keeps
+its workspace when Hammerspoon reloads, and `rescue()` keeps the parked
+frames of windows it can't reach yet.
 
 ## Permissions
 
@@ -120,6 +126,25 @@ Defaults are in [`hyprspoon/state.lua`](hyprspoon/state.lua).
 | `tiling.animationDuration` | `0` | Seconds to animate retiles over; `0` snaps. Mouse drags always snap |
 | `tiling.dropColor` | `{ red = 0.35, green = 0.6, blue = 1 }` | Colour of the highlight where a dragged tile will land |
 
+### Pseudotiling
+
+A pseudotiled window keeps its own size, centred in its tile and clamped to
+fit. Its tile still reserves the full area for splits and navigation.
+`togglePseudo()` turns this on or off for the focused tile. Turning it off
+makes the window fill its tile again. The initial size is the frame saved
+before tiling, or the current frame if none was saved.
+
+Drag a native edge or use modifier-drag resize to change the remembered
+size. It is clamped to the tile and centred again on release. Keyboard
+resize (Option+arrows) still moves the splits. Moving the window within
+its tile snaps it back to the centre; dropping it onto another tile moves
+it through the layout as usual.
+
+Pseudotiling follows the window through swaps, moves, drops, floating,
+workspace and display changes, and native full screen. It survives reloads
+and is restored with matched windows after a restart. Maximizing or filling
+temporarily overrides it; returning to the tile restores it.
+
 ### Mouse (`mouse`)
 
 Modifiers held while dragging anywhere on a window, as lists of
@@ -132,6 +157,10 @@ Modifiers held while dragging anywhere on a window, as lists of
 | `mouse.rightResize` | `{"alt"}` | Right-drag to resize |
 
 ### Workspaces
+
+Workspace assignments and parked frames survive a reload while a native
+full-screen Space or another Desktop is showing. Hidden apps keep their
+assignments too.
 
 | Option | Default | Description |
 |---|---|---|
@@ -161,9 +190,28 @@ with the same name. To list them:
 hs -c 'for _, s in ipairs(hs.screen.allScreens()) do print(s:name(), s:getUUID()) end'
 ```
 
+### Pinned windows
+
+A pinned window floats on whichever workspace its display shows. It stays
+on that display as you switch, including scratchpads. A scratchpad with
+only pinned windows counts as empty and closes when empty scratchpads are
+checked. Move the window to another display to have it follow that display.
+
+`togglePin()` pins or unpins the focused window. Pinning a tile centres it
+and makes it float. With tiling off, it stays where it is and is marked to
+float when tiling resumes. Unpinning leaves it floating on the current
+workspace. `toggleFloat` unpins it when turning it back into a tile.
+Moving it silently to a hidden workspace also unpins it so it can stay there;
+moving it to a visible workspace keeps the pin.
+
+Pins survive reloads, minimizing and native full screen. On return, the
+window joins the workspace its display shows. Manual pins do not survive
+a reboot; use a `pin = true` rule to pin newly opened windows again.
+
 ### Borders (`border`)
 
 Rings around the windows on show, drawn in the gap outside their edges.
+Native full-screen windows, including Split View, have no rings.
 Colours are `"#rrggbb"` strings or `hs.drawing.color` tables. Set
 `border = false` to disable. Needs the native `border` module.
 
@@ -228,57 +276,171 @@ or `false`.
 | `rules` | `{}` | Per-window rules, like Hyprland's windowrules (below) |
 | `ignoreApps` | `{}` | App names whose windows are never watched or tiled, e.g. `{"Raycast"}` |
 
-Each rule matches on `app` (the app's name) and/or `title` (a Lua
-pattern), and sets any of:
+Each rule matches on any of `app` (the app's name), `title` (a Lua
+pattern), `role` and `subrole` (the window's accessibility role and subrole,
+e.g. `"AXWindow"` and `"AXDialog"`), and sets any of:
 
 | Field | Description |
 |---|---|
-| `float` | `true` to float the window, `false` to tile it even if it would float |
+| `float` | `true` to float a standard window, `false` to tile it even if it would float; dialogs and panels always float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
+| `pseudo` | `true` to pseudotile it when first inserted into a tree, using its saved pre-tiling size; off by default |
+| `size` | A float's size when it first appears, `{ w, h }`: points, or fractions of the display for `0 < v <= 1`, e.g. `{ 0.5, 0.6 }`; `1` means the full display |
+| `position` | A float's top left when it first appears, `{ x, y }` from the display's top left, in points or fractions like `size` |
+| `center` | `true` to centre a new float (floats are by default, dialogs aren't), `false` to leave it where the app put it |
+| `noborder` | `true` for no ring around the window |
+| `opacity` | How see-through the window itself is, from 0 to 1, for border masking (experimental, PR #38; not read on this branch) |
+| `pin` | `true` to float it on every workspace of its display, overriding `float`; off by default |
+
+Zero and negative `size`/`position` values are points. Placement clamps the
+requested frame to the display's usable area, with a minimum size of one
+point. Both coordinates must be numbers. Named forms `{ w = 640, h = 480 }`
+and `{ x = 20, y = 30 }` also work. A `position` wins over `center`.
+These fields only place automatic floats; they do not make a window float.
+Add `float = true` for a standard window that would otherwise tile.
+Without placement fields, floats are centred and dialogs keep their app's
+position. `noborder` defaults to false; `opacity` has no effect here.
+
+Existing floats keep their frames across reloads. Saved manual floating
+choices take precedence over rules and skip initial placement.
+
+All matching fields in a rule must match. App, role and subrole are exact,
+case-sensitive strings; only title uses a Lua pattern. A rule without
+matching fields applies to every managed window. Rules do not make ignored
+windows manageable.
+
+For a pinned window, a `workspace` rule only applies if that workspace is
+already showing; it can take the window to that display. A hidden target
+is ignored. `pin = false` does not undo a saved manual pin.
+
+`pseudo` does not force a window to tile. Add `float = false` for a standard
+window that would automatically float; dialogs and panels always float.
+`pseudo = false` prevents rule-based activation but does not clear saved
+pseudotiling. A restored leaf keeps its saved size.
 
 Rules are read once per window, when it first appears; later matching rules
-win.
+win for each field they set. Titles that change later do not update rules.
 
 ```lua
 rules = {
     { app = "1Password", float = true },
     { app = "Slack", workspace = 4, silent = true },
     { app = "Finder", title = "^Copy", float = true },
+    { app = "Terminal", pseudo = true },
+    { app = "Activity Monitor", float = true, size = { 0.5, 0.6 } },
+    { subrole = "AXDialog", noborder = true },
 }
 ```
 
 ## Default keymap
 
-`defaultHotkeys` uses Option as Hyprland's SUPER. To change a binding, edit
-the table before passing it to `bindHotkeys`. Each key is an action name, so
-you can also build your own table from scratch.
+`defaultHotkeys` uses Option as Hyprland's SUPER. It's a table from action
+name to `{ modifiers, key }` (the names are in the table below). To change
+it, edit the table before passing it to `bindHotkeys`:
 
-| Keys | Action |
+```lua
+local keys = spoon.hyprspoon.defaultHotkeys
+keys.workspaceS = { { "ctrl", "alt", "cmd" }, "s" } -- move a binding (frees Option+S for ß)
+keys.closeWindow = nil                             -- drop one
+keys.swapLeft = { { "alt", "cmd" }, "h" }          -- bind one that's unbound by default
+spoon.hyprspoon:bindHotkeys(keys)
+```
+
+You can also build your own table from scratch, or skip `bindHotkeys` and
+bind the actions with `hs.hotkey` yourself (see [Scripting](#scripting)).
+
+The same keymap comes with other modifiers as SUPER:
+
+```lua
+-- Ctrl+Option+Cmd as SUPER; Ctrl+Option+Shift where the table below
+-- says Ctrl+Option. Display keys are [ / ].
+spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.ctrlAltCmdHotkeys)
+
+-- Custom layers: Ctrl+Cmd as SUPER, Shift+Ctrl+Cmd to move windows,
+-- and Ctrl+Option+Cmd+Shift (Hyper) for silent moves and preselection.
+local keys = spoon.hyprspoon.hotkeysFor(
+    { "ctrl", "cmd" }, { "ctrl", "alt", "cmd", "shift" })
+-- Hyper+. is sysdiagnose; use brackets for this layer's display moves.
+keys.moveWorkspaceToDisplayPrev[2] = "["
+keys.moveWorkspaceToDisplayNext[2] = "]"
+spoon.hyprspoon:bindHotkeys(keys)
+```
+
+`hotkeysFor(super, ctrlSuper)` adds Shift to SUPER for the move layer.
+The third layer defaults to Ctrl+SUPER; pass `ctrlSuper` when SUPER already
+includes Ctrl. All three modifier sets must be distinct, including when
+using aliases such as `control`, `option` or `⌘`. Call it after `start()`
+to use the configured named workspaces.
+
+A Caps Lock Hyper key usually sends Ctrl+Option+Cmd+Shift. It cannot drive
+`ctrlAltCmdHotkeys` as SUPER, because that chord is already its Shift layer.
+Hyper cannot itself be SUPER in `hotkeysFor`, either: adding Shift would
+leave the same chord. The custom example above lets Caps Lock drive the
+third layer instead. Custom maps can replace app and system shortcuts;
+check the chords you choose.
+
+| Keys | Action | Action names |
+|---|---|---|
+| Option+H/J/K/L | Focus left/down/up/right (past the last window, the display that way, even an empty one) | `focusLeft`, `focusDown`, `focusUp`, `focusRight` |
+| Option+Shift+H/J/K/L | Move the window in that direction | `moveLeft` etc. |
+| (unbound) | Swap the window with the one in that direction | `swapLeft` etc. |
+| Option+arrows | Resize by 10% (repeats while held) | `resizeLeft` etc. |
+| Ctrl+Option+arrows | Open the next window on that side (again to cancel) | `preselectLeft` etc. |
+| Option+1…0 | Go to workspace 1…10 | `workspace1` … `workspace10` |
+| Option+Shift+1…0 | Move the window to workspace 1…10 | `moveToWorkspace1` … |
+| Ctrl+Option+1…0 | Move the window there without following | `moveToWorkspaceSilent1` … |
+| Option+A/S/D | Toggle scratchpad A/S/D (Shift / Ctrl to move a window there) | `workspaceA`, `moveToWorkspaceA`, `moveToWorkspaceSilentA` … |
+| Ctrl+Option+H/L | Previous / next workspace | `previousWorkspace`, `nextWorkspace` |
+| Option+\` | Back to the previous workspace | `gotoPreviousWorkspace` |
+| Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) | `focusDisplayPrev`/`Next`, `moveToDisplayPrev`/`Next`, `moveWorkspaceToDisplayPrev`/`Next` |
+| Option+B | Toggle tiling (Shift: just this workspace) | `toggleTiling`, `toggleWorkspaceTiling` |
+| Option+T | Toggle floating | `toggleFloat` |
+| (unbound) | Pin or unpin the focused window on its display | `togglePin` |
+| (unbound) | Pseudotile the focused tile: keep its own size, centred in the tile | `togglePseudo` |
+| Option+G | Cycle through floating windows | `focusFloat` |
+| Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
+| Option+Y | Flip the split | `toggleSplit` |
+| Option+= | Balance the splits | `balance` |
+| Option+R | Rotate the layout (Shift: mirror it) | `rotate`, `mirror` |
+| Option+Tab | Overview | `toggleOverview` |
+| Option+W | Close the window | `closeWindow` |
+
+### Characters and shortcuts each keymap takes over
+
+macOS types a character for most Option and Shift+Option keys, and these
+hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
+(other layouts type other characters):
+
+| Keys | Characters you can no longer type |
 |---|---|
-| Option+H/J/K/L | Focus left/down/up/right (past the last window, the display that way, even an empty one) |
-| Option+Shift+H/J/K/L | Move the window in that direction (`swapLeft` etc. swap instead, unbound) |
-| Option+arrows | Resize by 10% (repeats while held) |
-| Ctrl+Option+arrows | Open the next window on that side (again to cancel) |
-| Option+1…0 | Go to workspace 1…10 |
-| Option+Shift+1…0 | Move the window to workspace 1…10 |
-| Ctrl+Option+1…0 | Move the window there without following |
-| Option+A/S/D | Toggle scratchpad A/S/D (Shift / Ctrl to move a window there) |
-| Ctrl+Option+H/L | Previous / next workspace |
-| Option+\` | Back to the previous workspace |
-| Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) |
-| Option+B | Toggle tiling (Shift: just this workspace) |
-| Option+T | Toggle floating |
-| Option+G | Cycle through floating windows |
-| Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) |
-| Option+Y | Flip the split |
-| Option+= | Balance the splits |
-| Option+R | Rotate the layout (Shift: mirror it) |
-| Option+Tab | Overview |
-| Option+W | Close the window |
+| Option+1…0 | ¡ ™ £ ¢ ∞ § ¶ • ª º |
+| Shift+Option+1…0 | ⁄ € ‹ › ﬁ ﬂ ‡ ° · ‚ |
+| Option+W F B T G Y R | ∑ ƒ ∫ † © ¥ ® |
+| Shift+Option+F B R | Ï ı ‰ |
+| Option+H J K L | ˙ ∆ ˚ ¬ |
+| Shift+Option+H J K L | Ó Ô  (the Apple logo) Ò |
+| Option+A S D | å ß ∂ |
+| Shift+Option+A S D | Å Í Î |
+| Option+= , . | ≠ ≤ ≥ |
+| Shift+Option+, . | ¯ ˘ |
+| Option+\` | the grave accent dead key (à, è, …) |
 
-Option+letter shortcuts replace the characters macOS types with Option
-(å, ß, ∂ and so on). Remap the ones you need for typing.
+Option+arrows also stop moving the text cursor by word or paragraph. The
+Ctrl+Option bindings take over no characters, but may conflict with VoiceOver
+commands when VoiceOver is on.
+
+`ctrlAltCmdHotkeys` takes over no characters: every binding includes Ctrl or Cmd.
+It uses `[` / `]` instead of `,` / `.` for all display actions, which avoids
+macOS's Ctrl+Option+Cmd+Shift+`.` sysdiagnose shortcut and the accessibility
+shortcuts Ctrl+Option+Cmd+`,` / `.` (contrast down/up). Workspace 8 stays on
+Ctrl+Option+Cmd+`8`, which is also the invert-colours shortcut when that's
+turned on in System Settings. Its Ctrl+Option+Shift
+layer may still conflict with VoiceOver commands. Other app or customised
+system shortcuts can also conflict with either map.
+
+Remap or drop the default bindings you need for typing, or use
+`ctrlAltCmdHotkeys`.
 
 ## Scripting
 
@@ -286,10 +448,28 @@ The actions are plain functions on `spoon.hyprspoon`, so you can bind them
 yourself or call them from the `hs` command-line tool
 (`require("hs.ipc")` in your config):
 
+```lua
+hs.hotkey.bind({ "alt" }, "w", spoon.hyprspoon.closeWindow)
+hs.hotkey.bind({ "alt" }, "h", function() spoon.hyprspoon.focus("left") end)
+```
+
 ```sh
 hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
+hs -c 'spoon.hyprspoon.togglePin()'
+hs -c 'spoon.hyprspoon.togglePseudo()'
+hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 hs -c 'return hs.json.encode(spoon.hyprspoon:query())'
 ```
+
+`togglePin()` takes no arguments and acts on the focused managed window.
+With no focused window it does nothing. It also works with tiling off.
+
+`togglePseudo()` takes no arguments. It acts on the focused tile and does
+nothing for a floating window, with tiling off, or with no focused tile.
+
+`spoon.hyprspoon:rescue()` returns the number of parked windows brought
+back. See [Getting windows back](#getting-windows-back) for a command that
+also works when the Spoon isn't loaded.
 
 ### Status bars
 
@@ -400,12 +580,56 @@ Its README covers installation, IPC and initial updates. Scratchpads and
 displays' own workspaces are in `query()`, but need extra items to appear
 in this example.
 
+## Getting windows back
+
+Windows on hidden workspaces are parked in a corner of their display.
+Quitting Hammerspoon brings them back, but a crash (or `kill -9`) leaves
+them there. `rescue()` brings back the parked windows it can reach, using
+frames from memory and the saved state. It forgets the workspaces (windows
+join the one showing on their display at the next start) and turns tiling
+off. If hyprspoon is running, it stops and starts again with the same
+options. Otherwise it stays stopped. Tiled windows go back to their frames
+from before tiling when those frames are still in memory. A saved frame
+whose centre is off every connected display is centred on the primary one.
+
+With `require("hs.ipc")` in your config:
+
+```sh
+hs -c 'local s = spoon and spoon.hyprspoon or hs.loadSpoon("hyprspoon"); s:rescue()'
+```
+
+Or paste the part in quotes into the Hammerspoon console. Turn tiling back
+on with Option+B if the default hotkeys are bound and hyprspoon is started.
+Hammerspoon must be running with IPC loaded for `hs -c` to work; this command
+loads the Spoon if needed, but does not start Hammerspoon.
+
+Windows on another macOS Space (such as a full-screen one) can't be reached
+from the current one: the console says how many are left, and running
+`rescue()` again from their Space brings them back. Window IDs only last
+until macOS restarts, so after a restart there is nothing to bring back by
+ID. Saves wait one second after a workspace change, so a crash can lose
+the most recent parked frames. Without a working native `frames.liveIDs()`
+query, saved IDs that might have closed stay saved too; the remaining
+count can therefore include closed windows. Rebuild the native modules
+after updating from source.
+
 ## Troubleshooting
 
-- **Windows stuck in a corner.** Windows on hidden workspaces are parked in
-  a corner of the display. Quitting Hammerspoon brings them back, but a
-  crash leaves them there. Start Hammerspoon again, then switch to their
-  workspace or quit it normally.
+- **Windows stuck in a corner.** See [Getting windows back](#getting-windows-back).
+- **Empty workspaces left behind.** If a close event was missed, the
+  native `frames.liveIDs()` query confirms which saved windows have closed.
+  Rebuild `frames` if it is missing or outdated. Without this query, or if
+  it fails, uncertain IDs are kept so off-screen windows keep their
+  assignments; a close event or a later successful query clears them.
+- **Placement rules seem unchanged.** Reopen the window after changing
+  `size`, `position` or `center`; reloads preserve an existing float's frame.
+  Apps may enforce their own minimum size or adjust the requested frame.
+- **A pinned window stopped following.** Turning it into a tile or moving
+  it silently to a hidden workspace removes the pin. Focus it and call
+  `togglePin` to pin it again.
+- **Pseudotiling looks unchanged.** If the remembered size fills the tile,
+  drag an edge inward to choose a smaller size. Keyboard resize changes the
+  tile's splits instead. Leave maximized or filled mode to see pseudotiling.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
@@ -419,8 +643,21 @@ in this example.
 - It wraps `hs.reload` to tell a reload apart from a quit, so that windows
   stay parked across a reload.
 - Use one macOS Desktop per display. Window management and `query()`
-  only see the current Desktop's managed windows. Native full-screen
-  windows still get their own Space, which macOS manages.
+  only see the current Desktop's managed windows. See
+  [Getting windows back](#getting-windows-back) for recovery limits after
+  a crash or macOS restart.
+- Pinned windows stay out of workspace slide pictures, but the picture is
+  drawn over them. A pin may be covered until the slide ends.
+- After a reload, an already tiled window has no saved pre-tiling frame.
+  Enabling pseudotiling uses its current frame, which may fill the tile.
+  Existing pseudotiled windows keep their remembered size.
+- Apps may enforce minimum sizes larger than a tile, so a pseudotiled
+  window may not fit the requested frame exactly.
+- Native full-screen windows still get their own Space, which macOS
+  manages. Border checks use the Space type before Lua learns a window is
+  full screen. If that private call is unavailable, the native check only
+  hides windows that fill a display; Lua still removes rings once it
+  discovers the full-screen state.
 
 ## Contributing
 

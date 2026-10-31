@@ -88,7 +88,8 @@ S.defaults = {
         distance = 0.12,
     },
 
-    -- Rings around the windows on show, `width` points outside their edges,
+    -- Rings around the windows on show, except native full screen (Split
+    -- View too), `width` points outside their edges,
     -- in the gap between tiles: the focused window's `active`, the others'
     -- `inactive` (false for none). Colours are "#rrggbb" or hs.drawing.color
     -- tables. `radius` is the corner radius for windows whose own macOS
@@ -107,17 +108,55 @@ S.defaults = {
     -- anything noisy). Fewer watched windows means fewer events to process.
     ignoreApps = {},
 
-    -- Per-window rules, like Hyprland's windowrules. Each matches on `app`
-    -- (the app's name) and/or `title` (a Lua pattern), and sets:
-    --   float = true/false   float it, or tile it even if it would float
+    -- Per-window rules, like Hyprland's windowrules. Each matches on any of
+    -- `app` (the app's name), `title` (a Lua pattern), and `role` and
+    -- `subrole` (the accessibility role, e.g. "AXWindow", and subrole, e.g.
+    -- "AXDialog"), and sets:
+    --   float = true/false   float/tile a standard window; dialogs always float
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
+    --   pseudo = true        on first insertion into a tree, use its saved
+    --                        pre-tiling size, centred and clamped to its tile.
+    --                        Off by default; does not force floating windows
+    --                        to tile. false does not clear saved pseudotiling.
+    -- Pseudotiling follows moves, swaps and floating, and persists with the
+    -- layout across reloads/restarts. Mouse edges change its remembered size;
+    -- keyboard resize changes splits. Maximize/fill temporarily overrides it.
+    --   pin = true           float it on every workspace of its display,
+    --                        overriding float; off by default. A workspace
+    --                        target must already be showing, else ignored.
+    --                        false does not clear a saved manual pin.
+    -- Pins follow scratchpads too and survive reload/minimize/full screen,
+    -- but not reboot. Unpinning leaves a float; tiling it or silently moving
+    -- it to a hidden workspace removes the pin.
+    --   size = { w, h }      a float's size when it first appears, in points
+    --                        or fractions when 0 < v <= 1 (1 is the full
+    --                        display); zero and negatives are points
+    --   position = { x, y }  likewise its top left, measured from the
+    --                        display's top left
+    --   center = true/false  centre a new float (they are by default, but
+    --                        not dialogs), or leave it where the app put it
+    --   noborder = true      no ring around it
+    --   opacity = 0..1       how see-through the window itself is, for
+    --                        border masking (experimental, PR #38;
+    --                        not read on this branch)
+    -- Match fields must all match; only title is a pattern, the others are
+    -- exact strings. With no match fields, a rule matches all managed windows.
+    -- size/position also accept { w = ..., h = ... } / { x = ..., y = ... };
+    -- both coordinates must be numbers. A position wins over centring.
+    -- Placement fields do not enable floating. Without them, standard floats
+    -- centre and dialogs keep their app's position. noborder defaults false;
+    -- opacity has no effect. Saved manual float choices override float rules
+    -- and skip placement. No fields are set by default (rules = {}).
+    -- Placement clamps the requested frame to the display's usable area,
+    -- with a minimum size of one point. Reloads keep existing float frames.
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {
     --       { app = "1Password", float = true },
     --       { app = "Slack", workspace = 4, silent = true },
+    --       { app = "Activity Monitor", float = true, size = { 0.5, 0.6 } },
     --   }
     rules = {},
 

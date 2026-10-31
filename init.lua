@@ -22,17 +22,17 @@
 
 -- Modules (all under hyprspoon/):
 --   state     configuration defaults and state shared between the modules
---   util      logging, window classification, focus records, pointer warping
---   tree      BSP tree structure, persistence and per-workspace keys
---   float     automatic and manual floating windows, kept above the tiles
+--   util      logging, window classification and rules, focus records, pointer warping
+--   tree      BSP tree structure, pseudotile sizes, persistence and per-workspace keys
+--   float     automatic and manual floats, initial rule placement, kept above tiles
 --   focus     internal focus tracking and the window snapshot for hit testing
 --   discover  finding the manageable windows on each screen
---   layout    laying the trees out onto windows, and scheduling retiles
---   resize    resizing tiles by keyboard, mouse or native window edges
+--   layout    laying out tiles and pseudotiles, and scheduling retiles
+--   resize    resizing splits and pseudotile sizes by keyboard or mouse
 --   drop      dragging a tile onto another to move it in the layout
 --   mouse     modifier + drag anywhere on a window
 --   ffm       focus follows mouse
---   spaces    numbered workspaces, parking the windows of hidden ones
+--   spaces    numbered workspaces, parking hidden windows and following pins
 --   restore   layouts and workspaces back after a restart
 --   swipe     trackpad swipes between workspaces
 --   bar       workspace numbers in the menu bar, and the row they're drawn as
@@ -44,13 +44,15 @@
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
--- Native modules (hyprspoon/native/*.c, built with `make -C hyprspoon/native`), each
--- optional: without one, the Lua path it replaces carries on.
+-- Native modules (C/Objective-C, built with `make -C hyprspoon/native`),
+-- all optional: Lua keeps the basics working; slides and rings need native.
 --   border    the rings, drawn and moved by WindowServer
 --   events    window moves and resizes as WindowServer reports them
 --   hover     the window under the pointer, from a native event tap
 --   frames    accessibility frame changes, animations and modifier-drags on
---             a background queue per app
+--             a background queue per app; focus without waiting for the
+--             app; liveIDs() returns all WindowServer IDs, on any Space, as
+--             { [id] = true }, or nil if the query fails
 --   slide     the workspace slides, animated by WindowServer
 --
 -- Modules require each other freely (cycles are harmless: each registers
@@ -119,6 +121,14 @@ local M = {
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
     toggleOverview = Overview.toggle,
+    -- togglePin(): pin/unpin the focused window on its display; no arguments.
+    -- A tile floats first (centred with tiling on). Unpinning keeps it floating.
+    -- Works with tiling off; no focused window means no change.
+    togglePin = Actions.togglePin,
+    -- togglePseudo(): toggle the focused tile's own size, centred in its tile.
+    -- Uses its saved pre-tiling frame, else its current frame. No arguments;
+    -- no change for floats, no focused tile, or with tiling off.
+    togglePseudo = Actions.togglePseudo,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,
     toggleWorkspaceTiling = Actions.toggleWorkspaceTiling,
@@ -143,8 +153,8 @@ local RESIZE_STEPS = { Left = { -10, 0 }, Right = { 10, 0 }, Up = { 0, -10 }, Do
 local function hotkeyActions()
     local actions = {}
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
-        "toggleWorkspaceTiling", "toggleFloat", "focusFloat", "toggleSplit", "balance",
-        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace" }) do
+        "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
+        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo" }) do
         actions[name] = M[name]
     end
     for suffix, dir in pairs(DIRECTIONS) do
@@ -178,11 +188,41 @@ local function hotkeyActions()
     return actions
 end
 
--- A keymap like Hyprland's default, with Option as SUPER. Pass it (or a
--- copy with changes) to bindHotkeys.
-M.defaultHotkeys = (function()
-    local super, superShift, superCmd, ctrlSuper =
-        { "alt" }, { "alt", "shift" }, { "alt", "cmd" }, { "ctrl", "alt" }
+-- hs.hotkey matches modifier aliases as case-insensitive substrings, ignoring
+-- order and duplicates. Compare the same sets so aliases cannot hide a clash.
+local function modifierSet(mods)
+    local text = table.concat(mods, "-"):lower()
+    local found = {}
+    for _, aliases in ipairs({ { "cmd", "command", "⌘" }, { "ctrl", "control", "⌃" },
+        { "alt", "option", "⌥" }, { "shift", "⇧" } }) do
+        for _, alias in ipairs(aliases) do
+            if text:find(alias, 1, true) then
+                found[#found + 1] = aliases[1]
+                break
+            end
+        end
+    end
+    return table.concat(found, "+")
+end
+
+-- A keymap like Hyprland's default, with the modifiers in `super` as SUPER.
+-- Shift on top of SUPER moves windows; the third layer (silent moves,
+-- preselect, workspace and display switching) is `ctrlSuper`, Ctrl+SUPER
+-- unless given. Pass the result (or a copy with changes) to bindHotkeys.
+function M.hotkeysFor(super, ctrlSuper)
+    local superShift = { table.unpack(super) }
+    superShift[#superShift + 1] = "shift"
+    ctrlSuper = ctrlSuper or { "ctrl", table.unpack(super) }
+    local layers = { super, superShift, ctrlSuper }
+    local names = { "SUPER", "Shift+SUPER", "ctrlSuper" }
+    for i = 1, #layers do
+        for j = i + 1, #layers do
+            if modifierSet(layers[i]) == modifierSet(layers[j]) then
+                error("hyprspoon: hotkeysFor layers " .. names[i] .. " and " .. names[j]
+                    .. " use the same modifiers; choose three distinct layers", 2)
+            end
+        end
+    end
     local map = {
         closeWindow = { super, "w" },
         toggleFill = { super, "f" },
@@ -212,7 +252,7 @@ M.defaultHotkeys = (function()
         map["moveToWorkspace" .. i] = { superShift, key }
         map["moveToWorkspaceSilent" .. i] = { ctrlSuper, key }
     end
-    for _, name in ipairs(S.defaults.namedWorkspaces) do
+    for _, name in ipairs((S.cfg or S.defaults).namedWorkspaces or {}) do
         local key = name:lower()
         map["workspace" .. name] = { super, key }
         map["moveToWorkspace" .. name] = { superShift, key }
@@ -224,9 +264,24 @@ M.defaultHotkeys = (function()
         map["moveWorkspaceToDisplay" .. suffix] = { ctrlSuper, key }
     end
     return map
-end)()
+end
 
--- Binds `mapping` (action name -> { mods, key }, as in defaultHotkeys),
+-- Option as SUPER. Option+letter types characters like å and ß, which these
+-- take over; ctrlAltCmdHotkeys leaves typing alone.
+M.defaultHotkeys = M.hotkeysFor({ "alt" })
+
+-- Ctrl+Option+Cmd as SUPER, with Ctrl+Option+Shift for the
+-- third layer since Ctrl is already part of SUPER.
+M.ctrlAltCmdHotkeys = M.hotkeysFor({ "ctrl", "alt", "cmd" }, { "ctrl", "alt", "shift" })
+-- Nearby keys avoid the contrast shortcuts and Shift+SUPER+. (sysdiagnose).
+-- Keep the same keys across all three layers.
+for suffix, key in pairs({ Prev = "[", Next = "]" }) do
+    for _, action in ipairs({ "focusDisplay", "moveToDisplay", "moveWorkspaceToDisplay" }) do
+        M.ctrlAltCmdHotkeys[action .. suffix][2] = key
+    end
+end
+
+-- Binds `mapping` (action name -> { mods, key }, as from hotkeysFor),
 -- replacing whatever an earlier call bound. Resizes repeat while held.
 -- Call after start() so named workspaces from its options are known.
 function M:bindHotkeys(mapping)
@@ -279,6 +334,32 @@ function M.stop()
     Hooks.stop()
     Tree.stop() -- last: flushes a pending save after the layout has stopped
     S.running = {}
+end
+
+-- spoon.hyprspoon:rescue() -> number of parked windows brought back.
+-- For windows stuck in a corner after a crash: restores reachable parked
+-- windows, forgets the workspaces and turns tiling off. Works whether or
+-- not start() was called, so from `hs -c` too (see the README); when it
+-- was, hyprspoon starts again with the same options. Returns how many
+-- windows came back. Unreachable or uncertain IDs stay saved for another
+-- call from their Space. Only saved IDs from this boot are used; a frame
+-- off every connected display is centred on the primary one. If stopped,
+-- hyprspoon stays stopped.
+function M.rescue()
+    local running = S.running.windowFilter ~= nil
+    S.tilingEnabled = false
+    hs.settings.set(S.SETTINGS_KEY, false)
+    -- Tiles go back to their frames from before tiling; parked ones get
+    -- theirs when they're brought back below.
+    Layout.restoreFloatingFrames()
+    M.stop()
+    local back, missing = Spaces.rescue()
+    print(string.format("hyprspoon: brought back %d parked window(s), tiling off", back))
+    if missing > 0 then
+        print(string.format("hyprspoon: %d more on another Space; go there and run rescue() again", missing))
+    end
+    if running then M:start(S.cfg) end
+    return back
 end
 
 function M:start(opts)
@@ -436,6 +517,7 @@ function M:start(opts)
         if id then
             Discover.cancelLayoutCheck(id)
             S.fullscreen[id], S.offSpace[id], S.slots[id] = nil, nil, nil
+            S.pseudoAway[id] = nil
             for key, maxID in pairs(S.maximized) do
                 if maxID == id then S.maximized[key] = nil end
             end

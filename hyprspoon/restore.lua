@@ -4,6 +4,7 @@ local M = {}
 package.loaded["hyprspoon.restore"] = M
 
 local Tree = require("hyprspoon.tree")
+local S = require("hyprspoon.state")
 
 -- ---------------------------------------------------------------------------
 -- Restoring after a restart
@@ -22,8 +23,8 @@ local KEY = "hyprspoon.restore"
 local GRACE = 120
 
 -- { boot =, untilTime =, trees = { key -> tree }, windows = { "id" -> {
--- app =, title =, ws = } }, active = { uuid -> n }, claimed = { "old id"
--- -> new id } }, or nil when there's nothing (left) to restore.
+-- app =, title =, ws = } }, pseudoAway = { "id" -> size }, active = { uuid -> n },
+-- claimed = { "old id" -> new id } }, or nil when there's nothing (left) to restore.
 local saved = nil
 
 local function persist()
@@ -52,6 +53,7 @@ do
            and type(ws) == "table" and type(ws.info) == "table" and next(ws.info) then
             saved = { boot = boot, untilTime = os.time() + GRACE, windows = {},
                 trees = hs.settings.get("hyprspoon.trees") or {},
+                pseudoAway = hs.settings.get("hyprspoon.pseudoAway") or {},
                 active = ws.active or {}, claimed = {} }
             for id, d in pairs(ws.info) do
                 if type(d) == "table" and d.app then
@@ -68,6 +70,9 @@ local function live()
     if saved and os.time() > saved.untilTime then finish() end
     return saved ~= nil
 end
+
+-- Nothing more is matched (spoon.hyprspoon:rescue() forgot the workspaces).
+M.forget = finish
 
 -- The display -> workspace number each display showed before the restart.
 function M.savedActive()
@@ -92,6 +97,9 @@ function M.match(win, app)
     end
     if not best then return nil end
     saved.claimed[best] = win:id()
+    if saved.pseudoAway and saved.pseudoAway[best] then
+        S.pseudoAway[win:id()] = saved.pseudoAway[best]
+    end
     local all = true
     for old in pairs(saved.windows) do
         if not saved.claimed[old] then all = false break end
@@ -117,7 +125,9 @@ function M.rebuild(key, tree, valid)
             local new = saved.claimed[tostring(node.windowID)]
             if not new or not valid[new] then return nil end
             if not present[new] then arrived = true end
-            return Tree.leaf(new)
+            local leaf = Tree.leaf(new)
+            leaf.pseudo = leaf.pseudo or node.pseudo
+            return leaf
         end
         local a, b = build(node.a), build(node.b)
         if a and b then return { split = node.split, ratio = node.ratio, a = a, b = b } end

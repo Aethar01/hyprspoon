@@ -1,6 +1,7 @@
 -- hyprspoon/border.lua: Rings around the windows, like Hyprland's borders.
 --
--- Every window on show gets a ring just outside it, in the gap between
+-- Windows on show, except native full screen (Split View too), get a ring
+-- just outside them, in the gap between
 -- tiles: the focused window's in the active colour, the others in the
 -- (see-through) inactive one, blending between the two as focus moves.
 -- They are drawn by hyprspoon.native.border (hyprspoon/native/border.m), which moves them
@@ -27,9 +28,10 @@ local function onShow()
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
         -- Native full screen, Split View too (border.m also hides those
-        -- rings, for windows whose events haven't come yet).
+        -- rings, for windows whose events haven't come yet), and windows
+        -- with a `noborder` rule.
         if id and not S.fullscreen[id] and not Spaces.isHidden(id) and not Tree.behindMaximized(id)
-           and not Tree.filling(id) then
+           and not Tree.filling(id) and not Util.rulesFor(win, true).noborder then
             ids[#ids + 1] = id
         end
     end
