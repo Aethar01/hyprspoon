@@ -92,13 +92,17 @@ function M.toggle(win)
     local _, leaf, key = Tree.findByID(win:id())
     if not leaf then return end
     if leaf.kind ~= "group" then
-        if leaf.kind == "native" then leaf.tabs = { leaf.members } end
+        if leaf.kind == "native" then
+            local tabs = {}
+            for _, id in ipairs(leaf.members) do tabs[#tabs + 1] = id end
+            leaf.tabs = { tabs }
+        end
         leaf.members, leaf.kind = leaf.members or { leaf.windowID }, "group"
         hide(leaf)
     else
         local lists = units(leaf)
         local shown = leaf.windowID
-        leaf.members, leaf.kind, leaf.tabs = nil, nil, nil
+        leaf.members, leaf.kind, leaf.tabs, leaf.groupInset = nil, nil, nil, nil
         for _, list in ipairs(lists) do
             local holds = false
             for _, id in ipairs(list) do if id == shown then holds = true end end
@@ -136,7 +140,7 @@ function M.join(win, other)
         for _, id in ipairs(source.members or { win:id() }) do S.setsAway[id] = nil end
     end
     Tree.addMember(target, copy[1], "group")
-    for i = 2, #copy do Tree.addTab(target, copy[i], copy[1]) end
+    for i = 2, #copy do Tree.addTab(target, copy[i], copy[i - 1]) end
     Layout.showMember(target, win:id(), toKey)
     hide(target)
     S.keyIndex = {}
@@ -149,7 +153,7 @@ end
 function M.info(id)
     local leaf, key = Tree.setOf(id)
     if not leaf or leaf.kind ~= "group" then return nil end
-    return { members = units(leaf), shown = leaf.windowID, rect = leaf.rect, key = key }
+    return { members = units(leaf), shown = leaf.windowID, rect = key and leaf.rect or nil, key = key }
 end
 
 function M.selectMember(id)
