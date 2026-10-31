@@ -41,28 +41,35 @@ local count = 0
 for _ in pairs(M.defaultHotkeys) do count = count + 1 end
 assert(count == 76, "defaultHotkeys has " .. count .. " bindings")
 
--- Only the modifiers change, never the keys or the set of actions.
+-- The Ctrl+Option+Cmd map changes modifiers and avoids system shortcuts.
 local function sorted(list)
     list = { table.unpack(list) }
     table.sort(list)
     return table.concat(list, "+")
 end
-local hyper = {
+local ctrlAltCmd = {
     alt = sorted({ "ctrl", "alt", "cmd" }),
     ["alt+shift"] = sorted({ "ctrl", "alt", "cmd", "shift" }),
     ["ctrl+alt"] = sorted({ "ctrl", "alt", "shift" }),
 }
+local changedKeys = {
+    focusDisplayPrev = "[", focusDisplayNext = "]",
+    moveToDisplayPrev = "[", moveToDisplayNext = "]",
+    moveWorkspaceToDisplayPrev = "[", moveWorkspaceToDisplayNext = "]",
+    workspace8 = "i", moveToWorkspace8 = "i", moveToWorkspaceSilent8 = "i",
+}
+assert(M.hyperHotkeys == nil, "the old Hyper name must not be exposed")
 for name, spec in pairs(M.defaultHotkeys) do
-    local got = assert(M.hyperHotkeys[name], name .. " must be in hyperHotkeys")
-    assert(got[2] == spec[2], name .. " changed key")
-    assert(sorted(got[1]) == hyper[mods(spec)], name .. " is " .. mods(got) .. " in hyperHotkeys")
+    local got = assert(M.ctrlAltCmdHotkeys[name], name .. " must be in ctrlAltCmdHotkeys")
+    assert(got[2] == (changedKeys[name] or spec[2]), name .. " changed key")
+    assert(sorted(got[1]) == ctrlAltCmd[mods(spec)], name .. " is " .. mods(got) .. " in ctrlAltCmdHotkeys")
 end
-for name in pairs(M.hyperHotkeys) do
-    assert(M.defaultHotkeys[name], name .. " is only in hyperHotkeys")
+for name in pairs(M.ctrlAltCmdHotkeys) do
+    assert(M.defaultHotkeys[name], name .. " is only in ctrlAltCmdHotkeys")
 end
 
 -- No two actions share keys (hs.hotkey ignores the modifiers' order).
-for _, map in ipairs({ M.defaultHotkeys, M.hyperHotkeys }) do
+for _, map in ipairs({ M.defaultHotkeys, M.ctrlAltCmdHotkeys }) do
     local seen = {}
     for name, spec in pairs(map) do
         local id = sorted(spec[1]) .. " " .. spec[2]
@@ -97,6 +104,11 @@ assert(mods(custom.focusLeft) == "control+command")
 assert(mods(custom.moveLeft) == "control+command+shift")
 assert(mods(custom.preselectLeft) == "⌃+⌥+⌘+⇧")
 
+-- The README's Caps Lock Hyper example avoids Hyper+. (sysdiagnose).
+local capsLock = M.hotkeysFor({ "ctrl", "cmd" }, { "ctrl", "alt", "cmd", "shift" })
+capsLock.moveWorkspaceToDisplayPrev[2] = "["
+capsLock.moveWorkspaceToDisplayNext[2] = "]"
+
 -- Model the configuration installed by start(), without starting live services.
 local S = require("hyprspoon.state")
 S.cfg = { namedWorkspaces = { "Q" } }
@@ -118,4 +130,17 @@ M:bindHotkeys({
 assert(bound == 3, "configured named workspaces must have matching actions")
 S.cfg = { namedWorkspaces = {} }
 assert(not M.hotkeysFor({ "alt" }).workspaceA)
+S.cfg = {}
+assert(not M.hotkeysFor({ "alt" }).workspaceA)
 S.cfg = nil
+
+-- Neither the accessibility chords nor sysdiagnose may remain in the map.
+for _, map in ipairs({ M.ctrlAltCmdHotkeys, capsLock }) do
+    for name, spec in pairs(map) do
+        local chord = sorted(spec[1])
+        assert(not (chord == sorted({ "ctrl", "alt", "cmd" })
+            and (spec[2] == "," or spec[2] == "." or spec[2] == "8")), name)
+        assert(not (chord == sorted({ "ctrl", "alt", "cmd", "shift" })
+            and spec[2] == "."), name)
+    end
+end

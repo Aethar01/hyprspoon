@@ -254,14 +254,32 @@ you can also build your own table from scratch.
 The same keymap comes with other modifiers as SUPER:
 
 ```lua
--- Ctrl+Option+Cmd (a Hyper key) as SUPER; Ctrl+Option+Shift where the
--- table below says Ctrl+Option.
-spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.hyperHotkeys)
+-- Ctrl+Option+Cmd as SUPER; Ctrl+Option+Shift where the table below
+-- says Ctrl+Option. Display keys are [ / ], and workspace 8 uses I.
+spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.ctrlAltCmdHotkeys)
 
--- Any modifiers. Shift is added for the Shift bindings, and Ctrl for the
--- Ctrl ones unless you give those modifiers as the second argument.
-spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.hotkeysFor({ "cmd" }))
+-- Custom layers: Ctrl+Cmd as SUPER, Shift+Ctrl+Cmd to move windows,
+-- and Ctrl+Option+Cmd+Shift (Hyper) for silent moves and preselection.
+local keys = spoon.hyprspoon.hotkeysFor(
+    { "ctrl", "cmd" }, { "ctrl", "alt", "cmd", "shift" })
+-- Hyper+. is sysdiagnose; use brackets for this layer's display moves.
+keys.moveWorkspaceToDisplayPrev[2] = "["
+keys.moveWorkspaceToDisplayNext[2] = "]"
+spoon.hyprspoon:bindHotkeys(keys)
 ```
+
+`hotkeysFor(super, ctrlSuper)` adds Shift to SUPER for the move layer.
+The third layer defaults to Ctrl+SUPER; pass `ctrlSuper` when SUPER already
+includes Ctrl. All three modifier sets must be distinct, including when
+using aliases such as `control`, `option` or `⌘`. Call it after `start()`
+to use the configured named workspaces.
+
+A Caps Lock Hyper key usually sends Ctrl+Option+Cmd+Shift. It cannot drive
+`ctrlAltCmdHotkeys` as SUPER, because that chord is already its Shift layer.
+Hyper cannot itself be SUPER in `hotkeysFor`, either: adding Shift would
+leave the same chord. The custom example above lets Caps Lock drive the
+third layer instead. Custom maps can replace app and system shortcuts;
+check the chords you choose.
 
 | Keys | Action |
 |---|---|
@@ -286,7 +304,7 @@ spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.hotkeysFor({ "cmd" }))
 | Option+Tab | Overview |
 | Option+W | Close the window |
 
-### Characters each keymap takes over
+### Characters and shortcuts each keymap takes over
 
 macOS types a character for most Option and Shift+Option keys, and these
 hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
@@ -307,11 +325,20 @@ hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
 | Option+\` | the grave accent dead key (à, è, …) |
 
 Option+arrows also stop moving the text cursor by word or paragraph. The
-Ctrl+Option bindings type nothing, so they don't take anything over.
+Ctrl+Option bindings take over no characters, but may conflict with VoiceOver
+commands when VoiceOver is on.
 
-`hyperHotkeys` takes over no characters: every binding includes Ctrl or Cmd.
+`ctrlAltCmdHotkeys` takes over no characters: every binding includes Ctrl or Cmd.
+It uses `[` / `]` instead of `,` / `.` for all display actions, and `I`
+instead of `8` for workspace 8 on all layers. These avoid macOS's
+Ctrl+Option+Cmd+Shift+`.` sysdiagnose shortcut and the accessibility
+shortcuts Ctrl+Option+Cmd+`,` / `.` (contrast down/up) and
+Ctrl+Option+Cmd+`8` (invert colours), when enabled. Its Ctrl+Option+Shift
+layer may still conflict with VoiceOver commands. Other app or customised
+system shortcuts can also conflict with either map.
+
 Remap or drop the default bindings you need for typing, or use
-`hyperHotkeys`.
+`ctrlAltCmdHotkeys`.
 
 ## Scripting
 

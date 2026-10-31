@@ -250,12 +250,22 @@ function M.hotkeysFor(super, ctrlSuper)
 end
 
 -- Option as SUPER. Option+letter types characters like å and ß, which these
--- take over; hyperHotkeys leaves typing alone.
+-- take over; ctrlAltCmdHotkeys leaves typing alone.
 M.defaultHotkeys = M.hotkeysFor({ "alt" })
 
--- Ctrl+Option+Cmd as SUPER (a Hyper key), with Ctrl+Option+Shift for the
+-- Ctrl+Option+Cmd as SUPER, with Ctrl+Option+Shift for the
 -- third layer since Ctrl is already part of SUPER.
-M.hyperHotkeys = M.hotkeysFor({ "ctrl", "alt", "cmd" }, { "ctrl", "alt", "shift" })
+M.ctrlAltCmdHotkeys = M.hotkeysFor({ "ctrl", "alt", "cmd" }, { "ctrl", "alt", "shift" })
+-- Nearby keys avoid contrast/invert-colours shortcuts and Shift+SUPER+.
+-- (sysdiagnose). Keep the same keys across all three layers.
+for suffix, key in pairs({ Prev = "[", Next = "]" }) do
+    for _, action in ipairs({ "focusDisplay", "moveToDisplay", "moveWorkspaceToDisplay" }) do
+        M.ctrlAltCmdHotkeys[action .. suffix][2] = key
+    end
+end
+for _, action in ipairs({ "workspace", "moveToWorkspace", "moveToWorkspaceSilent" }) do
+    M.ctrlAltCmdHotkeys[action .. "8"][2] = "i"
+end
 
 -- Binds `mapping` (action name -> { mods, key }, as from hotkeysFor),
 -- replacing whatever an earlier call bound. Resizes repeat while held.
