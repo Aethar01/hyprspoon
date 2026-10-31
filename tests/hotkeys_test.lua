@@ -56,7 +56,6 @@ local changedKeys = {
     focusDisplayPrev = "[", focusDisplayNext = "]",
     moveToDisplayPrev = "[", moveToDisplayNext = "]",
     moveWorkspaceToDisplayPrev = "[", moveWorkspaceToDisplayNext = "]",
-    workspace8 = "i", moveToWorkspace8 = "i", moveToWorkspaceSilent8 = "i",
 }
 assert(M.hyperHotkeys == nil, "the old Hyper name must not be exposed")
 for name, spec in pairs(M.defaultHotkeys) do
@@ -139,7 +138,7 @@ for _, map in ipairs({ M.ctrlAltCmdHotkeys, capsLock }) do
     for name, spec in pairs(map) do
         local chord = sorted(spec[1])
         assert(not (chord == sorted({ "ctrl", "alt", "cmd" })
-            and (spec[2] == "," or spec[2] == "." or spec[2] == "8")), name)
+            and (spec[2] == "," or spec[2] == ".")), name)
         assert(not (chord == sorted({ "ctrl", "alt", "cmd", "shift" })
             and spec[2] == "."), name)
     end

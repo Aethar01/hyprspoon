@@ -256,15 +256,12 @@ M.defaultHotkeys = M.hotkeysFor({ "alt" })
 -- Ctrl+Option+Cmd as SUPER, with Ctrl+Option+Shift for the
 -- third layer since Ctrl is already part of SUPER.
 M.ctrlAltCmdHotkeys = M.hotkeysFor({ "ctrl", "alt", "cmd" }, { "ctrl", "alt", "shift" })
--- Nearby keys avoid contrast/invert-colours shortcuts and Shift+SUPER+.
--- (sysdiagnose). Keep the same keys across all three layers.
+-- Nearby keys avoid the contrast shortcuts and Shift+SUPER+. (sysdiagnose).
+-- Keep the same keys across all three layers.
 for suffix, key in pairs({ Prev = "[", Next = "]" }) do
     for _, action in ipairs({ "focusDisplay", "moveToDisplay", "moveWorkspaceToDisplay" }) do
         M.ctrlAltCmdHotkeys[action .. suffix][2] = key
     end
-end
-for _, action in ipairs({ "workspace", "moveToWorkspace", "moveToWorkspaceSilent" }) do
-    M.ctrlAltCmdHotkeys[action .. "8"][2] = "i"
 end
 
 -- Binds `mapping` (action name -> { mods, key }, as from hotkeysFor),

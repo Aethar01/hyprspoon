@@ -329,11 +329,11 @@ Ctrl+Option bindings take over no characters, but may conflict with VoiceOver
 commands when VoiceOver is on.
 
 `ctrlAltCmdHotkeys` takes over no characters: every binding includes Ctrl or Cmd.
-It uses `[` / `]` instead of `,` / `.` for all display actions, and `I`
-instead of `8` for workspace 8 on all layers. These avoid macOS's
-Ctrl+Option+Cmd+Shift+`.` sysdiagnose shortcut and the accessibility
-shortcuts Ctrl+Option+Cmd+`,` / `.` (contrast down/up) and
-Ctrl+Option+Cmd+`8` (invert colours), when enabled. Its Ctrl+Option+Shift
+It uses `[` / `]` instead of `,` / `.` for all display actions, which avoids
+macOS's Ctrl+Option+Cmd+Shift+`.` sysdiagnose shortcut and the accessibility
+shortcuts Ctrl+Option+Cmd+`,` / `.` (contrast down/up). Workspace 8 stays on
+Ctrl+Option+Cmd+`8`, which is also the invert-colours shortcut when that's
+turned on in System Settings. Its Ctrl+Option+Shift
 layer may still conflict with VoiceOver commands. Other app or customised
 system shortcuts can also conflict with either map.
 
