@@ -30,7 +30,7 @@ local function onShow()
         -- rings, for windows whose events haven't come yet), and windows
         -- with a `noborder` rule.
         if id and not S.fullscreen[id] and not Spaces.isHidden(id) and not Tree.behindMaximized(id)
-           and not Tree.filling(id) and not Util.rulesFor(win).noborder then
+           and not Tree.filling(id) and not Util.rulesFor(win, true).noborder then
             ids[#ids + 1] = id
         end
     end

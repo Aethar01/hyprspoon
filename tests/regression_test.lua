@@ -224,7 +224,10 @@ for id = 1, 3 do ringWins[id] = { id = function() return id end } end
 local ringEnv = setmetatable({
     S = { fullscreen = {} },
     Util = { managedWindows = function() return ringWins end,
-        rulesFor = function(w) return ringRules[w:id()] end },
+        rulesFor = function(w, uncached)
+            assert(uncached == true, "borders must not cache rules before the title settles")
+            return ringRules[w:id()]
+        end },
     Spaces = { isHidden = function() return false end },
     Tree = { behindMaximized = function() return false end, filling = function() return false end },
 }, { __index = _G })
@@ -232,6 +235,22 @@ local onShow = assert(load(extract("border", "local suspended = false",
     "-- Window set changes come in bursts.") .. "return onShow", "border", "t", ringEnv))()
 local shown = onShow()
 assert(#shown == 2 and shown[1] == 1 and shown[2] == 3, "noborder windows get no ring")
+
+-- The border's early read must leave the settled title for the layout path.
+local earlyTitle = ""
+local earlyWin = ruleWin("Finder", "", "AXWindow", "AXStandardWindow")
+earlyWin.title = function() return earlyTitle end
+ringEnv.Util.managedWindows = function() return { earlyWin } end
+ringEnv.Util.rulesFor = rulesFor
+ruleEnv.S.cfg.rules = { { title = "^Copy", float = true, workspace = 3, noborder = true } }
+assert(#onShow() == 1, "a new window's ring can appear before its title settles")
+earlyTitle = "Copying"
+assert(#onShow() == 0, "uncached border reads can match the settled title")
+r = rulesFor(earlyWin)
+assert(r.float == true and r.workspace == 3 and r.noborder == true,
+    "border reads don't poison float or workspace rules")
+earlyTitle = "Done"
+assert(#onShow() == 0 and rulesFor(earlyWin) == r, "borders respect rules cached by layout")
 
 -- Dialog/panel roles are managed only when they have a close button, are
 -- modal, or have a default or cancel button.

@@ -108,7 +108,9 @@ end
 local windowRules = {} -- window id -> merged rule
 local MATCHERS = { app = true, title = true, role = true, subrole = true }
 
-local function rulesFor(win)
+-- Borders can read rules before the title settles; those reads must not
+-- populate the cache that placement and workspace assignment share.
+local function rulesFor(win, uncached)
     local id = win:id()
     if id and windowRules[id] then return windowRules[id] end
     local out = {}
@@ -138,7 +140,7 @@ local function rulesFor(win)
             end
         end
     end
-    if id then windowRules[id] = out end
+    if id and not uncached then windowRules[id] = out end
     return out
 end
 
