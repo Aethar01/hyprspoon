@@ -171,11 +171,23 @@ local function hotkeyActions()
     return actions
 end
 
--- A keymap like Hyprland's default, with Option as SUPER. Pass it (or a
--- copy with changes) to bindHotkeys.
-M.defaultHotkeys = (function()
-    local super, superShift, superCmd, ctrlSuper =
-        { "alt" }, { "alt", "shift" }, { "alt", "cmd" }, { "ctrl", "alt" }
+-- A keymap like Hyprland's default, with the modifiers in `super` as SUPER.
+-- Shift on top of SUPER moves windows; the third layer (silent moves,
+-- preselect, workspace and display switching) is `ctrlSuper`, Ctrl+SUPER
+-- unless given. Pass the result (or a copy with changes) to bindHotkeys.
+function M.hotkeysFor(super, ctrlSuper)
+    local superShift = { table.unpack(super) }
+    superShift[#superShift + 1] = "shift"
+    if not ctrlSuper then
+        ctrlSuper = { "ctrl", table.unpack(super) }
+        -- With Ctrl already in SUPER, Ctrl+SUPER would be SUPER itself and
+        -- its bindings would shadow SUPER's.
+        for _, mod in ipairs(super) do
+            if mod == "ctrl" then
+                error("hyprspoon: SUPER includes ctrl, so pass hotkeysFor a ctrlSuper", 2)
+            end
+        end
+    end
     local map = {
         closeWindow = { super, "w" },
         toggleFill = { super, "f" },
@@ -217,9 +229,17 @@ M.defaultHotkeys = (function()
         map["moveWorkspaceToDisplay" .. suffix] = { ctrlSuper, key }
     end
     return map
-end)()
+end
 
--- Binds `mapping` (action name -> { mods, key }, as in defaultHotkeys),
+-- Option as SUPER. Option+letter types characters like å and ß, which these
+-- take over; hyperHotkeys leaves typing alone.
+M.defaultHotkeys = M.hotkeysFor({ "alt" })
+
+-- Ctrl+Option+Cmd as SUPER (a Hyper key), with Ctrl+Option+Shift for the
+-- third layer since Ctrl is already part of SUPER.
+M.hyperHotkeys = M.hotkeysFor({ "ctrl", "alt", "cmd" }, { "ctrl", "alt", "shift" })
+
+-- Binds `mapping` (action name -> { mods, key }, as from hotkeysFor),
 -- replacing whatever an earlier call bound. Resizes repeat while held.
 -- Call after start() so named workspaces from its options are known.
 function M:bindHotkeys(mapping)
