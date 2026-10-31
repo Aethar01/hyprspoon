@@ -113,8 +113,13 @@ S.defaults = {
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
-    --   pseudo = true        pseudotile it: it keeps the size it opened
-    --                        with, centred in its tile
+    --   pseudo = true        on first insertion into a tree, use its saved
+    --                        pre-tiling size, centred and clamped to its tile.
+    --                        Off by default; does not force floating windows
+    --                        to tile. false does not clear saved pseudotiling.
+    -- Pseudotiling follows moves, swaps and floating, and persists with the
+    -- layout across reloads/restarts. Mouse edges change its remembered size;
+    -- keyboard resize changes splits. Maximize/fill temporarily overrides it.
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {

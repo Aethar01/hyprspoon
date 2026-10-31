@@ -27,6 +27,8 @@ spoon.hyprspoon:start({
 	rules = {
 		{ app = "System Settings", float = true },
 		-- { app = "Slack", workspace = 4, silent = true },
+		-- Keep the pre-tiling size, centred and clamped inside the tile.
+		-- { app = "Terminal", pseudo = true },
 	},
 })
 
@@ -35,6 +37,7 @@ spoon.hyprspoon:start({
 -- binding, e.g. to keep Option+S for typing ß:
 --   local keys = spoon.hyprspoon.defaultHotkeys
 --   keys.workspaceS = { { "alt", "ctrl", "cmd" }, "s" }
+--   keys.togglePseudo = { { "alt", "shift" }, "p" } -- unbound by default
 spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.defaultHotkeys)
 
 -- Your own bindings can call the API directly.

@@ -23,12 +23,12 @@
 -- Modules (all under hyprspoon/):
 --   state     configuration defaults and state shared between the modules
 --   util      logging, window classification, focus records, pointer warping
---   tree      BSP tree structure, persistence and per-workspace keys
+--   tree      BSP tree structure, pseudotile sizes, persistence and workspace keys
 --   float     automatic and manual floating windows, kept above the tiles
 --   focus     internal focus tracking and the window snapshot for hit testing
 --   discover  finding the manageable windows on each screen
---   layout    laying the trees out onto windows, and scheduling retiles
---   resize    resizing tiles by keyboard, mouse or native window edges
+--   layout    laying out tiles and pseudotiles, and scheduling retiles
+--   resize    resizing splits and pseudotile sizes by keyboard or mouse
 --   drop      dragging a tile onto another to move it in the layout
 --   mouse     modifier + drag anywhere on a window
 --   ffm       focus follows mouse
@@ -117,6 +117,9 @@ local M = {
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
     toggleOverview = Overview.toggle,
+    -- togglePseudo(): toggle the focused tile's own size, centred in its tile.
+    -- Uses its saved pre-tiling frame, else its current frame. No arguments;
+    -- no change for floats, no focused tile, or with tiling off.
     togglePseudo = Actions.togglePseudo,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,

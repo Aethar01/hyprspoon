@@ -118,6 +118,25 @@ Defaults are in [`hyprspoon/state.lua`](hyprspoon/state.lua).
 | `tiling.animationDuration` | `0` | Seconds to animate retiles over; `0` snaps. Mouse drags always snap |
 | `tiling.dropColor` | `{ red = 0.35, green = 0.6, blue = 1 }` | Colour of the highlight where a dragged tile will land |
 
+### Pseudotiling
+
+A pseudotiled window keeps its own size, centred in its tile and clamped to
+fit. Its tile still reserves the full area for splits and navigation.
+`togglePseudo()` turns this on or off for the focused tile. Turning it off
+makes the window fill its tile again. The initial size is the frame saved
+before tiling, or the current frame if none was saved.
+
+Drag a native edge or use modifier-drag resize to change the remembered
+size. It is clamped to the tile and centred again on release. Keyboard
+resize (Option+arrows) still moves the splits. Moving the window within
+its tile snaps it back to the centre; dropping it onto another tile moves
+it through the layout as usual.
+
+Pseudotiling follows the window through swaps, moves, drops, floating,
+workspace and display changes, and native full screen. It survives reloads
+and is restored with matched windows after a restart. Maximizing or filling
+temporarily overrides it; returning to the tile restores it.
+
 ### Mouse (`mouse`)
 
 Modifiers held while dragging anywhere on a window, as lists of
@@ -234,7 +253,12 @@ pattern), and sets any of:
 | `float` | `true` to float the window, `false` to tile it even if it would float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
-| `pseudo` | `true` to pseudotile it: it keeps the size it opened with, centred in its tile |
+| `pseudo` | `true` to pseudotile it when first inserted into a tree, using its saved pre-tiling size; off by default |
+
+`pseudo` does not force a window to tile. Add `float = false` for a standard
+window that would automatically float; dialogs and panels always float.
+`pseudo = false` prevents rule-based activation but does not clear saved
+pseudotiling. A restored leaf keeps its saved size.
 
 Rules are read once per window, when it first appears; later matching rules
 win.
@@ -244,6 +268,7 @@ rules = {
     { app = "1Password", float = true },
     { app = "Slack", workspace = 4, silent = true },
     { app = "Finder", title = "^Copy", float = true },
+    { app = "Terminal", pseudo = true },
 }
 ```
 
@@ -268,6 +293,7 @@ you can also build your own table from scratch.
 | Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) |
 | Option+B | Toggle tiling (Shift: just this workspace) |
 | Option+T | Toggle floating |
+| Unbound | `togglePseudo`: toggle pseudotiling for the focused tile |
 | Option+G | Cycle through floating windows |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) |
 | Option+Y | Flip the split |
@@ -276,9 +302,13 @@ you can also build your own table from scratch.
 | Option+Tab | Overview |
 | Option+W | Close the window |
 
-`togglePseudo` is unbound: it pseudotiles the window, which keeps its own
-size (the one it had before it was tiled), centred in its tile, or stops.
-Resizing a pseudotiled window by its edges changes that size, not the tile.
+To bind pseudotiling before calling `bindHotkeys`:
+
+```lua
+local keys = spoon.hyprspoon.defaultHotkeys
+keys.togglePseudo = { { "alt", "shift" }, "p" }
+spoon.hyprspoon:bindHotkeys(keys)
+```
 
 Option+letter shortcuts replace the characters macOS types with Option
 (å, ß, ∂ and so on). Remap the ones you need for typing.
@@ -291,8 +321,12 @@ yourself or call them from the `hs` command-line tool
 
 ```sh
 hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
+hs -c 'spoon.hyprspoon.togglePseudo()'
 hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 ```
+
+`togglePseudo()` takes no arguments. It acts on the focused tile and does
+nothing for a floating window, with tiling off, or with no focused tile.
 
 ## Troubleshooting
 
@@ -300,6 +334,9 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
   a corner of the display. Quitting Hammerspoon brings them back, but a
   crash leaves them there. Start Hammerspoon again, then switch to their
   workspace or quit it normally.
+- **Pseudotiling looks unchanged.** If the remembered size fills the tile,
+  drag an edge inward to choose a smaller size. Keyboard resize changes the
+  tile's splits instead. Leave maximized or filled mode to see pseudotiling.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
@@ -312,6 +349,11 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
   basics working.
 - It wraps `hs.reload` to tell a reload apart from a quit, so that windows
   stay parked across a reload.
+- After a reload, an already tiled window has no saved pre-tiling frame.
+  Enabling pseudotiling uses its current frame, which may fill the tile.
+  Existing pseudotiled windows keep their remembered size.
+- Apps may enforce minimum sizes larger than a tile, so a pseudotiled
+  window may not fit the requested frame exactly.
 - Native full-screen windows still get their own Space, which macOS
   manages.
 
