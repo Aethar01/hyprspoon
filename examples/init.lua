@@ -27,6 +27,10 @@ spoon.hyprspoon:start({
 	rules = {
 		{ app = "System Settings", float = true },
 		-- { app = "Slack", workspace = 4, silent = true },
+		-- Placement only applies once; reopen the window to try changes.
+		-- { app = "Activity Monitor", float = true,
+		--   size = { w = 640, h = 480 }, position = { x = 20, y = 30 } },
+		-- { subrole = "AXDialog", center = true, noborder = true },
 	},
 })
 

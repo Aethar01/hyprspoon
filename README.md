@@ -16,7 +16,8 @@ A Hyprland-inspired tiling window manager for macOS, as a
   inactive colours.
 - **Modifier + drag** anywhere on a window to move or resize it.
 - **Focus follows mouse** (optional), and cursor warping on keyboard focus.
-- **Window rules**: float a window or send it to a workspace by app or title.
+- **Window rules**: float, size, place or send a window to a workspace by app,
+  title or role.
 - **An overview** of every workspace, in place of Mission Control.
 - **Layouts survive** reloads and restarts.
 - **Scriptable** from the `hs` command line, like `hyprctl`.
@@ -234,23 +235,48 @@ or `false`.
 | `rules` | `{}` | Per-window rules, like Hyprland's windowrules (below) |
 | `ignoreApps` | `{}` | App names whose windows are never watched or tiled, e.g. `{"Raycast"}` |
 
-Each rule matches on `app` (the app's name) and/or `title` (a Lua
-pattern), and sets any of:
+Each rule matches on any of `app` (the app's name), `title` (a Lua
+pattern), `role` and `subrole` (the window's accessibility role and subrole,
+e.g. `"AXWindow"` and `"AXDialog"`), and sets any of:
 
 | Field | Description |
 |---|---|
-| `float` | `true` to float the window, `false` to tile it even if it would float |
+| `float` | `true` to float a standard window, `false` to tile it even if it would float; dialogs and panels always float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
+| `size` | A float's size when it first appears, `{ w, h }`: points, or fractions of the display for `0 < v <= 1`, e.g. `{ 0.5, 0.6 }`; `1` means the full display |
+| `position` | A float's top left when it first appears, `{ x, y }` from the display's top left, in points or fractions like `size` |
+| `center` | `true` to centre a new float (floats are by default, dialogs aren't), `false` to leave it where the app put it |
+| `noborder` | `true` for no ring around the window |
+| `opacity` | How see-through the window itself is, from 0 to 1, for border masking (experimental, PR #38; not read on this branch) |
+
+Zero and negative `size`/`position` values are points. Placement clamps the
+requested frame to the display's usable area, with a minimum size of one
+point. Both coordinates must be numbers. Named forms `{ w = 640, h = 480 }`
+and `{ x = 20, y = 30 }` also work. A `position` wins over `center`.
+These fields only place automatic floats; they do not make a window float.
+Add `float = true` for a standard window that would otherwise tile.
+Without placement fields, floats are centred and dialogs keep their app's
+position. `noborder` defaults to false; `opacity` has no effect here.
+
+Existing floats keep their frames across reloads. Saved manual floating
+choices take precedence over rules and skip initial placement.
+
+All matching fields in a rule must match. App, role and subrole are exact,
+case-sensitive strings; only title uses a Lua pattern. A rule without
+matching fields applies to every managed window. Rules do not make ignored
+windows manageable.
 
 Rules are read once per window, when it first appears; later matching rules
-win.
+win for each field they set. Titles that change later do not update rules.
 
 ```lua
 rules = {
     { app = "1Password", float = true },
     { app = "Slack", workspace = 4, silent = true },
     { app = "Finder", title = "^Copy", float = true },
+    { app = "Activity Monitor", float = true, size = { 0.5, 0.6 } },
+    { subrole = "AXDialog", noborder = true },
 }
 ```
 
@@ -422,6 +448,9 @@ after updating from source.
   Rebuild `frames` if it is missing or outdated. Without this query, or if
   it fails, uncertain IDs are kept so off-screen windows keep their
   assignments; a close event or a later successful query clears them.
+- **Placement rules seem unchanged.** Reopen the window after changing
+  `size`, `position` or `center`; reloads preserve an existing float's frame.
+  Apps may enforce their own minimum size or adjust the requested frame.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
