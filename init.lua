@@ -32,7 +32,7 @@
 --   drop      dragging a tile onto another to move it in the layout
 --   mouse     modifier + drag anywhere on a window
 --   ffm       focus follows mouse
---   spaces    numbered workspaces, parking the windows of hidden ones
+--   spaces    numbered workspaces, parking hidden windows and following pins
 --   restore   layouts and workspaces back after a restart
 --   swipe     trackpad swipes between workspaces
 --   bar       workspace numbers in the menu bar, and the row they're drawn as
@@ -119,6 +119,10 @@ local M = {
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
     toggleOverview = Overview.toggle,
+    -- togglePin(): pin/unpin the focused window on its display; no arguments.
+    -- A tile floats first (centred with tiling on). Unpinning keeps it floating.
+    -- Works with tiling off; no focused window means no change.
+    togglePin = Actions.togglePin,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,
     toggleWorkspaceTiling = Actions.toggleWorkspaceTiling,
@@ -138,7 +142,7 @@ local RESIZE_STEPS = { Left = { -10, 0 }, Right = { 10, 0 }, Up = { 0, -10 }, Do
 local function hotkeyActions()
     local actions = {}
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
-        "toggleWorkspaceTiling", "toggleFloat", "focusFloat", "toggleSplit", "balance",
+        "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
         "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace" }) do
         actions[name] = M[name]
     end

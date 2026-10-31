@@ -27,6 +27,8 @@ spoon.hyprspoon:start({
 	rules = {
 		{ app = "System Settings", float = true },
 		-- { app = "Slack", workspace = 4, silent = true },
+		-- Keep new windows of this app on every workspace of their display.
+		-- { app = "Activity Monitor", pin = true },
 		-- Placement only applies once; reopen the window to try changes.
 		-- { app = "Activity Monitor", float = true,
 		--   size = { w = 640, h = 480 }, position = { x = 20, y = 30 } },
@@ -39,6 +41,7 @@ spoon.hyprspoon:start({
 -- binding, e.g. to keep Option+S for typing ß:
 --   local keys = spoon.hyprspoon.defaultHotkeys
 --   keys.workspaceS = { { "alt", "ctrl", "cmd" }, "s" }
+--   keys.togglePin = { { "alt", "shift" }, "p" } -- unbound by default
 -- or bind spoon.hyprspoon.ctrlAltCmdHotkeys for Ctrl+Option+Cmd as SUPER.
 spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.defaultHotkeys)
 

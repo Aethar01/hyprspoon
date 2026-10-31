@@ -16,8 +16,8 @@ A Hyprland-inspired tiling window manager for macOS, as a
   inactive colours.
 - **Modifier + drag** anywhere on a window to move or resize it.
 - **Focus follows mouse** (optional), and cursor warping on keyboard focus.
-- **Window rules**: float, size, place or send a window to a workspace by app,
-  title or role.
+- **Window rules**: float, pin, size, place or send a window to a workspace
+  by app, title or role.
 - **An overview** of every workspace, in place of Mission Control.
 - **Layouts survive** reloads and restarts.
 - **Scriptable** from the `hs` command line, like `hyprctl`.
@@ -167,6 +167,24 @@ with the same name. To list them:
 hs -c 'for _, s in ipairs(hs.screen.allScreens()) do print(s:name(), s:getUUID()) end'
 ```
 
+### Pinned windows
+
+A pinned window floats on whichever workspace its display shows. It stays
+on that display as you switch, including scratchpads. A scratchpad with
+only pinned windows counts as empty and closes when empty scratchpads are
+checked. Move the window to another display to have it follow that display.
+
+`togglePin()` pins or unpins the focused window. Pinning a tile centres it
+and makes it float. With tiling off, it stays where it is and is marked to
+float when tiling resumes. Unpinning leaves it floating on the current
+workspace. `toggleFloat` unpins it when turning it back into a tile.
+Moving it silently to a hidden workspace also unpins it so it can stay there;
+moving it to a visible workspace keeps the pin.
+
+Pins survive reloads, minimizing and native full screen. On return, the
+window joins the workspace its display shows. Manual pins do not survive
+a reboot; use a `pin = true` rule to pin newly opened windows again.
+
 ### Borders (`border`)
 
 Rings around the windows on show, drawn in the gap outside their edges.
@@ -249,6 +267,7 @@ e.g. `"AXWindow"` and `"AXDialog"`), and sets any of:
 | `center` | `true` to centre a new float (floats are by default, dialogs aren't), `false` to leave it where the app put it |
 | `noborder` | `true` for no ring around the window |
 | `opacity` | How see-through the window itself is, from 0 to 1, for border masking (experimental, PR #38; not read on this branch) |
+| `pin` | `true` to float it on every workspace of its display, overriding `float`; off by default |
 
 Zero and negative `size`/`position` values are points. Placement clamps the
 requested frame to the display's usable area, with a minimum size of one
@@ -266,6 +285,10 @@ All matching fields in a rule must match. App, role and subrole are exact,
 case-sensitive strings; only title uses a Lua pattern. A rule without
 matching fields applies to every managed window. Rules do not make ignored
 windows manageable.
+
+For a pinned window, a `workspace` rule only applies if that workspace is
+already showing; it can take the window to that display. A hidden target
+is ignored. `pin = false` does not undo a saved manual pin.
 
 Rules are read once per window, when it first appears; later matching rules
 win for each field they set. Titles that change later do not update rules.
@@ -343,6 +366,7 @@ check the chords you choose.
 | Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) | `focusDisplayPrev`/`Next`, `moveToDisplayPrev`/`Next`, `moveWorkspaceToDisplayPrev`/`Next` |
 | Option+B | Toggle tiling (Shift: just this workspace) | `toggleTiling`, `toggleWorkspaceTiling` |
 | Option+T | Toggle floating | `toggleFloat` |
+| (unbound) | Pin or unpin the focused window on its display | `togglePin` |
 | Option+G | Cycle through floating windows | `focusFloat` |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
 | Option+Y | Flip the split | `toggleSplit` |
@@ -400,8 +424,12 @@ hs.hotkey.bind({ "alt" }, "h", function() spoon.hyprspoon.focus("left") end)
 
 ```sh
 hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
+hs -c 'spoon.hyprspoon.togglePin()'
 hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 ```
+
+`togglePin()` takes no arguments and acts on the focused managed window.
+With no focused window it does nothing. It also works with tiling off.
 
 `spoon.hyprspoon:rescue()` returns the number of parked windows brought
 back. See [Getting windows back](#getting-windows-back) for a command that
@@ -451,6 +479,9 @@ after updating from source.
 - **Placement rules seem unchanged.** Reopen the window after changing
   `size`, `position` or `center`; reloads preserve an existing float's frame.
   Apps may enforce their own minimum size or adjust the requested frame.
+- **A pinned window stopped following.** Turning it into a tile or moving
+  it silently to a hidden workspace removes the pin. Focus it and call
+  `togglePin` to pin it again.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
@@ -466,6 +497,8 @@ after updating from source.
 - Use one macOS Desktop per display. Window management only sees the
   current Desktop's windows. See [Getting windows back](#getting-windows-back)
   for recovery limits after a crash or macOS restart.
+- Pinned windows stay out of workspace slide pictures, but the picture is
+  drawn over them. A pin may be covered until the slide ends.
 - Native full-screen windows still get their own Space, which macOS
   manages. Border checks use the Space type before Lua learns a window is
   full screen. If that private call is unavailable, the native check only

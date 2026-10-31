@@ -116,6 +116,13 @@ S.defaults = {
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
+    --   pin = true           float it on every workspace of its display,
+    --                        overriding float; off by default. A workspace
+    --                        target must already be showing, else ignored.
+    --                        false does not clear a saved manual pin.
+    -- Pins follow scratchpads too and survive reload/minimize/full screen,
+    -- but not reboot. Unpinning leaves a float; tiling it or silently moving
+    -- it to a hidden workspace removes the pin.
     --   size = { w, h }      a float's size when it first appears, in points
     --                        or fractions when 0 < v <= 1 (1 is the full
     --                        display); zero and negatives are points

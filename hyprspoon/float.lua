@@ -126,8 +126,11 @@ local function shouldFloat(win)
         return true
     end
     local rule = Util.rulesFor(win)
-    if rule.float ~= nil then
-        S.autoFloat[id] = rule.float == true
+    -- Pinned windows float.
+    local float = rule.float
+    if rule.pin then float = true end
+    if float ~= nil then
+        S.autoFloat[id] = float == true
     else
         local ok, canFullScreen = pcall(function()
             local ax = hs.axuielement.windowElement(win)
