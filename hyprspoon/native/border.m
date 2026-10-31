@@ -102,6 +102,10 @@ static CFTypeRef (*SLSWindowQueryResultCopyWindows)(CFTypeRef);
 static bool (*SLSWindowIteratorAdvance)(CFTypeRef);
 static CFArrayRef (*SLSWindowIteratorGetCornerRadii)(CFTypeRef);
 
+// Optional: a Space's type (4 is full screen, Split View too). Without it
+// only fillsDisplay() tells full-screen windows.
+static int (*SLSSpaceGetType)(int, uint64_t);
+
 static const char *loadSymbols(void) {
     slOpen();
     SL_FUNCS(SL_LOAD)
@@ -109,6 +113,7 @@ static const char *loadSymbols(void) {
     SLSWindowQueryResultCopyWindows = dlsym(RTLD_DEFAULT, "SLSWindowQueryResultCopyWindows");
     SLSWindowIteratorAdvance = dlsym(RTLD_DEFAULT, "SLSWindowIteratorAdvance");
     SLSWindowIteratorGetCornerRadii = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetCornerRadii");
+    SLSSpaceGetType = dlsym(RTLD_DEFAULT, "SLSSpaceGetType");
     return NULL;
 }
 
@@ -129,6 +134,7 @@ typedef struct {
     CGSize canvas;   // the window's size, the ring drawn in its top-left corner
     bool hidden;     // its target's app is hidden
     bool fills;      // its target fills a display (native full screen)
+    bool fullSpace;  // its target is on a full-screen Space (Split View too)
     bool shown;      // ordered in
     CGFloat radius;  // the target's corner radius
     bool resizing;   // hidden while the system resizes its target (see catchUp)
@@ -269,7 +275,9 @@ static CGFloat cornerRadius(uint32_t wid) {
     return radius > 0 ? radius : style.radius;
 }
 
-// Keeps the ring on the Space its target is on.
+// Keeps the ring on the Space its target is on, noting whether that is a
+// full-screen Space. Looked up when the ring is made and when its target
+// may have changed Space (see place), never on every Space change.
 static void joinTargetSpace(Ring *ring) {
     CFArrayRef targets = slWindowList(ring->target);
     CFArrayRef spaces = SLSCopySpacesForWindows(drawCid, 0x7, targets);
@@ -282,6 +290,7 @@ static void joinTargetSpace(Ring *ring) {
             CFArrayRef ours = slWindowList(ring->wid);
             SLSMoveWindowsToManagedSpace(drawCid, ours, sid);
             CFRelease(ours);
+            ring->fullSpace = SLSSpaceGetType && SLSSpaceGetType(drawCid, sid) == 4;
         }
     }
     CFRelease(spaces);
@@ -343,6 +352,8 @@ static bool makeWindow(Ring *ring) {
 }
 
 // Native full screen: the window covers its display, with nowhere to draw.
+// Not so in Split View or below a camera housing: the ring's Space tells
+// those (fullSpace).
 static bool fillsDisplay(CGRect bounds) {
     CGDirectDisplayID displays[16];
     uint32_t count = 0;
@@ -354,7 +365,7 @@ static bool fillsDisplay(CGRect bounds) {
 }
 
 static void order(CFTypeRef t, Ring *ring) {
-    bool show = !overview && !ring->hidden && !ring->fills && !ring->resizing;
+    bool show = !overview && !ring->hidden && !ring->fills && !ring->fullSpace && !ring->resizing;
     if (show) {
         int64_t level = 0;
         SLSGetWindowLevel(drawCid, ring->target, &level);
@@ -392,6 +403,13 @@ static bool place(Ring *ring, bool restack) {
         || have.width > need.width + 3 * STEP || have.height > need.height + 3 * STEP;
     bool fills = fillsDisplay(bounds);
     if (fills != ring->fills) restack = true;
+    // Going in or out of full screen moves the target to another Space,
+    // before Lua hears of it: follow it there.
+    if (ring->drawn && !ring->previewing && (fills != ring->fills || ring->fullSpace)) {
+        bool was = ring->fullSpace;
+        joinTargetSpace(ring);
+        if (ring->fullSpace != was) restack = true;
+    }
     ring->fills = fills;
     ring->bounds = bounds;
 
@@ -477,7 +495,7 @@ static Ring *newRing(uint32_t target) {
         *ring = made;
     }
     ring->target = target;
-    ring->hidden = ring->fills = ring->shown = ring->previewing = ring->resizing = false;
+    ring->hidden = ring->fills = ring->fullSpace = ring->shown = ring->previewing = ring->resizing = false;
     ring->drawn = false;
     ring->from = ring->to = target == active ? 1 : 0;
     ring->duration = 0;
