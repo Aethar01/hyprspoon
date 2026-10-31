@@ -239,7 +239,7 @@ e.g. `"AXWindow"` and `"AXDialog"`), and sets any of:
 | `position` | A float's top left when it first appears, `{ x, y }` from the display's top left, in points or fractions like `size` |
 | `center` | `true` to centre a new float (floats are by default, dialogs aren't), `false` to leave it where the app put it |
 | `noborder` | `true` for no ring around the window |
-| `opacity` | How see-through the window itself is, from 0 to 1, for border masking (not read yet) |
+| `opacity` | How see-through the window itself is, from 0 to 1, for border masking (experimental, PR #38; not read on this branch) |
 
 Zero and negative `size`/`position` values are points. Placement clamps the
 requested frame to the display's usable area, with a minimum size of one

@@ -124,7 +124,8 @@ S.defaults = {
     --                        not dialogs), or leave it where the app put it
     --   noborder = true      no ring around it
     --   opacity = 0..1       how see-through the window itself is, for
-    --                        border masking (not read yet)
+    --                        border masking (experimental, PR #38;
+    --                        not read on this branch)
     -- Placement clamps the requested frame to the display's usable area,
     -- with a minimum size of one point. Reloads keep existing float frames.
     -- Rules are read once per window, when it first appears (titles that
