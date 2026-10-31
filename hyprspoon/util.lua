@@ -106,8 +106,11 @@ end
 -- The rules (S.cfg.rules) matching a window, merged into one table: later
 -- matches override earlier ones. Worked out once per window.
 local windowRules = {} -- window id -> merged rule
+local MATCHERS = { app = true, title = true, role = true, subrole = true }
 
-local function rulesFor(win)
+-- Borders can read rules before the title settles; those reads must not
+-- populate the cache that placement and workspace assignment share.
+local function rulesFor(win, uncached)
     local id = win:id()
     if id and windowRules[id] then return windowRules[id] end
     local out = {}
@@ -115,21 +118,29 @@ local function rulesFor(win)
     if #rules > 0 then
         local app = win:application()
         local name = app and app:name() or ""
-        local title = nil
+        local title, role, subrole = nil, nil, nil
         for _, rule in ipairs(rules) do
             local match = rule.app == nil or rule.app == name
+            if match and rule.role then
+                role = role or win:role() or ""
+                match = role == rule.role
+            end
+            if match and rule.subrole then
+                subrole = subrole or win:subrole() or ""
+                match = subrole == rule.subrole
+            end
             if match and rule.title then
                 title = title or win:title() or ""
                 match = title:match(rule.title) ~= nil
             end
             if match then
                 for k, v in pairs(rule) do
-                    if k ~= "app" and k ~= "title" then out[k] = v end
+                    if not MATCHERS[k] then out[k] = v end
                 end
             end
         end
     end
-    if id then windowRules[id] = out end
+    if id and not uncached then windowRules[id] = out end
     return out
 end
 

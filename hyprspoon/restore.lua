@@ -71,6 +71,9 @@ local function live()
     return saved ~= nil
 end
 
+-- Nothing more is matched (spoon.hyprspoon:rescue() forgot the workspaces).
+M.forget = finish
+
 -- The display -> workspace number each display showed before the restart.
 function M.savedActive()
     return live() and saved.active or {}

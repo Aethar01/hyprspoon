@@ -56,7 +56,7 @@ local rules = {}
 local Util = { isPictureInPicture = isPiP, windowKind = function() return "standard" end,
     rulesFor = function() return rules end,
     dlog = function() end, setFrame = function(win, rect, duration) win:setFrame(rect, duration) end }
-local Tree = {}
+local Tree = { bootTime = 1000 }
 local Focus = { invalidateWindowCache = function() end }
 local Discover = { layoutChecks = {} }
 local hiddenIDs = {}
@@ -78,11 +78,18 @@ local title = "test"
 local win = { id = function() return 1 end, screen = function() return nil end,
     title = function() return title end,
     application = function() return { name = function() return "test" end } end }
--- savedFloats is a file-local in hyprspoon/float.lua; provide it with a setter.
-local shouldFloat, setSavedFloats = assert(load("local savedFloats = {}\n"
-    .. extract("float", "local function appName(win)", "local function rememberFloat(win)")
-    .. extract("float", "local function shouldFloat(win)", "local function raiseFloatingNow()")
-    .. "return shouldFloat, function(t) savedFloats = t end", "float", "t", env))()
+local floatSettings = {}
+env.hs.settings = {
+    get = function(key) return floatSettings[key] end,
+    set = function(key, value) floatSettings[key] = value end,
+}
+-- Reload the production persistence code, with a setter for isolated cases.
+local function loadFloat()
+    return assert(load(extract("float", "-- Manual overrides persist", "-- Floating windows stay above")
+        .. "return shouldFloat, function(t) savedFloats, placedFloats = t, {} end, forgetFloat",
+        "float", "t", env))()
+end
+local shouldFloat, setSavedFloats = loadFloat()
 local function classify(value)
     fullScreen, axReads = value, 0
     S.autoFloat = {}
@@ -110,7 +117,170 @@ rules = { float = true }
 assert(classify(true) == true and axReads == 0, "a float rule overrides full-screen support")
 rules = { float = false }
 assert(classify(false) == false and S.autoFloat[1] == false and axReads == 0, "a tile rule keeps it tiled")
+rules = { pin = true, float = false }
+assert(classify(true) == true and axReads == 0, "a pin rule floats it")
+
+-- New floats are sized and placed by their rule, in points or fractions of
+-- the display; without a position they're centred, dialogs only on request.
+local placed, sized
+local sf = { x = 100, y = 50, w = 1000, h = 800 }
+win.screen = function() return { frame = function() return sf end } end
+win.frame = function() return { x = 0, y = 0, w = 200, h = 100 } end
+win.setTopLeft = function(_, p) placed = p end
+win.setSize = function(_, s) sized = s end
+local function place(rule, canFullScreen)
+    rules, placed, sized = rule, nil, nil
+    return classify(canFullScreen or false)
+end
+place({})
+assert(placed.x == 500 and placed.y == 400 and sized == nil, "floats are centred")
+place({ size = { 0.5, 0.25 } })
+assert(sized.w == 500 and sized.h == 200 and placed.x == 350 and placed.y == 350,
+    "fractions size against the display, then centre")
+place({ size = { w = 640, h = 480 }, position = { 0, 0.5 } })
+assert(sized.w == 640 and sized.h == 480 and placed.x == 100 and placed.y == 370,
+    "points size, and fractional position is clamped to the display")
+place({ position = { 20, 30 }, center = true })
+assert(placed.x == 120 and placed.y == 80, "a position wins over centring")
+place({ center = false })
+assert(placed == nil and sized == nil, "center = false leaves it where the app put it")
+place({ size = { 1, 1 }, position = { 1, 1 } })
+assert(sized.w == 1000 and sized.h == 800 and placed.x == 100 and placed.y == 50,
+    "one means the full display, and the final frame stays inside it")
+place({ size = { 2000, 1200 }, center = true })
+assert(sized.w == 1000 and sized.h == 800 and placed.x == 100 and placed.y == 50,
+    "oversized requests are clamped before centring")
+place({ position = { -20, -30 } })
+assert(placed.x == 100 and placed.y == 50, "negative point offsets are clamped at the display's top left")
+place({ position = { 5000, 5000 } })
+assert(placed.x == 900 and placed.y == 750, "position keeps the whole window inside the display")
+place({ size = { 400, 300 }, center = false })
+assert(sized.w == 400 and sized.h == 300 and placed.x == 100 and placed.y == 50,
+    "size alone keeps the final frame inside the display")
+place({ size = { 400, 300 } })
+assert(placed.x == 400 and placed.y == 300,
+    "centres from the requested size even when the app still reports its old frame")
+local oldFrame = win.frame
+win.frame = function() return { x = 100, y = 50, w = 2000, h = 1200 } end
+place({ position = { 20, 30 } })
+assert(sized.w == 1000 and sized.h == 800 and placed == nil,
+    "position also clamps an existing oversized frame")
+win.frame = oldFrame
+local oldScreenFrame = sf
+sf = { x = -1400, y = -900, w = 1200, h = 900 }
+place({ size = { 0.5, 0.5 }, position = { 1, 1 } })
+assert(sized.w == 600 and sized.h == 450 and placed.x == -800 and placed.y == -450,
+    "fractions and bounds use the float's display, including negative display origins")
+sf = oldScreenFrame
+place({ size = { 0.5, 0.5 } }, true)
+assert(S.autoFloat[1] == false and sized == nil, "tiles aren't sized")
+Util.windowKind = function() return "subwindow" end
+place({})
+assert(placed == nil, "dialogs aren't centred")
+place({ center = true })
+assert(placed.x == 500 and placed.y == 400, "unless a rule says so")
+Util.windowKind = function() return "standard" end
+
+-- Reloading reclassifies automatic floats without sizing or moving them.
+for _, rule in ipairs({ {}, { size = { 400, 300 }, position = { 20, 30 } }, { center = true } }) do
+    place(rule)
+    placed, sized, S.autoFloat = nil, nil, {}
+    local reloaded, _, forget = loadFloat()
+    assert(reloaded(win) == true and placed == nil and sized == nil,
+        "automatic floats keep their user-adjusted frames across reloads")
+    S.autoFloat = {}
+    rules = { float = false }
+    reloaded = loadFloat()
+    assert(reloaded(win) == false, "placement history isn't a manual float override")
+    forget(1)
+    rules, S.autoFloat = rule, {}
+    reloaded = loadFloat()
+    assert(reloaded(win) == true and placed ~= nil, "closed window IDs can be placed again")
+end
+place({ center = true })
+Util.windowKind = function() return "subwindow" end
+placed, sized, S.autoFloat = nil, nil, {}
+local reloaded = loadFloat()
+assert(reloaded(win) == true and placed == nil and sized == nil, "dialogs also keep their frames on reload")
+Util.windowKind = function() return "standard" end
+Tree.bootTime, S.autoFloat = 2000, {}
+reloaded = loadFloat()
+assert(reloaded(win) == true and placed ~= nil, "placement history is discarded after a reboot")
+Tree.bootTime = 1000
+win.screen, win.frame, win.setTopLeft, win.setSize = function() return nil end, nil, nil, nil
 rules = {}
+
+-- Rules match on app, title, role and subrole, and merge with later ones
+-- winning; the matching fields themselves aren't copied.
+local ruleEnv = setmetatable({ S = { cfg = { rules = {} } } }, { __index = _G })
+local rulesFor = assert(load(extract("util", "local windowRules = {}",
+    "-- The filter's windows minus") .. "return rulesFor", "rules", "t", ruleEnv))()
+local nextID, roleReads = 100, 0
+local function ruleWin(app, winTitle, role, subrole)
+    nextID = nextID + 1
+    local id = nextID
+    return { id = function() return id end, title = function() return winTitle end,
+        role = function() roleReads = roleReads + 1 return role end,
+        subrole = function() return subrole end,
+        application = function() return { name = function() return app end } end }
+end
+ruleEnv.S.cfg.rules = {
+    { app = "Finder", float = true, opacity = 0.9 },
+    { app = "Finder", title = "^Copy", float = false, size = { 0.5, 0.6 } },
+    { subrole = "AXDialog", noborder = true, center = true },
+    { role = "AXSheet", workspace = 3 },
+    { app = "Finder", role = "AXWindow", subrole = "AXDialog", position = { 10, 20 } },
+}
+local r = rulesFor(ruleWin("Finder", "Copying", "AXWindow", "AXStandardWindow"))
+assert(r.float == false and r.size[1] == 0.5 and r.opacity == 0.9, "later matches win")
+assert(r.noborder == nil and r.workspace == nil and r.position == nil, "role and subrole must match")
+assert(r.app == nil and r.title == nil and r.role == nil and r.subrole == nil,
+    "matching fields aren't effects")
+r = rulesFor(ruleWin("Finder", "Info", "AXWindow", "AXDialog"))
+assert(r.float == true and r.size == nil and r.noborder and r.center and r.position[2] == 20,
+    "role, subrole and app together")
+r = rulesFor(ruleWin("Safari", "x", "AXSheet", "AXDialog"))
+assert(r.workspace == 3 and r.noborder and r.float == nil, "role and subrole alone")
+roleReads = 0
+ruleEnv.S.cfg.rules = { { app = "Finder", role = "AXWindow", float = true } }
+local safari = ruleWin("Safari", "x", "AXWindow")
+assert(next(rulesFor(safari)) == nil and roleReads == 0, "role isn't read once the app rules it out")
+assert(rulesFor(safari) == rulesFor(safari), "worked out once per window")
+
+-- Windows with a `noborder` rule get no ring.
+local ringRules = { {}, { noborder = true }, { noborder = false } }
+local ringWins = {}
+for id = 1, 3 do ringWins[id] = { id = function() return id end } end
+local ringEnv = setmetatable({
+    S = { fullscreen = {} },
+    Util = { managedWindows = function() return ringWins end,
+        rulesFor = function(w, uncached)
+            assert(uncached == true, "borders must not cache rules before the title settles")
+            return ringRules[w:id()]
+        end },
+    Spaces = { isHidden = function() return false end },
+    Tree = { behindMaximized = function() return false end, filling = function() return false end },
+}, { __index = _G })
+local onShow = assert(load(extract("border", "local suspended = false",
+    "-- Window set changes come in bursts.") .. "return onShow", "border", "t", ringEnv))()
+local shown = onShow()
+assert(#shown == 2 and shown[1] == 1 and shown[2] == 3, "noborder windows get no ring")
+
+-- The border's early read must leave the settled title for the layout path.
+local earlyTitle = ""
+local earlyWin = ruleWin("Finder", "", "AXWindow", "AXStandardWindow")
+earlyWin.title = function() return earlyTitle end
+ringEnv.Util.managedWindows = function() return { earlyWin } end
+ringEnv.Util.rulesFor = rulesFor
+ruleEnv.S.cfg.rules = { { title = "^Copy", float = true, workspace = 3, noborder = true } }
+assert(#onShow() == 1, "a new window's ring can appear before its title settles")
+earlyTitle = "Copying"
+assert(#onShow() == 0, "uncached border reads can match the settled title")
+r = rulesFor(earlyWin)
+assert(r.float == true and r.workspace == 3 and r.noborder == true,
+    "border reads don't poison float or workspace rules")
+earlyTitle = "Done"
+assert(#onShow() == 0 and rulesFor(earlyWin) == r, "borders respect rules cached by layout")
 
 -- Dialog/panel roles are managed only when they have a close button, are
 -- modal, or have a default or cancel button.
@@ -148,6 +318,27 @@ local pip = { id = function() return 99 end, title = function() return "Picture-
 win.isStandard, win.isVisible = function() return true end, function() return true end
 local recovered = appWindows(1, { allWindows = function() return { win, pip } end })
 assert(#recovered == 1 and recovered[1] == win, "app-list recovery must not reintroduce PiP")
+
+-- A window found full screen without an event (already so at start, or met
+-- on its Space after a swipe) loses its ring, and gets it back after.
+local syncs = 0
+local infoEnv = setmetatable({
+    S = { windowInfo = {}, fullscreen = {} },
+    Border = { sync = function() syncs = syncs + 1 end },
+}, { __index = _G })
+local windowInfoFor = assert(load(extract("discover", "local function windowInfoFor(win)",
+    "-- Native tabs:") .. "return windowInfoFor", "window info", "t", infoEnv))()
+local full = true
+local fsWin = { id = function() return 7 end, isFullScreen = function() return full end,
+    screen = function() return { getUUID = function() return "DISPLAY" end } end }
+windowInfoFor(fsWin)
+assert(infoEnv.S.fullscreen[7] and syncs == 1, "a full-screen window found by lookup leaves the rings")
+infoEnv.S.windowInfo = {}
+windowInfoFor(fsWin)
+assert(syncs == 1, "no ring sync when nothing changed")
+infoEnv.S.windowInfo, full = {}, false
+windowInfoFor(fsWin)
+assert(not infoEnv.S.fullscreen[7] and syncs == 2, "back from full screen, the window is ringed again")
 
 local target = { x = 10, y = 10, w = 800, h = 600 }
 local actual, writes, accept = {}, 0, false
@@ -378,4 +569,4 @@ gesture(3, { { 0.5, 0.5 }, { 0.45, 0.5 } })
 assert(#switches == 2, "short movements don't switch")
 assert(onGesture({ getTouches = function() return nil end }) == false, "non-gesture events pass through")
 
-print("Window classification, layout, snapshots, discovery, PiP, BSP navigation, pseudotile resizing and swipe regressions passed")
+print("Window classification, rules, layout, snapshots, discovery, PiP, BSP navigation, pseudotile resizing, borders, and swipe regressions passed")
