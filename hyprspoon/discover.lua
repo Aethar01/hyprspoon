@@ -8,6 +8,7 @@ local Util = require("hyprspoon.util")
 local Tree = require("hyprspoon.tree")
 local Float = require("hyprspoon.float")
 local Spaces = require("hyprspoon.spaces")
+local Border = require("hyprspoon.border")
 
 -- Each window's screen and fullscreen state, cached per window id: both are
 -- accessibility calls and change only when the window moves or goes
@@ -103,7 +104,13 @@ local function windowInfoFor(win)
     if info then return info end
     local screen = win:screen()
     info = { uuid = screen and screen:getUUID(), full = win:isFullScreen() }
-    S.fullscreen[id] = info.full or nil
+    -- Found to be in or out of full screen without an event (already full
+    -- screen when hyprspoon started, or first met on its Space after a
+    -- swipe): the rings follow.
+    if S.fullscreen[id] ~= (info.full or nil) then
+        S.fullscreen[id] = info.full or nil
+        Border.sync()
+    end
     -- A window with no screen yet (still being created) isn't cached.
     if info.uuid then S.windowInfo[id] = info end
     return info

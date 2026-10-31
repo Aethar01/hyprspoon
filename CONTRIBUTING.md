@@ -21,7 +21,10 @@ Reload Hammerspoon to pick up changes, including rebuilt native modules.
   one does.
 - `hyprspoon/state.lua`: every option, with its default and documentation.
 - `hyprspoon/native/`: optional C and Objective-C modules. Each one has a
-  Lua fallback, and the Lua side must keep working without it.
+  Lua path that keeps the basics working without it; borders and slides
+  are disabled when their modules are absent. `frames.c`, `drag.c` and
+  `focus.c` build into `frames.so`. Its `liveIDs()` query confirms closure
+  across Spaces; without it, workspace sync and `rescue()` keep uncertain IDs.
 
 ## Tests
 
@@ -31,6 +34,19 @@ tests/run.sh        # unit tests, plain Lua 5.4+, no Hammerspoon needed
 
 `tests/performance.lua` is a live benchmark that runs inside Hammerspoon
 (see its header).
+
+`tests/opaque_probe.m` is a standalone macOS diagnostic for window alpha
+and the private opaque flag. Build and run it from the repo root:
+
+```sh
+clang -fobjc-arc -framework AppKit -framework Foundation -framework CoreGraphics \
+    tests/opaque_probe.m -o /tmp/opaque_probe
+/tmp/opaque_probe
+```
+
+It is read-only by default. `-s` also creates, changes and closes an
+off-screen test window. See its header for options and output columns.
+It is separate from the unit tests and needs no Hammerspoon reload.
 
 Window management depends on timing, so also try a change live: tiling on
 and off, several displays if you have them, full-screen windows, and
