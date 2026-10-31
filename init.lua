@@ -93,7 +93,7 @@ local Hooks = require("hyprspoon.hooks")
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
 local M = {
     name = "hyprspoon",
-    version = "0.2.0",
+    version = "0.3.0",
     author = "Aethar",
     homepage = "https://github.com/Aethar01/hyprspoon",
     license = "MIT - https://opensource.org/licenses/MIT",

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.0 (2026-10-31)
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating.
+
+- Event hooks for status bars: `start()` takes `on` (functions) and
+  `exec` (shell commands, given `HYPRSPOON_*` variables) for the
+  `workspace`, `focus`, `layout` and `display` events, and
+  `spoon.hyprspoon:query()` returns the focus, displays, workspaces and
+  windows as a table. `examples/sketchybar` shows a SketchyBar setup.
+- Pin a float to every workspace of its display, like Hyprland's `pin`:
+  the new `togglePin` action (unbound) or a `pin = true` rule.
+- Pseudotiling: `togglePseudo` (unbound) or a `pseudo = true` rule keeps
+  a tile at its own size, centred in its tile. Dragging its edges
+  resizes it rather than the split.
+- More rule fields: match on `role` and `subrole`; `size` and
+  `position` (in points or fractions of the display) and `center` for a
+  new float; `noborder`; and `opacity`, for border masking.
+- Choice of keymap: `hotkeysFor(super, ctrlSuper)` builds the default
+  keymap on other modifiers, and `ctrlAltCmdHotkeys` uses Ctrl+Option+Cmd
+  so Option still types characters.
+- `spoon.hyprspoon:rescue()` brings back every parked window and turns
+  tiling off, even after a crash with hyprspoon not started.
+- Experimental `experimental.borderMask`, off by default: hides the parts
+  of a ring covered by other windows (floats, other apps, Spotlight).
+  Needs macOS 13.
+- Native full-screen windows no longer get a ring, in Split View, below
+  a camera housing, or when already full screen at start or reload.
+- Fixed reloading while a full-screen Space shows forgetting the
+  workspaces of the windows on the desktop.
+- Fixed a workspace sliding in with its windows out of place after
+  switching back and forth quickly.
+
 ## 0.2.0 (2026-10-30)
 
 - Option+Shift+H/J/K/L now move the window, like Hyprland's movewindow:
