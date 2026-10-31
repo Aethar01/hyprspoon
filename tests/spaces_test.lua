@@ -51,7 +51,10 @@ local Util = {
     rulesFor = function() return {} end,
 }
 package.loaded["hyprspoon.util"] = Util
-package.loaded["hyprspoon.tree"] = { bootTime = 0, rectFor = noop }
+-- Window id -> the members of its set, for the windows that have one.
+local sets = {}
+package.loaded["hyprspoon.tree"] = { bootTime = 0, rectFor = noop,
+    membersOf = function(id) return sets[id] or { id } end }
 package.loaded["hyprspoon.focus"] = { invalidateWindowCache = noop, focus = noop, currentWindow = noop }
 package.loaded["hyprspoon.discover"] = { cancelLayoutCheck = noop, windowInfoFor = function() return {} end }
 package.loaded["hyprspoon.layout"] = { tileNow = noop, scheduleRetile = noop, BSP_SETTLE = 0 }
@@ -225,6 +228,28 @@ Util.managedWindows = function() return { returning } end
 Spaces.place(returning)
 assert(workspaceOf(53) == 3, "an unhidden pin follows its display")
 assert(Spaces.isPinned(53) and not parkedAt[53], "an unhidden window stays pinned and is never parked")
+
+-- A window sent to another workspace takes its set along: members with a
+-- workspace follow it, a parked one to the corner of the new display.
+-- One with none (a native tab never on show) is left to its app.
+local Focus = package.loaded["hyprspoon.focus"]
+local shownWin, hiddenWin = win(60), win(61)
+Util.managedWindows = function() return { shownWin, hiddenWin } end
+Util.windowFor = function(id) return id == 61 and hiddenWin or nil end
+Spaces.gotoWorkspace(3)
+Spaces.claim(shownWin, "LAPTOP")
+Spaces.claim(hiddenWin, "LAPTOP")
+Focus.currentWindow = function() return hiddenWin end
+Spaces.moveToWorkspaceSilent(2)
+assert(parkedAt[61] and parkedAt[61].x < 1000, "parked in the laptop's corner")
+sets[60] = { 60, 61, 62 }
+Focus.currentWindow = function() return shownWin end
+Spaces.moveToWorkspaceSilent(4)
+assert(Spaces.workspaceOf(60) == 4 and Spaces.workspaceOf(61) == 4, "the set goes together")
+assert(Spaces.workspaceOf(62) == nil)
+assert(parkedAt[60].x > 1000 and parkedAt[61].x > 1000, "both parked on the Dell")
+sets[60] = nil
+Focus.currentWindow = noop
 
 -- Pins are saved with the rest, and come back on reload.
 Spaces.stop()

@@ -232,9 +232,8 @@ function M.swap(direction)
     local _, leafA, keyA = Layout.locate(win)
     local _, leafB, keyB = Layout.locate(other)
     if keyA and keyB and keyA ~= keyB then
-        -- Tiles on two displays trade places, and workspaces.
-        leafA.windowID, leafB.windowID = other:id(), win:id()
-        leafA.pseudo, leafB.pseudo = leafB.pseudo, leafA.pseudo
+        -- Tiles on two displays trade places, and workspaces, sets and all.
+        Tree.swapLeaves(leafA, leafB)
         S.keyIndex = {}
         S.applied[win:id()], S.applied[other:id()] = nil, nil
         Spaces.exchange(win:id(), other:id())
@@ -371,11 +370,15 @@ function M.move(direction)
 end
 
 -- Floats a tile, centred on its display, or tiles a float. A pinned
--- window that becomes a tile is unpinned: only floats are pinned.
+-- window that becomes a tile is unpinned: only floats are pinned. A set
+-- floats and tiles as one: whichever of its windows shows is a float.
 local function setFloat(win, float)
     local id = win:id()
-    S.autoFloat[id] = float
-    Float.rememberFloat(win)
+    for _, m in ipairs(Tree.membersOf(id)) do
+        local w = m == id and win or Util.windowFor(m)
+        S.autoFloat[m] = float
+        if w then Float.rememberFloat(w) end
+    end
 
     if float then
         local screen, f = win:screen(), win:frame()
