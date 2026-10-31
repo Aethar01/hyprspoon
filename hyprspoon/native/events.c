@@ -15,6 +15,7 @@
 
 #include <dispatch/dispatch.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "luacall.h"
@@ -100,12 +101,15 @@ static uint32_t muted = 0;
 #define MAX_WATCHED 512
 static uint32_t watched[MAX_WATCHED];
 static int watchedCount = 0;
+static bool filtering = false;
+
+static int compareWids(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
 
 static void note(uint32_t wid) {
     if (wid == muted) return;
-    bool ours = false;
-    for (int i = 0; i < watchedCount && !ours; i++) ours = watched[i] == wid;
-    if (!ours) return;
     bool listed = false;
     for (int i = 0; i < pendingCount; i++) {
         if (pending[i] == wid) {
@@ -124,7 +128,12 @@ static void onWindowEvent(uint32_t event, void *data, size_t length, void *conte
     uint32_t wid;
     memcpy(&wid, data, sizeof(uint32_t));
     // WindowServer calls from the main thread; anything else waits for it.
-    if (pthread_main_np()) note(wid);
+    if (pthread_main_np()) {
+        // Only masking adds windows Lua didn't ask about. Keep this out of
+        // note(): unmuting must still deliver the dragged window's last move.
+        if (filtering && !bsearch(&wid, watched, watchedCount, sizeof(uint32_t), compareWids)) return;
+        note(wid);
+    }
 }
 
 static const uint32_t events[] = { SL_EVENT_WINDOW_MOVE, SL_EVENT_WINDOW_RESIZE };
@@ -159,6 +168,7 @@ static void stop(void) {
     luaCallbackClear(&onMoved);
     pendingCount = 0;
     muted = 0;
+    filtering = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +195,16 @@ static int l_start(lua_State *L) {
 static int l_watch(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     watchedCount = luaWindowIds(L, 1, watched, MAX_WATCHED);
+    if (filtering) qsort(watched, watchedCount, sizeof(uint32_t), compareWids);
     SLSRequestNotificationsForWindows(cid, watched, watchedCount);
+    return 0;
+}
+
+// filter(on): border.lua enables this only while border.m adds windows
+// for masking. All state and notifications stay on the main thread.
+static int l_filter(lua_State *L) {
+    filtering = lua_toboolean(L, 1);
+    if (filtering) qsort(watched, watchedCount, sizeof(uint32_t), compareWids);
     return 0;
 }
 
@@ -222,6 +241,7 @@ int luaopen_hyprspoon_native_events(lua_State *L) {
     static const luaL_Reg funcs[] = {
         { "start", l_start },
         { "watch", l_watch },
+        { "filter", l_filter },
         { "mute", l_mute },
         { "stop", l_stop },
         { NULL, NULL },

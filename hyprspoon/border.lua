@@ -140,6 +140,7 @@ function M.start()
     local mask = maskOptions()
     if mask then
         masking = native.mask(mask)
+        if S.running.events then S.running.events.filter(masking) end
         if not masking then print("hyprspoon: experimental.borderMask needs macOS 13 or later") end
     end
     native.set(onShow())
@@ -150,7 +151,10 @@ function M.stop()
     suspended = false
     syncTimer:stop()
     unfocusCheck:stop()
-    if native and masking then native.mask(false) end
+    if native and masking then
+        native.mask(false)
+        if S.running.events then S.running.events.filter(false) end
+    end
     masking = false
     if native then native.stop() end
 end
