@@ -538,7 +538,6 @@ static struct {
     bool on;
     bool showDrags;     // drags = "show": no masks while a drag is under way
     bool suspended;     // showDrags, and a drag is under way
-    CGFloat seeThrough; // how much of a ring shows through see-through content
 } masks;
 
 typedef struct {
@@ -644,10 +643,9 @@ static CGFloat showsThrough(const Seen *window) {
     for (int i = 0; i < opacityCount; i++) {
         if (opacities[i].wid == window->wid) return fmin(fmax(1 - opacities[i].opacity, 0), 1);
     }
-    // TODO(#1): a window whose content is see-through (the "not opaque"
-    // flag), once that's known to be usable, shows the ring at
-    // masks.seeThrough, multiplied with its alpha's:
-    // 1 - alpha * (1 - masks.seeThrough). Until then it counts as opaque.
+    // Content that's see-through with the window's alpha at 1 (a terminal
+    // background) can't be told from outside the app: SLSGetWindowOpacity
+    // only answers for our own windows (#1). It counts as opaque.
     return window->alpha < 1 ? 1 - window->alpha : 0;
 }
 
@@ -1339,19 +1337,16 @@ static int l_watch(lua_State *L) {
     return 0;
 }
 
-// mask{ drags = "mask" | "show", seeThrough = 0 to 1 } or mask(false):
+// mask{ drags = "mask" | "show" } or mask(false):
 // turns the masks (experimental.borderMask) on or off. Returns whether
 // they're on: they need macOS 13's path operations.
 static int l_mask(lua_State *L) {
     bool on = lua_toboolean(L, 1);
     bool showDrags = false;
-    CGFloat seeThrough = 0.3;
     if (lua_istable(L, 1)) {
         lua_getfield(L, 1, "drags");
         showDrags = strcmp(luaL_optstring(L, -1, "mask"), "show") == 0;
-        lua_getfield(L, 1, "seeThrough");
-        seeThrough = fmin(fmax(luaL_optnumber(L, -1, seeThrough), 0), 1);
-        lua_pop(L, 2);
+        lua_pop(L, 1);
     }
     on = on && pathOperations();
     if (on && !watchAsk) {
@@ -1362,7 +1357,6 @@ static int l_mask(lua_State *L) {
     dispatch_sync(queue, ^{
         masks.on = on;
         masks.showDrags = showDrags;
-        masks.seeThrough = seeThrough;
         askedCount = 0;
         if (on) finishMasking();
         else dropMasks();

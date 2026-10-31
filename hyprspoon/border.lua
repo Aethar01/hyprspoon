@@ -110,7 +110,7 @@ local function maskOptions()
     local opt = S.cfg.experimental and S.cfg.experimental.borderMask
     if opt == true then opt = {} end
     if type(opt) ~= "table" then return nil end
-    return { drags = opt.drags == "show" and "show" or "mask", seeThrough = opt.seeThrough or 0.3 }
+    return { drags = opt.drags == "show" and "show" or "mask" }
 end
 
 local function rgba(color)

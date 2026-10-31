@@ -142,9 +142,6 @@ S.defaults = {
         --                       "mask" keeps the rings masked as windows
         --                       move; "show" draws them on top, as without
         --                       masks, and masks them again on drop
-        --   seeThrough = 0.3    how much of a ring shows through a
-        --                       see-through window that doesn't report its
-        --                       own opacity: 0 to 1 (not used yet)
         -- A ring shows through a faded window, and through a window with an
         -- `opacity` rule (e.g. { app = "Ghostty", opacity = 0.85 }), dimmed.
         -- Needs hyprspoon.native.border and macOS 13.
