@@ -49,7 +49,8 @@
 --   events    window moves and resizes as WindowServer reports them
 --   hover     the window under the pointer, from a native event tap
 --   frames    accessibility frame changes, animations and modifier-drags on
---             a background queue per app
+--             a background queue per app; liveIDs() returns all WindowServer
+--             IDs as { [id] = true }, or nil if the query fails
 --   slide     the workspace slides, animated by WindowServer
 --
 -- Modules require each other freely (cycles are harmless: each registers
@@ -273,11 +274,15 @@ function M.stop()
     S.running = {}
 end
 
--- For windows stuck in a corner after a crash: brings back every parked
--- window, forgets the workspaces and turns tiling off. Works whether or
+-- spoon.hyprspoon:rescue() -> number of parked windows brought back.
+-- For windows stuck in a corner after a crash: restores reachable parked
+-- windows, forgets the workspaces and turns tiling off. Works whether or
 -- not start() was called, so from `hs -c` too (see the README); when it
 -- was, hyprspoon starts again with the same options. Returns how many
--- windows came back.
+-- windows came back. Unreachable or uncertain IDs stay saved for another
+-- call from their Space. Only saved IDs from this boot are used; a frame
+-- off every connected display is centred on the primary one. If stopped,
+-- hyprspoon stays stopped.
 function M.rescue()
     local running = S.running.windowFilter ~= nil
     S.tilingEnabled = false
