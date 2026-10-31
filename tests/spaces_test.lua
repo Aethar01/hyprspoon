@@ -268,6 +268,8 @@ Spaces.place(ghidden)
 assert(Spaces.isHidden(71) and not Spaces.isHidden(70))
 local corner = parkedAt[71]
 Spaces.gotoWorkspace(2)
+Spaces.unpark(gshown)
+assert(Spaces.isHidden(70), "selecting on a hidden workspace waits for its switch")
 Spaces.gotoWorkspace(3)
 assert(parkedAt[71] == corner, "sync never unparks a hidden group member")
 assert(workspaceOf(70) == 3 and workspaceOf(71) == nil, "overview omits hidden members")

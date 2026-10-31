@@ -1410,7 +1410,11 @@ end
 M.park = function(win, n, force)
     if n and (force or not parked[win:id()]) then park(win, n) save() end
 end
-M.unpark = unpark
+M.unpark = function(win)
+    -- A user can select a group member from the Dock on a workspace that
+    -- is still hidden. Its workspace switch will unpark it after refresh.
+    if not isHidden(win:id()) then unpark(win) end
+end
 M.isHidden = isHidden
 M.claim = claim
 M.displayOf = displayOf
