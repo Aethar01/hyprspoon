@@ -14,6 +14,7 @@ local Hud = require("hyprspoon.hud")
 local Border = require("hyprspoon.border")
 local Restore = require("hyprspoon.restore")
 local Slide = require("hyprspoon.slide")
+local Hooks = require("hyprspoon.hooks")
 
 -- ---------------------------------------------------------------------------
 -- Workspaces
@@ -145,12 +146,13 @@ local function saveNow()
 end
 
 -- Every change to the workspaces is saved, so this is also where the menu
--- bar and badges hear about them.
+-- bar, badges and hooks hear about them.
 local function save()
     if saveTimer then saveTimer:stop() end
     saveTimer = hs.timer.doAfter(1, saveNow)
     Bar.update()
     Hud.update()
+    Hooks.fire("workspace")
 end
 
 local function loadState()
@@ -638,6 +640,7 @@ local function focusWorkspace(n, warp, skip)
         S.intent = nil
         hs.focus()
         focusedEmpty = shown[n]
+        Hooks.fire("focus")
         -- Nothing of ours has focus now: the pointer going back onto the
         -- window that had it focuses it again.
         S.ffmFocusedID, S.ffmLastWindow = nil, nil
@@ -1300,6 +1303,35 @@ function M.overview()
     return list
 end
 
+-- The connected displays, the primary first and then left to right, as
+-- { uuid =, screen =, n = the workspace it shows }.
+function M.displays()
+    refresh()
+    local list = {}
+    for _, screen in ipairs(orderedScreens()) do
+        local uuid = screen:getUUID()
+        list[#list + 1] = { uuid = uuid, screen = screen, n = active[uuid] }
+    end
+    return list
+end
+
+-- The workspace with focus: the empty one whose display took focus, else
+-- the focused window `win`'s, else the one showing on its display (an app
+-- we don't track) or the pointer's.
+function M.focusedWorkspace(win)
+    if focusedEmpty and connected[focusedEmpty] and active[focusedEmpty] then
+        return active[focusedEmpty]
+    end
+    local n = win and of[win:id()]
+    if n and shown[n] and not behind[n] then return n end
+    local screen = win and win:screen()
+    return active[screen and screen:getUUID() or pointerUUID()]
+end
+
+function M.isScratchpad(n)
+    return n > NAMED_BASE
+end
+
 -- Pins window `win` to every workspace of its display, or unpins it.
 function M.setPinned(win, pin)
     local id = win:id()
@@ -1332,6 +1364,7 @@ end
 
 M.isHidden = isHidden
 M.claim = claim
+M.displayOf = displayOf
 
 -- Loaded with the module rather than in start(): if start() fails partway,
 -- the window events it already subscribed to still claim windows and save,

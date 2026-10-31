@@ -13,6 +13,7 @@ local Spaces = require("hyprspoon.spaces")
 local Border = require("hyprspoon.border")
 local Drop = require("hyprspoon.drop")
 local Restore = require("hyprspoon.restore")
+local Hooks = require("hyprspoon.hooks")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -571,6 +572,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
             + S.cfg.tiling.animationDuration
         Focus.invalidateWindowCache()
     end
+    if changed then Hooks.fire("layout") end
 
     -- A closed window hands focus back to its tree sibling without moving
     -- the pointer. Re-check in case macOS focuses its own pick late.

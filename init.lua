@@ -40,6 +40,7 @@
 --   border    rings around the windows, like Hyprland's borders
 --   slide     workspaces sliding in and out as they switch
 --   overview  every workspace at a glance, in place of Mission Control
+--   hooks     callbacks and shell commands on changes, and query() for status bars
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
@@ -84,6 +85,7 @@ local Hud = require("hyprspoon.hud")
 local Border = require("hyprspoon.border")
 local Slide = require("hyprspoon.slide")
 local Overview = require("hyprspoon.overview")
+local Hooks = require("hyprspoon.hooks")
 
 -- The public API. Actions are plain functions (no `self`), so they can be
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
@@ -133,6 +135,11 @@ local M = {
     warpToFocusedWindow = Actions.warpToFocusedWindow,
     warpToWindow = Actions.warpToWindow,
     workspaces = Spaces.workspaces,
+    -- spoon.hyprspoon:query() -> { focus, displays, workspaces, windows }.
+    -- Call after start(). Fields are documented in README.md (Status bars)
+    -- and hyprspoon/hooks.lua; missing values are false. Titles cost one
+    -- accessibility call per managed window.
+    query = Hooks.query,
 }
 
 -- ---------------------------------------------------------------------------
@@ -324,6 +331,7 @@ function M.stop()
     Hud.stop()
     Overview.stop()
     Border.stop()
+    Hooks.stop()
     Tree.stop() -- last: flushes a pending save after the layout has stopped
     S.running = {}
 end
@@ -633,6 +641,7 @@ function M:start(opts)
     -- macOS moves windows off a removed display (and back onto a returning
     -- one) a while after announcing the change, so look again once it has.
     S.running.screenWatcher = hs.screen.watcher.new(function()
+        Hooks.fire("display")
         Spaces.screensChanged()
         Layout.scheduleRetile(true)
         for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
@@ -657,6 +666,7 @@ function M:start(opts)
         Focus.noteFocus(focused)
     end
     Layout.scheduleRetile(true)
+    Hooks.start()
     return M
 end
 

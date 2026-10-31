@@ -160,6 +160,25 @@ S.defaults = {
     --   }
     rules = {},
 
+    -- Status bar hooks, by event: `workspace` (membership or showing),
+    -- `focus` (window/workspace/display), `layout` (a layout applied, even
+    -- with unchanged frames), `display` (screens changed). See hooks.lua.
+    -- Each configured event runs once on start() and once per run-loop
+    -- turn, in display/workspace/layout/focus order. Unchanged focus is
+    -- dropped. Callbacks get the focus at delivery, not what changed:
+    -- { event =, window = id, app = name, workspace = name, display = UUID },
+    -- false for missing values. Keep callbacks short; they run in Hammerspoon.
+    -- `on[event]` is one function; `exec[event]` is a command or list run
+    -- asynchronously through /bin/sh. The same fields are strings in
+    -- HYPRSPOON_EVENT, HYPRSPOON_WINDOW, HYPRSPOON_APP, HYPRSPOON_WORKSPACE,
+    -- HYPRSPOON_DISPLAY; missing values are empty strings. A running
+    -- command gets at most one rerun with the latest values per event.
+    -- Hammerspoon's PATH may omit Homebrew, so use full paths. E.g.
+    --   on = { workspace = function(e) print("now on " .. tostring(e.workspace)) end },
+    --   exec = { workspace = "/opt/homebrew/bin/sketchybar --trigger hyprspoon_workspace" },
+    on = {},
+    exec = {},
+
     tiling = {
         outerGap = 10,  -- gap between tiles and the screen edge
         innerGap = 5,   -- gap between tiles
