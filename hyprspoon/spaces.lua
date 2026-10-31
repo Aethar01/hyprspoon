@@ -1146,8 +1146,17 @@ function M.focusedParked(win)
         if n then focusWorkspace(n, false, going) end
         return
     end
-    local leaf, key = Tree.setOf and Tree.setOf(win:id())
-    if leaf and leaf.kind == "group" then Layout.showMember(leaf, win:id(), key) end
+    local leaf, key
+    if Tree.setOf then leaf, key = Tree.setOf(win:id()) end
+    if leaf and leaf.kind == "group" then
+        Layout.showMember(leaf, win:id(), key)
+        -- gotoWorkspace does nothing when this workspace already shows.
+        -- Clear parking before the immediate pass places the selected tile.
+        if not isHidden(win:id()) then
+            unpark(win)
+            Layout.tileNow(false)
+        end
+    end
     S.spaceFocusWin = win
     local n = of[win:id()]
     -- Beneath a scratchpad: that goes.

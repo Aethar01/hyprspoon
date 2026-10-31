@@ -286,6 +286,25 @@ local query = require("hyprspoon.hooks").query()
 assert(#query.windows == 1 and query.windows[1].id == 70, "query ignores hidden group members")
 Focus.currentWindow = noop
 
+-- Dock/Cmd-Tab selection on the current workspace must place the new tile.
+local layout = package.loaded["hyprspoon.layout"]
+local tiled = 0
+Focus.goneBefore = noop
+S.lastGoneTime = 0
+hs.timer.secondsSinceEpoch = function() return 1002 end
+layout.showMember = function(l, id, key)
+    assert(key == "ws3", "the workspace key reaches the handoff")
+    l.windowID = id
+end
+layout.tileNow = function() tiled = tiled + 1 end
+Spaces.focusedParked(ghidden)
+assert(group.windowID == 71 and tiled == 1 and not Spaces.isHidden(71))
+local selectedFrame = parkedAt[71]
+Spaces.place(ghidden)
+assert(parkedAt[71] == selectedFrame, "selection cleared the parked state before placement")
+group.windowID = 70
+layout.tileNow = noop
+
 -- The other tabs of the shown native unit are visible to discovery.
 group.tabs = { { 70, 71 } }
 assert(not Spaces.isHidden(71), "a shown unit's native tabs are never group-hidden")
