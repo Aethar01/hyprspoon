@@ -16,9 +16,8 @@
 // SLSGetWindowOpacity returns success and leaves its result untouched, so
 // the opaque column prints "?". For the probe's own window (-s) it answers,
 // but reads 1 whether NSWindow.opaque or SLSSetWindowOpacity turned the
-// flag off. Neither the
-// iterator's tags nor its attributes change when a window's opaque flag
-// does, and CGWindowListCopyWindowInfo has no key for it. From outside the
+// flag off. The spike also found no useful signal in the iterator's
+// tags or attributes, and CGWindowListCopyWindowInfo has no key for it. From outside the
 // app, only alpha is readable.
 //
 // Columns:
@@ -26,10 +25,13 @@
 //   sl-alpha  SLSGetWindowAlpha, the window's alpha as WindowServer has it
 //   opaque    SLSGetWindowOpacity: the window's opaque flag, as an app sets it
 //             through NSWindow.opaque: 1 opaque, 0 not, ? if the call wrote
-//             nothing; extra output bytes are reported
+//             nothing; ! means extra output bytes were written
 //   it-alpha  SLSWindowIteratorGetAlpha
 //   tags      SLSWindowIteratorGetTags
 //   attrs     SLSWindowIteratorGetAttributes
+// A missing value or failed call prints "-" in the table. The self-test
+// prints raw opaque bytes (170 means untouched), errors and whether extra
+// bytes were written, before listing app windows.
 
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
