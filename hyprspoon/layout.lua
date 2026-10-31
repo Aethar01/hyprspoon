@@ -13,6 +13,7 @@ local Spaces = require("hyprspoon.spaces")
 local Border = require("hyprspoon.border")
 local Drop = require("hyprspoon.drop")
 local Restore = require("hyprspoon.restore")
+local Hooks = require("hyprspoon.hooks")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -137,6 +138,9 @@ local function showPresel()
     if preselCanvas then preselCanvas:frame(rect) else preselCanvas = Drop.highlight(rect) end
     preselCanvas:show()
 end
+
+-- Windows a pseudo rule (see S.cfg.rules) has been applied to.
+local pseudoRuled = {}
 
 local function reconcileTree(key, windows)
     local valid = {}
@@ -273,6 +277,15 @@ local function reconcileTree(key, windows)
                 end
             end
 
+            -- A pseudo rule pseudotiles a window the first time it goes
+            -- into a tree, at the size it opened with (its leaf takes it
+            -- from pseudoAway).
+            if not pseudoRuled[id] and Util.rulesFor(win).pseudo then
+                pseudoRuled[id] = true
+                local f = S.floatingFrames[id]
+                S.pseudoAway[id] = S.pseudoAway[id] or { w = f.w, h = f.h }
+            end
+
             if not tree then
                 tree = Tree.leaf(id)
             else
@@ -356,7 +369,8 @@ local function verifyLayout(win, rect, rectKey, animating)
             if not S.tilingEnabled or not S.running.windowFilter or win:id() ~= id
                or S.autoFloat[id] or S.dragState or hs.mouse.getButtons().left
                or S.lastMouseTime > pending.started
-               or not leaf or not leaf.rect or not framesMatch(leaf.fullRect or leaf.rect, rect) then
+               or not leaf or not leaf.rect
+               or not framesMatch(leaf.fullRect or leaf.pseudoRect or leaf.rect, rect) then
                 Discover.layoutChecks[id] = nil
                 return
             end
@@ -387,7 +401,8 @@ end
 
 -- `full` is { id =, rect = } for the workspace's maximized window: it gets
 -- the whole area, while its tile (`rect`) is kept for navigation and for
--- coming back to.
+-- coming back to. A pseudotiled window gets its own size, centred in its
+-- tile.
 local function applyTree(node, rect, byID, full)
     if not node then return end
 
@@ -395,10 +410,14 @@ local function applyTree(node, rect, byID, full)
     node.rect = rect
 
     if Tree.isLeaf(node) then
-        node.fullRect = nil
+        node.fullRect, node.pseudoRect = nil, nil
         if full and full.id == node.windowID then
             node.fullRect = full.rect
             rect = full.rect
+        elseif node.pseudo then
+            local p = Tree.pseudoRect(rect, node.pseudo)
+            rect = hs.geometry.rect(p.x, p.y, p.w, p.h)
+            node.pseudoRect = rect
         end
         local win = byID[node.windowID]
         if win then
@@ -553,6 +572,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
             + S.cfg.tiling.animationDuration
         Focus.invalidateWindowCache()
     end
+    if changed then Hooks.fire("layout") end
 
     -- A closed window hands focus back to its tree sibling without moving
     -- the pointer. Re-check in case macOS focuses its own pick late.

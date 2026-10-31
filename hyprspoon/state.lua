@@ -88,7 +88,8 @@ S.defaults = {
         distance = 0.12,
     },
 
-    -- Rings around the windows on show, `width` points outside their edges,
+    -- Rings around the windows on show, except native full screen (Split
+    -- View too), `width` points outside their edges,
     -- in the gap between tiles: the focused window's `active`, the others'
     -- `inactive` (false for none). Colours are "#rrggbb" or hs.drawing.color
     -- tables. `radius` is the corner radius for windows whose own macOS
@@ -107,21 +108,75 @@ S.defaults = {
     -- anything noisy). Border masking still watches them as occluders.
     ignoreApps = {},
 
-    -- Per-window rules, like Hyprland's windowrules. Each matches on `app`
-    -- (the app's name) and/or `title` (a Lua pattern), and sets:
-    --   float = true/false   float it, or tile it even if it would float
+    -- Per-window rules, like Hyprland's windowrules. Each matches on any of
+    -- `app` (the app's name), `title` (a Lua pattern), and `role` and
+    -- `subrole` (the accessibility role, e.g. "AXWindow", and subrole, e.g.
+    -- "AXDialog"), and sets:
+    --   float = true/false   float/tile a standard window; dialogs always float
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
+    --   pseudo = true        on first insertion into a tree, use its saved
+    --                        pre-tiling size, centred and clamped to its tile.
+    --                        Off by default; does not force floating windows
+    --                        to tile. false does not clear saved pseudotiling.
+    -- Pseudotiling follows moves, swaps and floating, and persists with the
+    -- layout across reloads/restarts. Mouse edges change its remembered size;
+    -- keyboard resize changes splits. Maximize/fill temporarily overrides it.
+    --   pin = true           float it on every workspace of its display,
+    --                        overriding float; off by default. A workspace
+    --                        target must already be showing, else ignored.
+    --                        false does not clear a saved manual pin.
+    -- Pins follow scratchpads too and survive reload/minimize/full screen,
+    -- but not reboot. Unpinning leaves a float; tiling it or silently moving
+    -- it to a hidden workspace removes the pin.
+    --   size = { w, h }      a float's size when it first appears, in points
+    --                        or fractions when 0 < v <= 1 (1 is the full
+    --                        display); zero and negatives are points
+    --   position = { x, y }  likewise its top left, measured from the
+    --                        display's top left
+    --   center = true/false  centre a new float (they are by default, but
+    --                        not dialogs), or leave it where the app put it
+    --   noborder = true      no ring around it
     --   opacity = 0..1       override alpha for border masking only; does
     --                        not change the window (managed windows only)
+    -- Match fields must all match; only title is a pattern, the others are
+    -- exact strings. With no match fields, a rule matches all managed windows.
+    -- size/position also accept { w = ..., h = ... } / { x = ..., y = ... };
+    -- both coordinates must be numbers. A position wins over centring.
+    -- Placement fields do not enable floating. Without them, standard floats
+    -- centre and dialogs keep their app's position. noborder defaults false;
+    -- opacity only affects border masking. Saved manual float choices override float rules
+    -- and skip placement. No fields are set by default (rules = {}).
+    -- Placement clamps the requested frame to the display's usable area,
+    -- with a minimum size of one point. Reloads keep existing float frames.
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {
     --       { app = "1Password", float = true },
     --       { app = "Slack", workspace = 4, silent = true },
+    --       { app = "Activity Monitor", float = true, size = { 0.5, 0.6 } },
     --   }
     rules = {},
+
+    -- Status bar hooks, by event: `workspace` (membership or showing),
+    -- `focus` (window/workspace/display), `layout` (a layout applied, even
+    -- with unchanged frames), `display` (screens changed). See hooks.lua.
+    -- Each configured event runs once on start() and once per run-loop
+    -- turn, in display/workspace/layout/focus order. Unchanged focus is
+    -- dropped. Callbacks get the focus at delivery, not what changed:
+    -- { event =, window = id, app = name, workspace = name, display = UUID },
+    -- false for missing values. Keep callbacks short; they run in Hammerspoon.
+    -- `on[event]` is one function; `exec[event]` is a command or list run
+    -- asynchronously through /bin/sh. The same fields are strings in
+    -- HYPRSPOON_EVENT, HYPRSPOON_WINDOW, HYPRSPOON_APP, HYPRSPOON_WORKSPACE,
+    -- HYPRSPOON_DISPLAY; missing values are empty strings. A running
+    -- command gets at most one rerun with the latest values per event.
+    -- Hammerspoon's PATH may omit Homebrew, so use full paths. E.g.
+    --   on = { workspace = function(e) print("now on " .. tostring(e.workspace)) end },
+    --   exec = { workspace = "/opt/homebrew/bin/sketchybar --trigger hyprspoon_workspace" },
+    on = {},
+    exec = {},
 
     tiling = {
         outerGap = 10,  -- gap between tiles and the screen edge

@@ -20,11 +20,17 @@ Reload Hammerspoon to pick up changes, including rebuilt native modules.
 - `hyprspoon/*.lua`: the modules. The header of `init.lua` says what each
   one does.
 - `hyprspoon/state.lua`: every option, with its default and documentation.
+- `hyprspoon/hooks.lua`: event delivery and the `query()` snapshot. Keep its
+  field comments and the README shape in sync.
+- `examples/`: a Hammerspoon config and a SketchyBar snippet with its plugin.
 - `hyprspoon/native/`: optional C and Objective-C modules. Each one has a
   Lua path that keeps the basics working without it; borders and slides
-  are disabled when their modules are absent. `border.m` draws rings and
-  experimental masks; `events.c` filters the extra mask notifications on
-  their shared WindowServer connection. Rebuild both when updating.
+  are disabled when their modules are absent. `frames.c`, `drag.c` and
+  `focus.c` build into `frames.so`. Its `liveIDs()` query confirms closure
+  across Spaces; without it, workspace sync and `rescue()` keep uncertain IDs.
+  `border.m` draws rings and experimental masks; `events.c` filters the
+  extra mask notifications on their shared WindowServer connection.
+  Rebuild both when updating.
 
 ## Tests
 
@@ -37,6 +43,19 @@ tests/run.sh        # unit tests, plain Lua 5.4+, no Hammerspoon needed
 its `border.mask` case measures a fresh snapshot and full mask rebuild.
 Try 10 and 30 windows, including overlapping floats; the target is 0.5ms
 per update with 30 windows, not a measured guarantee.
+
+`tests/opaque_probe.m` is a standalone macOS diagnostic for window alpha
+and the private opaque flag. Build and run it from the repo root:
+
+```sh
+clang -fobjc-arc -framework AppKit -framework Foundation -framework CoreGraphics \
+    tests/opaque_probe.m -o /tmp/opaque_probe
+/tmp/opaque_probe
+```
+
+It is read-only by default. `-s` also creates, changes and closes an
+off-screen test window. See its header for options and output columns.
+It is separate from the unit tests and needs no Hammerspoon reload.
 
 Window management depends on timing, so also try a change live: tiling on
 and off, several displays if you have them, full-screen windows, and
