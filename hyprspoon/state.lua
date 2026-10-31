@@ -88,7 +88,8 @@ S.defaults = {
         distance = 0.12,
     },
 
-    -- Rings around the windows on show, `width` points outside their edges,
+    -- Rings around the windows on show, except native full screen (Split
+    -- View too), `width` points outside their edges,
     -- in the gap between tiles: the focused window's `active`, the others'
     -- `inactive` (false for none). Colours are "#rrggbb" or hs.drawing.color
     -- tables. `radius` is the corner radius for windows whose own macOS

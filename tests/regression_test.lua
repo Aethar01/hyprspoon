@@ -317,6 +317,27 @@ win.isStandard, win.isVisible = function() return true end, function() return tr
 local recovered = appWindows(1, { allWindows = function() return { win, pip } end })
 assert(#recovered == 1 and recovered[1] == win, "app-list recovery must not reintroduce PiP")
 
+-- A window found full screen without an event (already so at start, or met
+-- on its Space after a swipe) loses its ring, and gets it back after.
+local syncs = 0
+local infoEnv = setmetatable({
+    S = { windowInfo = {}, fullscreen = {} },
+    Border = { sync = function() syncs = syncs + 1 end },
+}, { __index = _G })
+local windowInfoFor = assert(load(extract("discover", "local function windowInfoFor(win)",
+    "-- Native tabs:") .. "return windowInfoFor", "window info", "t", infoEnv))()
+local full = true
+local fsWin = { id = function() return 7 end, isFullScreen = function() return full end,
+    screen = function() return { getUUID = function() return "DISPLAY" end } end }
+windowInfoFor(fsWin)
+assert(infoEnv.S.fullscreen[7] and syncs == 1, "a full-screen window found by lookup leaves the rings")
+infoEnv.S.windowInfo = {}
+windowInfoFor(fsWin)
+assert(syncs == 1, "no ring sync when nothing changed")
+infoEnv.S.windowInfo, full = {}, false
+windowInfoFor(fsWin)
+assert(not infoEnv.S.fullscreen[7] and syncs == 2, "back from full screen, the window is ringed again")
+
 local target = { x = 10, y = 10, w = 800, h = 600 }
 local actual, writes, accept = {}, 0, false
 local screen = {}
