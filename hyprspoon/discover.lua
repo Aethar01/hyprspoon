@@ -149,6 +149,14 @@ local function withRecentlyChangedApps(windows)
         if not nativeWindows[id] and win:isStandard() then
             nativeWindows[id] = { pid = pid, title = win:title() }
         end
+        local leaf = Tree.setOf(id)
+        if leaf and leaf.kind == "native" then
+            -- Saved membership survives a reload even though AXWindows
+            -- has never exposed the background members in this Lua state.
+            for _, member in ipairs(leaf.members) do
+                nativeWindows[member] = nativeWindows[member] or { pid = pid }
+            end
+        end
     end
     for _, d in pairs(nativeWindows) do pids[d.pid] = true end
     for pid, expires in pairs(dirtyPids) do

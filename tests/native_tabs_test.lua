@@ -5,6 +5,7 @@ local leaves, filter, listed, states, bars = {}, {}, {}, {}, {}
 local repairs, presses, remembered = 0, {}, {}
 local clock, axCalls, appCalls, frameCalls = 1000, 0, 0, 0
 local failList = false
+local appName = "TextEdit"
 local function win(id, pid)
     return {
         id = function() return id end, pid = function() return pid or 100 end,
@@ -18,7 +19,7 @@ end
 local wins = { win(1), win(2), win(3) }
 local app = { allWindows = function() appCalls = appCalls + 1
     if failList then error("AXWindows timeout") end
-    return listed end, name = function() return "Test" end,
+    return listed end, name = function() return appName end,
     bundleID = function() return "test.app" end }
 local native = {
     tabSnapshot = function(callback)
@@ -82,6 +83,19 @@ hs = { application = { applicationForPID = function() return app end },
         doAfter = function() return { stop = function() end } end } }
 package.loaded["hyprspoon.layout"] = { scheduleRetile = function() end }
 local Discover = require("hyprspoon.discover")
+-- Reload: a saved set already confirms its background identities. AXWindows
+-- exposes only the shown tab, and a remote repair must not be needed to
+-- keep the others open on the first pass.
+leaves = { { windowID = 1, members = { 1, 2 }, kind = "native" } }
+filter, listed = { wins[1] }, { wins[1] }
+states, bars = { [1] = "shown", [2] = "tab" }, { [1] = { "one", "two" } }
+Discover.windowsByScreen()
+assert(S.nativeBackground[2] and S.openIDs[2], "reload retains a background tab absent from AXWindows")
+assert(repairs == 0, "saved native membership already confirms the identity")
+-- Start discovery afresh for the merge and never-shown repair cases below.
+Discover.stop()
+package.loaded["hyprspoon.discover"] = nil
+Discover = require("hyprspoon.discover")
 leaves = { { windowID = 1 }, { windowID = 2 }, { windowID = 3 } }
 filter, listed = wins, { wins[1], wins[3] }
 states, bars = { [1] = "shown", [2] = "tab", [3] = "shown" }, { [1] = { "one", "two" } }
@@ -195,6 +209,31 @@ states, bars = { [1] = "shown", [2] = "tab" }, { [1] = { "one", "two" } }
 Discover.windowsByScreen()
 assert(S.setsAway[1] == S.setsAway[2] and S.setsAway[1].kind == "native")
 assert(#S.setsAway[1].members == 2)
+
+-- Finder/Preview title labels and Terminal's identical labels all use the
+-- same ID-based detection and handoff. No button-to-ID title guess is
+-- needed, and the cycle action goes through AX bar order in each case.
+for _, profile in ipairs({
+    { "Finder", { "folder one", "folder two" } },
+    { "Terminal", { "~ — ~ — -fish", "~ — ~ — -fish" } },
+    { "Preview", { "one.pdf", "two.pdf" } },
+}) do
+    appName, clock = profile[1], clock + 4
+    S.autoFloat, S.setsAway = {}, {}
+    leaves = { { windowID = 1, members = { 1, 2 }, kind = "native" } }
+    filter, listed = { wins[1] }, { wins[1] }
+    states, bars = { [1] = "shown", [2] = "tab" }, { [1] = profile[2] }
+    byScreen = Discover.windowsByScreen()
+    assert(#byScreen.display == 1 and S.nativeBackground[2], appName)
+    Tree.kinds.native.cycle(wins[1], leaves[1], "ws1", 1)
+    assert(presses[#presses][2] == 1)
+    Discover.handoff(wins[2])
+    assert(leaves[1].windowID == 2, appName .. " hands off by ID despite tab titles")
+    listed, states, bars = { wins[2] }, { [1] = "tab", [2] = "shown" }, { [2] = profile[2] }
+    Discover.markDirty(wins[2])
+    byScreen = Discover.windowsByScreen()
+    assert(#byScreen.display == 1 and byScreen.display[1]:id() == 2)
+end
 
 -- Ten quiet apps share one snapshot request and perform no AX/app/frame
 -- reads, even though all their records have outlived the 0.1-second TTL.

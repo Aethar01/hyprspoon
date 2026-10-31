@@ -1238,6 +1238,8 @@ end
 -- restart identity without trying to park, focus or resize them.
 function M.nativeMember(id, shownID, app, title)
     local previous = of[id]
+    -- A reloaded set knows IDs before it has AX titles for background tabs.
+    title = title or (info[id] and info[id].title)
     parked[id], pins[id] = nil, nil
     if shownID and of[shownID] then
         -- The set's current workspace wins over a background tab's saved
