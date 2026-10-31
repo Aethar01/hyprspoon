@@ -668,7 +668,6 @@ static int l_run(lua_State *L) {
     Slide s = readSlide(L);
     if (CGRectIsEmpty(s.frame)) return 0;
     dispatch_sync(queue, ^{ run(s); });
-    notifyVisibility(NULL);
     return 0;
 }
 
@@ -678,7 +677,6 @@ static int l_begin(lua_State *L) {
     Slide s = readSlide(L);
     __block bool up = false;
     if (!CGRectIsEmpty(s.frame)) dispatch_sync(queue, ^{ up = build(s, 0); });
-    notifyVisibility(NULL);
     lua_pushboolean(L, up);
     return 1;
 }
