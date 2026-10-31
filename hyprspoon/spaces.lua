@@ -439,18 +439,24 @@ local function unpark(win)
     Util.setFrame(win, frame, 0)
 end
 
+-- The IDs of every window WindowServer has, on any Space. One CGWindowList
+-- query, not hs.window.get per ID: that walks every app's windows over
+-- accessibility each time and stalls the slide animations.
+local function liveIDs()
+    local live = {}
+    for _, w in ipairs(hs.window.list(true) or {}) do
+        if w.kCGWindowNumber then live[w.kCGWindowNumber] = true end
+    end
+    return live
+end
+
 -- Parks the windows of workspaces not showing and brings back the rest.
 -- Parked windows stay put unless `force` (displays changed, so corners did).
 local function sync(force)
     -- A missed window-filter event can leave a dead window ID in `of` or
     -- `parked`, keeping its workspace alive. Reconcile those IDs against
-    -- WindowServer whenever workspace state is synced. One CGWindowList
-    -- query, not hs.window.get per ID: that walks every app's windows over
-    -- accessibility each time and stalls the slide animations.
-    local live, stale = {}, {}
-    for _, w in ipairs(hs.window.list(true) or {}) do
-        if w.kCGWindowNumber then live[w.kCGWindowNumber] = true end
-    end
+    -- WindowServer whenever workspace state is synced.
+    local live, stale = liveIDs(), {}
     if next(live) then
         for id in pairs(of) do
             if not live[id] then stale[id] = true end
