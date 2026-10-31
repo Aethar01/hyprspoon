@@ -216,3 +216,125 @@ test("each app is judged and asked on its own", function()
     -- One list query for the one app with a shared frame.
     assert(calls.lists == 1, calls.lists)
 end)
+
+-- Tile handoff. A tile is a rect; candidates are { id =, pid = } with a frame
+-- looked up by `frames[id]`.
+local TILE = { x = 0, y = 0, w = 400, h = 600 }
+local TILE_FRAME = { x = 0, y = 0, w = 400, h = 600 }
+local frames = {}
+local function candidate(id, frame, pid)
+    frames[id] = frame or TILE_FRAME
+    return { id = id, pid = pid or APP }
+end
+local function frameOf(c) return frames[c.id] end
+local function successor(oldPid, rect, candidates, known, visit)
+    local c = Tabs.successor(oldPid, rect, candidates, known, frameOf, visit)
+    return c and c.id
+end
+
+test("opening a tab: the new tab takes the tile of the one it replaced", function()
+    -- Tab 1 held the tile and is now a background tab (a ghost); tab 2 is
+    -- the live window at the same frame.
+    local known = { [1] = true }
+    assert(successor(APP, TILE, { candidate(2) }, known) == 2)
+end)
+
+test("switching tabs: the tab now showing takes the tile, the other tab is a ghost", function()
+    local known = { [1] = true }
+    assert(successor(APP, TILE, { candidate(2), candidate(1) }, known) == 2)
+end)
+
+test("closing the shown tab: the survivor takes the tile", function()
+    local known = { [1] = true }
+    assert(successor(APP, TILE, { candidate(2) }, known) == 2)
+end)
+
+test("a ghost can take the tile while the app's list lags", function()
+    -- Candidates are the present windows then the ghosts; the survivor is
+    -- still counted as a background tab.
+    local known = { [1] = true }
+    assert(successor(APP, TILE, { candidate(5, { x = 900, y = 0, w = 400, h = 600 }), candidate(2) }, known) == 2)
+end)
+
+test("closing a background tab hands nothing over: nothing tiled vanished", function()
+    -- Only tiled windows that vanish look for a successor; with none, there
+    -- are no calls. A candidate with no vanished tile to take is just a window.
+    local calls = 0
+    local function frame(c) calls = calls + 1 return c.frame end
+    assert(Tabs.successor(APP, TILE, {}, { [1] = true }, frame) == nil)
+    assert(calls == 0)
+end)
+
+test("tearing a tab off: the new window outside the tile is not a successor", function()
+    local known = { [1] = true }
+    local torn = candidate(2, { x = 500, y = 300, w = 400, h = 300 })
+    assert(successor(APP, TILE, { torn }, known) == nil)
+end)
+
+test("Merge All Windows: tabs that were tiled already are not successors of each other", function()
+    -- Tiles 2 and 3 vanish into the merged window 1, which already holds its
+    -- own tile; every candidate is known, so no tile is handed over.
+    local known = { [1] = true, [2] = true, [3] = true }
+    local cands = { candidate(1), candidate(2), candidate(3) }
+    assert(successor(APP, TILE, cands, known) == nil)
+end)
+
+test("Ghostty: another window of the app centred in the tile takes it over", function()
+    -- Pins today's behaviour: a window that closes and a new one opening at
+    -- the same frame can't be told from a tab swap.
+    local known = { [1] = true }
+    assert(successor(APP, TILE, { candidate(2, { x = 50, y = 50, w = 300, h = 500 }) }, known) == 2)
+end)
+
+test("a window of another app never takes the tile", function()
+    local known = { [1] = true }
+    local c = candidate(2, nil, OTHER)
+    local asked = false
+    assert(Tabs.successor(APP, TILE, { c }, known, function() asked = true end) == nil)
+    assert(not asked, "frames are only read for the same app")
+    -- Nor does an unknown pid (a window never seen before) match one.
+    assert(successor(nil, TILE, { candidate(3) }, known) == nil)
+end)
+
+test("a window the tree already knew never takes the tile", function()
+    assert(successor(APP, TILE, { candidate(2) }, { [1] = true, [2] = true }) == nil)
+end)
+
+test("the centre decides, not the whole frame", function()
+    local known = {}
+    -- Bigger than the tile, with its centre inside.
+    assert(successor(APP, TILE, { candidate(2, { x = -100, y = -100, w = 600, h = 800 }) }, known) == 2)
+    -- Centre just outside the right edge (the edge itself is outside).
+    assert(successor(APP, TILE, { candidate(3, { x = 300, y = 0, w = 200, h = 600 }) }, known) == nil)
+    -- Centre on the left edge is inside.
+    assert(successor(APP, TILE, { candidate(4, { x = -100, y = 0, w = 200, h = 600 }) }, known) == 4)
+end)
+
+test("the first candidate in order takes the tile", function()
+    local known = {}
+    assert(successor(APP, TILE, { candidate(4), candidate(2) }, known) == 4)
+end)
+
+test("two vanished tiles of an app don't take the same window", function()
+    -- Reconcile adds each successor to `known` before the next vanished tile
+    -- looks, so a second tab swap in one pass finds the next window.
+    local known = { [1] = true, [9] = true }
+    local cands = { candidate(2), candidate(3) }
+    local first = Tabs.successor(APP, TILE, cands, known, frameOf)
+    assert(first.id == 2)
+    known[first.id] = true
+    assert(successor(APP, TILE, cands, known) == 3)
+end)
+
+test("visit is told of each same-app candidate looked at, with its frame", function()
+    local seen = {}
+    local known = { [1] = true }
+    local cands = { candidate(5, { x = 900, y = 0, w = 10, h = 10 }), candidate(6, nil, OTHER), candidate(2) }
+    successor(APP, TILE, cands, known, function(c, f) seen[#seen + 1] = c.id .. ":" .. f.x end)
+    assert(table.concat(seen, ",") == "5:900,2:0", table.concat(seen, ","))
+end)
+
+test("centredIn uses a half-open rect like the pointer test", function()
+    assert(Tabs.centredIn({ x = 0, y = 0, w = 10, h = 10 }, { x = 0, y = 0, w = 10, h = 10 }))
+    assert(not Tabs.centredIn({ x = 10, y = 0, w = 0, h = 10 }, { x = 0, y = 0, w = 10, h = 10 }))
+end)

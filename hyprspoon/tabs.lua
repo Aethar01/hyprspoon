@@ -14,6 +14,13 @@ local function frameKey(f)
         math.floor(f.w + 0.5), math.floor(f.h + 0.5))
 end
 
+-- Whether the centre of `frame` lies inside `rect`: how a window that has
+-- taken over a tile is recognised.
+local function centredIn(frame, rect)
+    local x, y = frame.x + frame.w / 2, frame.y + frame.h / 2
+    return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h
+end
+
 -- Native tabs: the filter reports every tab of a tabbed window as a window,
 -- all "visible" and at the same frame, but only one is the live tab. Separate
 -- windows can also open at identical frames (e.g. Ghostty), so keep every
@@ -75,5 +82,26 @@ function M.background(windows, frameOf, listedIDs)
     end
     return background
 end
+
+-- Switching, opening or closing a native tab swaps which window id is the
+-- live one, in the same place. When a tiled window `oldPid` has vanished, the
+-- window that took over its tile (`rect`) is the first of `candidates` (a
+-- list of { id =, pid = }: the present windows and the background tabs) that
+-- is of the same app, isn't one the tree already knew (`known`, a set of ids
+-- the caller updates after each handoff) and is centred inside the tile.
+-- `frameOf(candidate)` is only asked for those of the same app, and
+-- `visit(candidate, frame)`, if given, is told of each one looked at.
+-- Returns the successor, or nil.
+function M.successor(oldPid, rect, candidates, known, frameOf, visit)
+    for _, c in ipairs(candidates) do
+        if not known[c.id] and c.pid == oldPid then
+            local f = frameOf(c)
+            if visit then visit(c, f) end
+            if centredIn(f, rect) then return c end
+        end
+    end
+end
+
+M.centredIn = centredIn
 
 return M
