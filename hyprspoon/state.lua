@@ -114,7 +114,12 @@ S.defaults = {
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
     --   pin = true           float it on every workspace of its display,
-    --                        like Hyprland's pin (see hyprspoon/spaces.lua)
+    --                        overriding float; off by default. A workspace
+    --                        target must already be showing, else ignored.
+    --                        false does not clear a saved manual pin.
+    -- Pins follow scratchpads too and survive reload/minimize/full screen,
+    -- but not reboot. Unpinning leaves a float; tiling it or silently moving
+    -- it to a hidden workspace removes the pin.
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {

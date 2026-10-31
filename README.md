@@ -159,6 +159,24 @@ with the same name. To list them:
 hs -c 'for _, s in ipairs(hs.screen.allScreens()) do print(s:name(), s:getUUID()) end'
 ```
 
+### Pinned windows
+
+A pinned window floats on whichever workspace its display shows. It stays
+on that display as you switch, including scratchpads. A scratchpad with
+only pinned windows counts as empty and closes when empty scratchpads are
+checked. Move the window to another display to have it follow that display.
+
+`togglePin()` pins or unpins the focused window. Pinning a tile centres it
+and makes it float. With tiling off, it stays where it is and is marked to
+float when tiling resumes. Unpinning leaves it floating on the current
+workspace. `toggleFloat` unpins it when turning it back into a tile.
+Moving it silently to a hidden workspace also unpins it so it can stay there;
+moving it to a visible workspace keeps the pin.
+
+Pins survive reloads, minimizing and native full screen. On return, the
+window joins the workspace its display shows. Manual pins do not survive
+a reboot; use a `pin = true` rule to pin newly opened windows again.
+
 ### Borders (`border`)
 
 Rings around the windows on show, drawn in the gap outside their edges.
@@ -234,7 +252,12 @@ pattern), and sets any of:
 | `float` | `true` to float the window, `false` to tile it even if it would float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
-| `pin` | `true` to float it on every workspace of its display, like Hyprland's pin |
+| `pin` | `true` to float it on every workspace of its display, overriding `float`; off by default |
+
+For a pinned window, a `workspace` rule only applies if that workspace is
+already showing; it can take the window to that display. A hidden target
+is ignored. Saved manual floating choices take precedence over float rules.
+`pin = false` does not undo a saved manual pin.
 
 Rules are read once per window, when it first appears; later matching rules
 win.
@@ -267,7 +290,8 @@ you can also build your own table from scratch.
 | Option+\` | Back to the previous workspace |
 | Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) |
 | Option+B | Toggle tiling (Shift: just this workspace) |
-| Option+T | Toggle floating (`togglePin`, unbound, pins the window to every workspace of its display) |
+| Option+T | Toggle floating |
+| Unbound | `togglePin`: pin or unpin the focused window on its display |
 | Option+G | Cycle through floating windows |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) |
 | Option+Y | Flip the split |
@@ -275,6 +299,14 @@ you can also build your own table from scratch.
 | Option+R | Rotate the layout (Shift: mirror it) |
 | Option+Tab | Overview |
 | Option+W | Close the window |
+
+To bind pinning before calling `bindHotkeys`:
+
+```lua
+local keys = spoon.hyprspoon.defaultHotkeys
+keys.togglePin = { { "alt", "shift" }, "p" }
+spoon.hyprspoon:bindHotkeys(keys)
+```
 
 Option+letter shortcuts replace the characters macOS types with Option
 (å, ß, ∂ and so on). Remap the ones you need for typing.
@@ -287,8 +319,12 @@ yourself or call them from the `hs` command-line tool
 
 ```sh
 hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
+hs -c 'spoon.hyprspoon.togglePin()'
 hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 ```
+
+`togglePin()` takes no arguments and acts on the focused managed window.
+With no focused window it does nothing. It also works with tiling off.
 
 ## Troubleshooting
 
@@ -296,6 +332,9 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
   a corner of the display. Quitting Hammerspoon brings them back, but a
   crash leaves them there. Start Hammerspoon again, then switch to their
   workspace or quit it normally.
+- **A pinned window stopped following.** Turning it into a tile or moving
+  it silently to a hidden workspace removes the pin. Focus it and call
+  `togglePin` to pin it again.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
@@ -308,6 +347,8 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
   basics working.
 - It wraps `hs.reload` to tell a reload apart from a quit, so that windows
   stay parked across a reload.
+- Pinned windows stay out of workspace slide pictures, but the picture is
+  drawn over them. A pin may be covered until the slide ends.
 - Native full-screen windows still get their own Space, which macOS
   manages.
 

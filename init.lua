@@ -32,7 +32,7 @@
 --   drop      dragging a tile onto another to move it in the layout
 --   mouse     modifier + drag anywhere on a window
 --   ffm       focus follows mouse
---   spaces    numbered workspaces, parking the windows of hidden ones
+--   spaces    numbered workspaces, parking hidden windows and following pins
 --   restore   layouts and workspaces back after a restart
 --   swipe     trackpad swipes between workspaces
 --   bar       workspace numbers in the menu bar, and the row they're drawn as
@@ -117,6 +117,9 @@ local M = {
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
     toggleOverview = Overview.toggle,
+    -- togglePin(): pin/unpin the focused window on its display; no arguments.
+    -- A tile floats first (centred with tiling on). Unpinning keeps it floating.
+    -- Works with tiling off; no focused window means no change.
     togglePin = Actions.togglePin,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,
