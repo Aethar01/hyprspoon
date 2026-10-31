@@ -12,9 +12,11 @@
 // Window titles need the Screen Recording permission for the terminal that
 // runs it; without it they print empty.
 //
-// What it showed on macOS 27 (#1): SLSGetWindowOpacity answers only for the
-// caller's own windows. For another app's window it returns success and
-// leaves its result untouched, so the opaque column prints "?". Neither the
+// What it showed on macOS 27 (#1): for another app's window,
+// SLSGetWindowOpacity returns success and leaves its result untouched, so
+// the opaque column prints "?". For the probe's own window (-s) it answers,
+// but reads 1 whether NSWindow.opaque or SLSSetWindowOpacity turned the
+// flag off. Neither the
 // iterator's tags nor its attributes change when a window's opaque flag
 // does, and CGWindowListCopyWindowInfo has no key for it. From outside the
 // app, only alpha is readable.
@@ -38,6 +40,7 @@
 // "-" instead of crashing.
 static int (*SLSMainConnectionID)(void);
 static CGError (*SLSGetWindowOpacity)(int, uint32_t, bool *);
+static CGError (*SLSSetWindowOpacity)(int, uint32_t, bool);
 static CGError (*SLSGetWindowAlpha)(int, uint32_t, float *);
 static CFTypeRef (*SLSWindowQueryWindows)(int, CFArrayRef, uint32_t);
 static CFTypeRef (*SLSWindowQueryResultCopyWindows)(CFTypeRef);
@@ -63,22 +66,39 @@ static void readOpacity(int cid, uint32_t wid, const char *label) {
     printf("%s opaque=%u extra-bytes-written=%s\n", label, bytes[0], extra ? "yes" : "no");
 }
 
+// AppKit hands window changes to WindowServer on a later run-loop turn.
+static void settle(void) {
+    [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+}
+
 static void selfTest(int cid) {
     [NSApplication sharedApplication];
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(-10000, -10000, 120, 80)
         styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+    // ARC owns the window; close must not release it a second time.
+    window.releasedWhenClosed = NO;
     window.opaque = NO;
     window.alphaValue = 0.85;
     [window orderFrontRegardless];
     uint32_t wid = (uint32_t)window.windowNumber;
     printf("self-test window=%u\n", wid);
+    settle();
     readOpacity(cid, wid, "opaque=NO alpha=0.85");
     window.opaque = YES;
     window.alphaValue = 1.0;
+    settle();
     readOpacity(cid, wid, "opaque=YES alpha=1.00");
     window.opaque = NO;
     window.alphaValue = 0.85;
+    settle();
     readOpacity(cid, wid, "opaque=NO alpha=0.85 (again)");
+    // The flag set on WindowServer directly, as an app's own connection can.
+    if (SLSSetWindowOpacity) {
+        SLSSetWindowOpacity(cid, wid, false);
+        readOpacity(cid, wid, "SLSSetWindowOpacity false");
+        SLSSetWindowOpacity(cid, wid, true);
+        readOpacity(cid, wid, "SLSSetWindowOpacity true");
+    }
     [window orderOut:nil];
     [window close];
 }
@@ -89,6 +109,7 @@ int main(int argc, char **argv) {
 #define LOAD(name) name = dlsym(RTLD_DEFAULT, #name)
         LOAD(SLSMainConnectionID);
         LOAD(SLSGetWindowOpacity);
+        LOAD(SLSSetWindowOpacity);
         LOAD(SLSGetWindowAlpha);
         LOAD(SLSWindowQueryWindows);
         LOAD(SLSWindowQueryResultCopyWindows);
