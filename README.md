@@ -288,12 +288,33 @@ hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
 hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 ```
 
+## Getting windows back
+
+Windows on hidden workspaces are parked in a corner of their display.
+Quitting Hammerspoon brings them back, but a crash (or `kill -9`) leaves
+them there. `rescue()` brings back every parked window, from the state
+hyprspoon saves as it goes, forgets the workspaces (each window joins the
+one showing on its display) and turns tiling off. It works whether or not
+hyprspoon is started; if it is, it starts again with the same options.
+
+With `require("hs.ipc")` in your config:
+
+```sh
+hs -c 'local s = spoon and spoon.hyprspoon or hs.loadSpoon("hyprspoon"); s:rescue()'
+```
+
+Or paste the part in quotes into the Hammerspoon console. Turn tiling back
+on with Option+B.
+
+Windows on another macOS Space (such as a full-screen one) can't be reached
+from the current one: the console says how many are left, and running
+`rescue()` again from their Space brings them back. Window IDs only last
+until macOS restarts, so after a restart there is nothing to bring back by
+ID.
+
 ## Troubleshooting
 
-- **Windows stuck in a corner.** Windows on hidden workspaces are parked in
-  a corner of the display. Quitting Hammerspoon brings them back, but a
-  crash leaves them there. Start Hammerspoon again, then switch to their
-  workspace or quit it normally.
+- **Windows stuck in a corner.** See [Getting windows back](#getting-windows-back).
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
