@@ -6,7 +6,8 @@
 // uses it to confirm which saved windows still exist.
 //
 // Lua functions: set(pid, wid, x, y, w, h, duration), liveIDs(),
-// tabState(pid), tabWindows(pid), tabButtons(pid, wid, delta), tabShow(...)
+// tabSnapshot(callback), tabWindows(pid, wanted, callback),
+// tabState(pid) (compatibility), tabButtons(pid, wid, delta), tabShow(...)
 // (tabs.c), focus(pid, wid, raise) (focus.c), dragBegin(options) and dragEnd(x, y)
 // (drag.c). liveIDs() returns a set {[windowID] = true} across all Spaces
 // and hidden apps, or nil if the query fails. It uses no accessibility calls.
