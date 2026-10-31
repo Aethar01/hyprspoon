@@ -1208,6 +1208,19 @@ function M.uuidForKey(key)
     return n and displayOf(n)
 end
 
+-- Background native tabs have no hs.window. Keep their workspace and
+-- restart identity without trying to park, focus or resize them.
+function M.nativeMember(id, shownID, app, title)
+    if not info[id] then
+        local proxy = { id = function() return id end, title = function() return title end }
+        of[id] = Restore.match(proxy, app) or of[shownID]
+    elseif not of[id] then
+        of[id] = of[shownID]
+    end
+    info[id] = { app = app, title = title }
+    save()
+end
+
 -- Notes every window's title for matching windows after a restart (see
 -- hyprspoon/restore.lua). Accessibility calls, so only on the way out.
 function M.rememberTitles()

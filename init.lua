@@ -591,7 +591,8 @@ function M:start(opts)
         -- the filter's list has dropped the old Space's, and a pass then
         -- would lay the old windows out in the new Space's tree.
         local created = event == hs.window.filter.windowCreated
-        Layout.scheduleRetile(false, win and created and not Layout.mayBeTab(win))
+        Layout.scheduleRetile(false, win and (Tree.setOf(win:id()) ~= nil or Discover.nativePeer(win)
+            or (created and not Layout.mayBeTab(win))))
         Layout.scheduleRecheck()
     end)
 
@@ -639,7 +640,12 @@ function M:start(opts)
         if event == hs.window.filter.windowNotInCurrentSpace then
             -- Also how a tab swap looks, with the new tab arriving a moment
             -- later: wait for it instead of treating this as a close.
-            Layout.scheduleRetile(false, false, Layout.BSP_TAB_SETTLE)
+            if Discover.isNativeTab(win) then
+                S.offSpace[win:id()] = nil
+                Layout.scheduleRetile(false, true)
+            else
+                Layout.scheduleRetile(false, false, Layout.BSP_TAB_SETTLE)
+            end
         else
             Layout.scheduleRetile(false, true)
         end

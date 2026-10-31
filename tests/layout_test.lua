@@ -390,3 +390,27 @@ test("groupNext, groupPrev and moveOutOfGroup go to the focused set's kind", fun
 end)
 
 print("Layout tests passed")
+
+test("an unknown native switch creates a set and hands the ring over in the same pass", function()
+    wins[3] = window(3, 2)
+    S.trees.ws1 = split(leaf(1), leaf(2))
+    Util.pidByID[2] = 2
+    Util.focusHistory = { 2, 1 }
+    onShow = { A = { 1, 2 } }
+    Layout.tileNow()
+    local rect = S.trees.ws1.b.rect
+    S.nativeBackground = { [2] = { pid = 2 } }
+    onShow, ghosts = { A = { 1 } }, { 2 }
+    Layout.tileNow()
+    assert(S.trees.ws1.b.windowID == 2, "the first switch reserves its tile while AXWindows catches up")
+    wins[3].frame_ = { x = rect.x, y = rect.y, w = rect.w, h = rect.h }
+    onShow, ghosts = { A = { 1, 3 } }, { 2 }
+    local otherMoves = wins[1].moves
+    Layout.tileNow()
+    local current = S.trees.ws1.b
+    assert(current.windowID == 3 and current.kind == "native")
+    assert(Tree.treeContains(S.trees.ws1, 2), "the old tab remains a member")
+    assert(ring[#ring][1] == 2 and ring[#ring][2] == 3)
+    assert(current.rect.x == rect.x and current.rect.w == rect.w)
+    assert(wins[3].moves == 0 and wins[1].moves == otherMoves, "a switch places no windows")
+end)

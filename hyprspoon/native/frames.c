@@ -6,7 +6,8 @@
 // uses it to confirm which saved windows still exist.
 //
 // Lua functions: set(pid, wid, x, y, w, h, duration), liveIDs(),
-// focus(pid, wid, raise) (focus.c), dragBegin(options) and dragEnd(x, y)
+// tabState(pid), tabWindows(pid), tabButtons(pid, wid, delta), tabShow(...)
+// (tabs.c), focus(pid, wid, raise) (focus.c), dragBegin(options) and dragEnd(x, y)
 // (drag.c). liveIDs() returns a set {[windowID] = true} across all Spaces
 // and hidden apps, or nil if the query fails. It uses no accessibility calls.
 // Without this module, frame changes, focus and drags run through Lua and

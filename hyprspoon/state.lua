@@ -3,6 +3,12 @@
 local S = {}
 package.loaded["hyprspoon.state"] = S
 
+-- Native tabs need no option. groupNext/groupPrev press the app's tab
+-- buttons; moveOutOfGroup uses Window > Move Tab to New Window. They are
+-- unbound by default. Native sets use the app's bar, with no hyprspoon bar.
+-- frames.so supplies Space-based detection and exact member raising;
+-- without it, discovery uses app lists and the frame guess.
+
 S.defaults = {
     -- Focus the window under the pointer as it moves.
     focusFollowsMouse = false,

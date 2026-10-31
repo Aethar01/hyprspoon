@@ -505,7 +505,35 @@ nothing for a floating window, with tiling off, or with no focused tile.
 
 `groupNext()`, `groupPrev()` and `moveOutOfGroup()` take no arguments. They
 act on a tile holding several windows, one on show, and do nothing for a
-window that's alone in its tile.
+window that's alone in its tile. For native tabs, next/previous presses the
+app's tab buttons in bar order; move out uses Window > Move Tab to New Window.
+These actions are unbound by default. The app draws its own tab bar.
+
+Native tabs share one tile. Switching hands the tile and ring to the tab
+as soon as it appears; the other tiles stay in place. Merge All Windows
+combines the app's absorbed tiles, and a torn-off tab splits beside the set.
+Moving the shown window to another workspace, or floating it, carries its
+known tabs with it. Membership is saved across reloads and matched after a
+restart, including background tabs and manually floated native sets. There
+is no action for moving another window into a native set.
+
+Build `frames.so` with `make -C hyprspoon/native` for detection using the
+app's off-screen windows with no macOS Space. Only windows seen as standard,
+or confirmed through accessibility, count; minimized, hidden-app and parked
+windows retain their Spaces. Tab counts trigger a bounded accessibility scan
+only when known background windows do not account for the app's tab bars.
+Raising a specific background tab uses its window ID, with title and bar
+position as fallbacks. Without the module, app window lists remove absorbed
+tiles and the frame guess handles switches. That fallback cannot reliably
+learn never-shown tabs or restore their membership after a restart.
+
+Independent tab sets with indistinguishable titles can be ambiguous after a
+restart; unmatched members are left alone until a switch reveals their tile.
+Private macOS APIs and a bounded AX element scan underpin native detection;
+an app with window elements outside the scan may need tabs shown once to
+learn them. Finder, TextEdit, Terminal and Preview expose native tab bars.
+Ghostty needs a native/tabs title bar; a hidden title bar has no native tabs.
+Live verification of this implementation, including Xcode, is pending.
 
 `spoon.hyprspoon:rescue()` returns the number of parked windows brought
 back. See [Getting windows back](#getting-windows-back) for a command that

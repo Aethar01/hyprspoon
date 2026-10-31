@@ -21,20 +21,11 @@ local function centredIn(frame, rect)
     return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h
 end
 
--- Native tabs: the filter reports every tab of a tabbed window as a window,
--- all "visible" and at the same frame, but only one is the live tab. Separate
--- windows can also open at identical frames (e.g. Ghostty), so keep every
--- window the app itself lists and only suppress unlisted duplicates. If none
--- are listed yet, prefer the one already tiled, else the oldest.
--- A window alone at its frame is always
--- live: the app's own list can lag behind events (e.g. right after the
--- selected tab closes), so it's only used to choose within a group.
---
--- `windows` is a list of { id =, pid =, tiled = (holds a tile of its own),
--- inTree = (is in a tree at all) }. `frameOf(window)` and `listedIDs(pid)`
--- (the ids the app lists, as a set) are accessibility calls, so they're only
--- made when a decision needs them. Returns the ids of the background tabs as
--- a set.
+-- Fallback without the Space query: the app list suppresses absorbed
+-- windows even when their stale frames differ. If the list is empty, use
+-- the old frame guess and prefer a tiled window, then the oldest id.
+-- `windows` holds { id, pid, tiled, inTree }; frameOf and listedIDs are
+-- supplied by Discover so this module stays independent of Hammerspoon.
 function M.background(windows, frameOf, listedIDs)
     local perPid = {}
     for _, win in ipairs(windows) do
@@ -44,14 +35,7 @@ function M.background(windows, frameOf, listedIDs)
 
     local background = {}
     for pid, wins in pairs(perPid) do
-        -- Tiles never share a frame, so if every window of the app already
-        -- holds its own tile there are no background tabs to find (and no
-        -- reason to ask the app for frames).
-        local allTiled = #wins >= 2
-        for _, win in ipairs(wins) do
-            if not win.tiled then allTiled = false break end
-        end
-        if #wins >= 2 and not allTiled then
+        if #wins >= 2 then
             local groups = {}
             for _, win in ipairs(wins) do
                 local gk = frameKey(frameOf(win))
@@ -59,10 +43,16 @@ function M.background(windows, frameOf, listedIDs)
                 table.insert(groups[gk], win)
             end
 
-            local listed = nil
+            local listed = listedIDs(pid)
+            -- An absorbed window keeps its stale frame after Merge All
+            -- Windows. The app list takes precedence whenever it has caught up.
+            if next(listed) then
+                for _, win in ipairs(wins) do
+                    if not listed[win.id] then background[win.id] = true end
+                end
+            end
             for _, group in pairs(groups) do
                 if #group >= 2 then
-                    listed = listed or listedIDs(pid)
                     local function rank(win)
                         return (listed[win.id] and 0 or 2) + (win.inTree and 0 or 1), win.id
                     end
@@ -100,6 +90,70 @@ function M.successor(oldPid, rect, candidates, known, frameOf, visit)
             if centredIn(f, rect) then return c end
         end
     end
+end
+
+-- Only standard windows, either seen before or verified through AX, may
+-- enter a set. Helper windows also have no Space.
+function M.detect(states, standard)
+    local out = {}
+    for id, state in pairs(states or {}) do
+        if state == "tab" and standard[id] then out[id] = true end
+    end
+    return out
+end
+
+-- Assign background windows to bars with spare places. Existing membership
+-- wins; a switch's tile gives the next clue, then an unambiguous title,
+-- finally a single remaining bar (Merge All Windows). Ambiguity is left
+-- alone rather than combining independent tab sets.
+function M.assign(background, shown, ownerOf)
+    local assigned, used, capacity = {}, {}, {}
+    for _, w in ipairs(shown) do used[w.id], capacity[w.id] = 1, w.count or 1 end
+    for id in pairs(background) do
+        local owner = ownerOf(id)
+        if owner and used[owner.windowID] and used[owner.windowID] < capacity[owner.windowID] then
+            assigned[id] = owner.windowID
+            used[owner.windowID] = used[owner.windowID] + 1
+        end
+    end
+    local ids = {}
+    for id in pairs(background) do ids[#ids + 1] = id end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+        if not assigned[id] then
+            local owner, best, score, tied = ownerOf(id), nil, -1, false
+            for _, w in ipairs(shown) do
+                if used[w.id] < (w.count or 1) then
+                    local rank = 0
+                    if owner and owner.rect and centredIn(w.frame, owner.rect) then rank = 2 end
+                    for _, title in ipairs(w.titles or {}) do
+                        if title ~= "" and title == background[id].title then rank = math.max(rank, 1) end
+                    end
+                    if rank > score then best, score, tied = w.id, rank, false
+                    elseif rank == score then tied = true end
+                end
+            end
+            if best and not tied then
+                assigned[id], used[best] = best, used[best] + 1
+            end
+        end
+    end
+    return assigned
+end
+
+-- Two members listed on screen are separate native windows after tear-off.
+function M.strays(members, shown, visible)
+    local out = {}
+    for _, id in ipairs(members) do
+        if id ~= shown and visible[id] then out[#out + 1] = id end
+    end
+    return out
+end
+
+-- Restart matching also accepts verified background windows, which never
+-- appear in the normal app window list.
+function M.restorePresent(id, valid, present, background)
+    return valid[id] or present[id] or background[id]
 end
 
 M.centredIn = centredIn

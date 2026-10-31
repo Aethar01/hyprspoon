@@ -311,8 +311,8 @@ assert(kindOf(5, "AXFloatingWindow", { AXCancelButton = {} }) == "subwindow",
 local appEnv = setmetatable({
     hs = env.hs, Util = Util,
 }, { __index = _G })
-local appWindows = assert(load(extract("discover", "local appWindowCache = {}",
-    "local function withRecentlyChangedApps") .. "return appWindows", "app windows", "t", appEnv))()
+local appWindows = assert(load(extract("discover", "local function appWindows",
+    "local nativeWindows =") .. "return appWindows", "app windows", "t", appEnv))()
 local pip = { id = function() return 99 end, title = function() return "Picture-in-Picture" end,
     isStandard = function() return true end, isVisible = function() return true end }
 win.isStandard, win.isVisible = function() return true end, function() return true end
