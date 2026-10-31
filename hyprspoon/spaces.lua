@@ -1351,6 +1351,11 @@ function M.isPinned(id)
     return pinned[id] == true
 end
 
+-- The workspace window `id` belongs to, or nil if it has none yet.
+function M.workspaceOf(id)
+    return of[id]
+end
+
 function M.hasWindows(n)
     for _, m in pairs(of) do
         if m == n then return true end

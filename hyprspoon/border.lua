@@ -76,6 +76,12 @@ function M.previewer()
     return native and native.previewer() or nil
 end
 
+-- The tile showing window `from` shows `to` instead (a set switched, or its
+-- shown window closed): the active ring goes straight over, without a fade.
+function M.handOver(from, to)
+    if native and from and native.active() == from then native.focus(to, 0) end
+end
+
 -- Window `id` went away, was parked or went full screen.
 function M.forget(id)
     if native and native.active() == id then M.hide() end

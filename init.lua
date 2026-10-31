@@ -521,8 +521,12 @@ function M:start(opts)
             Discover.cancelLayoutCheck(id)
             S.fullscreen[id], S.offSpace[id], S.slots[id] = nil, nil, nil
             S.pseudoAway[id] = nil
+            Tree.forget(id)
+            -- A set's tile stays maximized for the member shown next.
+            local set = Tree.setOf(id)
+            local handedOn = set and set.windowID == id and #set.members > 1
             for key, maxID in pairs(S.maximized) do
-                if maxID == id then S.maximized[key] = nil end
+                if maxID == id and not handedOn then S.maximized[key] = nil end
             end
             Spaces.forget(id)
             Float.forgetFloat(id)
@@ -615,7 +619,11 @@ function M:start(opts)
                 Spaces.forget(id)
             end
             -- Not a tab swap: the new tab's focus moves the ring without a fade.
-            if event ~= hs.window.filter.windowNotInCurrentSpace then Border.forget(win:id()) end
+            -- Nor the shown window of a set closing: the next one takes its
+            -- tile and the ring (Layout.showMember).
+            local set = Tree.setOf(id)
+            local handedOn = set and set.windowID == id and #set.members > 1 and not S.fullscreen[id]
+            if event ~= hs.window.filter.windowNotInCurrentSpace and not handedOn then Border.forget(id) end
         end
         Discover.markDirty(win)
         Focus.invalidateWindowCache()
