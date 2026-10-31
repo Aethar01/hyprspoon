@@ -92,18 +92,19 @@ end
 
 -- Display `screen` goes from workspace `from` (showing `outIds`) to `to`
 -- (with `inIds`), `dir` 1 if `to` comes after `from`, -1 before. Call
--- before the windows move: it waits for the capture.
+-- before the windows move: it waits for the capture. True if a slide
+-- covers the switch (this one, or the swipe's that just showed it).
 function M.switch(screen, from, to, outIds, inIds, dir)
-    if not native or not screen then return end
+    if not native or not screen then return false end
     if hs.timer.secondsSinceEpoch() < panShownUntil then
         panShownUntil = 0
-        return
+        return true
     end
     local dx, dy = toward(S.cfg.slide.workspaces, dir)
-    if not dx then return end
+    if not dx then return false end
     local took = from and take(from, outIds, screen)
     local into = current(to, inIds, screen) and to or nil
-    if not took and not into then return end
+    if not took and not into then return false end
     native.run(slide(screen, {
         out = took and from or nil,
         into = into,
@@ -113,6 +114,7 @@ function M.switch(screen, from, to, outIds, inIds, dir)
         -- shows are already in place beneath.
         backdrop = into ~= nil,
     }))
+    return true
 end
 
 -- Scratchpad `n` (with `ids`) comes up over the workspace showing on

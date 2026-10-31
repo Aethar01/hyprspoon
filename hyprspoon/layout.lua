@@ -436,7 +436,7 @@ local function applyTree(node, rect, byID, full)
             -- one of them changes. Only setFrame animates. hyprspoon.native.frames
             -- makes the same choice itself, off the main thread.
             local duration = S.cfg.tiling.animationDuration
-            if S.dragState or hs.mouse.getButtons().left then duration = 0 end
+            if S.dragState or S.instantLayout or hs.mouse.getButtons().left then duration = 0 end
             local native = Util.native("frames")
             if native and (moved or resized) then
                 Util.setFrame(win, rect, duration)
@@ -569,7 +569,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
         Float.raiseFloating()
         -- Each animation step fires windowMoved too.
         S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
-            + S.cfg.tiling.animationDuration
+            + (S.instantLayout and 0 or S.cfg.tiling.animationDuration)
         Focus.invalidateWindowCache()
     end
     if changed then Hooks.fire("layout") end
