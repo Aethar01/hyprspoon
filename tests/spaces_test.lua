@@ -46,6 +46,7 @@ hs = {
 local noop = function() end
 local Util = {
     focusHistory = {}, winByID = {},
+    native = noop,
     managedWindows = function() return {} end,
     rulesFor = function() return {} end,
 }
