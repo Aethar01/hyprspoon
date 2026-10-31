@@ -16,9 +16,17 @@ hs = {
     window = { list = function() return { { kCGWindowNumber = 1 }, { kCGWindowNumber = 2 } } end },
 }
 
+-- Every window that still exists, on any Space: 1 and 2 are on screen, 50
+-- is on another Space. nil stands for a missing native module.
+local allWindows = { [1] = true, [2] = true, [50] = true }
 package.loaded["hyprspoon.util"] = {
     pointInFrame = function(p, f)
         return p.x >= f.x and p.x < f.x + f.w and p.y >= f.y and p.y < f.y + f.h
+    end,
+    native = function(name)
+        if name == "frames" and allWindows then
+            return { liveIDs = function() return allWindows end }
+        end
     end,
 }
 package.loaded["hyprspoon.spaces"] = {
@@ -309,6 +317,20 @@ test("pseudotiling outside a tree survives reloads and discards closed windows",
     package.loaded["hyprspoon.tree"] = nil
     Tree = require("hyprspoon.tree")
     assert(next(S.pseudoAway) == nil, "old boot's IDs aren't reused")
+end)
+
+test("pseudotiling of a window off screen is kept until it's known closed", function()
+    S.trees = {}
+    S.pseudoAway = { [50] = { w = 100, h = 100 }, [99] = { w = 100, h = 100 } }
+    local all = allWindows
+    allWindows = nil
+    Tree.saveTreesNow()
+    assert(S.pseudoAway[50] and S.pseudoAway[99], "without the all-window query nothing is dropped")
+    allWindows = all
+    Tree.saveTreesNow()
+    assert(S.pseudoAway[50], "a window on another Space keeps its size")
+    assert(S.pseudoAway[99] == nil, "a closed one doesn't")
+    S.pseudoAway = {}
 end)
 
 test("pseudotiling goes with the window", function()

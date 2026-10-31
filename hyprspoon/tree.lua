@@ -88,13 +88,20 @@ local function saveTreesNow()
     end
     for key in pairs(S.untiled) do untiled[key] = true end
     -- Like workspace state, prune against WindowServer rather than walking
-    -- every app's windows over accessibility. An empty list may be transient.
-    local live, pseudoAway = {}, {}
+    -- every app's windows over accessibility. The on-screen list leaves out
+    -- other Spaces and hidden apps, so a window missing from it is only
+    -- dropped once the all-window query confirms it's gone; without that
+    -- query it's kept.
+    local live, pseudoAway, all = {}, {}, nil
     for _, win in ipairs(hs.window.list(true) or {}) do
         if win.kCGWindowNumber then live[win.kCGWindowNumber] = true end
     end
     for id, size in pairs(S.pseudoAway) do
-        if next(live) and not live[id] then
+        if not live[id] and all == nil then
+            local frames = Util.native("frames")
+            all = frames and frames.liveIDs and frames.liveIDs() or false
+        end
+        if not live[id] and all and not all[id] then
             S.pseudoAway[id] = nil
         else
             pseudoAway[tostring(id)] = size
