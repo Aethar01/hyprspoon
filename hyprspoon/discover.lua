@@ -139,6 +139,7 @@ local function withRecentlyChangedApps(windows)
     end
     local frames = Util.native("frames")
     requestSnapshot(frames)
+    local previousBackground = S.nativeBackground
     S.nativeBackground, S.nativeShown = {}, {}
     for pid in pairs(pids) do
         local app = hs.application.applicationForPID(pid)
@@ -180,6 +181,11 @@ local function withRecentlyChangedApps(windows)
                 if state == "tab" and not known[id] then wanted[id] = true end
             end
             local background = Tabs.detect(states, known)
+            -- A failed Space lookup is uncertainty, including for a known
+            -- background member that has no filter/AXWindows object to retain.
+            for id, d in pairs(previousBackground) do
+                if d.pid == pid and states and states[id] == "unknown" then background[id] = true end
+            end
             local count, expected = 0, 0
             for _ in pairs(background) do count = count + 1 end
             for _, w in ipairs(cached.shown) do expected = expected + w.count - 1 end

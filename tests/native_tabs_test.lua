@@ -89,6 +89,14 @@ assert(#byScreen.display == 2 and S.openIDs[2])
 assert(#leaves == 2 and leaves[1].kind == "native" and leaves[1].members[2] == 2)
 assert(remembered[2] == 1 and repairs == 0, "a known standard window needs no AX scan")
 
+-- An individual failed Space query does not close an already known tab,
+-- including one absent from both the filter and AXWindows.
+filter = { wins[1], wins[3] }
+states[2] = "unknown"
+Discover.windowsByScreen()
+assert(S.openIDs[2] and S.nativeBackground[2])
+states[2], filter = "tab", wins
+
 -- A never-shown tab is confirmed by AX; the helper with no Space isn't.
 states[4], states[5], bars[1] = "tab", "tab", { "one", "two", "verified" }
 Discover.windowsByScreen()

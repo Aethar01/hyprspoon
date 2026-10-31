@@ -104,6 +104,7 @@ int main(void) {
     timedElements = CFDictionaryCreateMutable(NULL, 0, NULL, &kCFTypeDictionaryValueCallBacks);
     worker = dispatch_queue_create("test.tabs", DISPATCH_QUEUE_SERIAL);
     CFMutableDictionaryRef button = dictionary(), button2 = dictionary();
+    set(button, kAXRoleAttribute, CFSTR("AXRadioButton"));
     set(button, kAXSubroleAttribute, CFSTR("AXTabButton"));
     set(button2, kAXSubroleAttribute, CFSTR("AXTabButton"));
     set(button, kAXTitleAttribute, CFSTR("duplicate"));
@@ -125,6 +126,13 @@ int main(void) {
     assert(!tabsSelect(100, 99, CFSTR("missing")) && presses == 0);
     set(button2, kAXTitleAttribute, CFSTR("unique"));
     assert(tabsSelect(100, 99, CFSTR("unique")) && presses == 1);
+    set(win, kAXSubroleAttribute, CFSTR("AXDialog"));
+    assert(!tabGroup((AXUIElementRef)win));
+    set(win, kAXSubroleAttribute, kAXStandardWindowSubrole);
+    int beforePresses = presses;
+    clockStep = 0.06;
+    assert(!tabsSelect(100, 99, CFSTR("unique")) && presses == beforePresses);
+    clockStep = 0;
     // Ordinary radio buttons and nested content tab groups are rejected.
     set(button, kAXSubroleAttribute, CFSTR("AXRadioButton"));
     assert(!tabGroup((AXUIElementRef)win));
