@@ -46,14 +46,28 @@ local BSP_DIRTY_FOR = 3
 
 local function markDirty(win)
     local pid = win and win:pid()
-    if pid then dirtyPids[pid] = hs.timer.secondsSinceEpoch() + BSP_DIRTY_FOR end
+    if pid then
+        dirtyPids[pid] = hs.timer.secondsSinceEpoch() + BSP_DIRTY_FOR
+        if M.observe then M.observe() end
+    end
 end
 
--- The filter neither drops absorbed windows nor reliably adds torn-off
--- ones. Ask each managed app, including apps whose tabs we already know.
+-- AXWindows and tab bars are expensive and can time out. Quiet apps reuse
+-- their records; events allow short-lived refreshes and a WindowServer
+-- state change bypasses the TTL so switches and merges are seen promptly.
+local appCache = {}
+local BSP_APP_CACHE_TTL = 0.1
+local nativeWindows = {}
+local repairBackoff = {}
+local snapshot, snapshotPending, stopped = nil, false, false
+local generation = 0
+S.nativeBackground = {}
+
 local function appWindows(pid, app)
+    local ok, windows = pcall(function() return app:allWindows() end)
+    if not ok or not windows or #windows == 0 then return nil end
     local out = {}
-    for _, win in ipairs(app:allWindows()) do
+    for _, win in ipairs(windows) do
         if win:id() and win:isStandard() and win:isVisible() and not Util.isPictureInPicture(win) then
             out[#out + 1] = win
         end
@@ -61,80 +75,117 @@ local function appWindows(pid, app)
     return out
 end
 
-local nativeWindows = {}
-local repairedAt = {}
-S.nativeBackground = {}
+local function stateSignature(states)
+    if not states then return "unavailable" end
+    local parts = {}
+    for id, state in pairs(states) do parts[#parts + 1] = id .. ":" .. state end
+    table.sort(parts)
+    return table.concat(parts, ",")
+end
+
+local function requestSnapshot(frames)
+    if stopped or snapshotPending or not (frames and frames.tabSnapshot) then return end
+    snapshotPending = true
+    local epoch = generation
+    frames.tabSnapshot(function(result)
+        if stopped or epoch ~= generation then return end
+        snapshotPending = false
+        local changed = snapshot == nil
+        for pid, states in pairs(result or {}) do
+            if stateSignature(states) ~= stateSignature(snapshot and snapshot[pid]) then changed = true end
+        end
+        for pid in pairs(snapshot or {}) do if not (result or {})[pid] then changed = true end end
+        snapshot = result
+        -- A normal coalesced pass is safe during Space arrivals. It does not
+        -- lay out the old filter list synchronously inside an arrival event.
+        if changed then require("hyprspoon.layout").scheduleRetile(false) end
+    end)
+end
+
 local function withRecentlyChangedApps(windows)
-    local pids, out, seen = {}, {}, {}
+    local pids, filtered, out, seen = {}, {}, {}, {}
+    local now = hs.timer.secondsSinceEpoch()
     local ignored = {}
     for _, name in ipairs(S.cfg.ignoreApps or {}) do ignored[name] = true end
     for _, win in ipairs(windows) do
-        pids[win:pid()] = true
-        -- Managed dialogs are not native tabs, but must still tile.
-        if not win:isStandard() then out[#out + 1], seen[win:id()] = win, true end
-        if win:isStandard() then
-            nativeWindows[win:id()] = { pid = win:pid(), title = win:title() }
+        local pid, id = win:pid(), win:id()
+        pids[pid], filtered[pid] = true, filtered[pid] or {}
+        filtered[pid][#filtered[pid] + 1] = win
+        if not nativeWindows[id] and win:isStandard() then
+            nativeWindows[id] = { pid = pid, title = win:title() }
         end
     end
     for _, d in pairs(nativeWindows) do pids[d.pid] = true end
     for pid, expires in pairs(dirtyPids) do
-        if expires >= hs.timer.secondsSinceEpoch() then pids[pid] = true
-        else dirtyPids[pid] = nil end
+        if expires >= now then pids[pid] = true else dirtyPids[pid] = nil end
     end
     local frames = Util.native("frames")
-    S.nativeBackground = {}
-    S.nativeShown = {}
+    requestSnapshot(frames)
+    S.nativeBackground, S.nativeShown = {}, {}
     for pid in pairs(pids) do
         local app = hs.application.applicationForPID(pid)
         if app and not ignored[app:name()] then
-            local states = frames and frames.tabState and frames.tabState(pid)
-            local shown, expected = {}, 0
-            -- No TTL here: tab switches change AXWindows without create events.
-            for _, win in ipairs(appWindows(pid, app)) do
-                local id = win:id()
-                if id and (not states or states[id] == "shown")
-                   and win:isStandard() and win:isVisible() and not win:isMinimized()
-                   and not Util.isPictureInPicture(win) then
-                    nativeWindows[id] = { pid = pid, title = win:title() }
-                    local titles = frames and frames.tabButtons and frames.tabButtons(pid, id) or {}
-                    local record = { id = id, pid = pid, win = win, frame = win:frame(),
-                        titles = titles, count = math.max(1, #titles) }
-                    shown[#shown + 1] = record
-                    expected = expected + record.count - 1
-                    if not seen[id] then out[#out + 1], seen[id] = win, true end
+            local states = snapshot and (snapshot[pid] or {})
+            local signature = stateSignature(states)
+            local cached = appCache[pid]
+            local changed = not cached or cached.signature ~= signature
+            if changed or (dirtyPids[pid] and now - cached.time >= BSP_APP_CACHE_TTL) then
+                -- Empty/failed AXWindows is uncertainty, not evidence of closure.
+                local wins = appWindows(pid, app) or filtered[pid] or {}
+                cached = { time = now, signature = signature, shown = {}, wins = wins }
+                appCache[pid] = cached
+                for _, win in ipairs(wins) do
+                    local id = win:id()
+                    if (not states or states[id] == "shown" or states[id] == "unknown")
+                       and win:isStandard() and win:isVisible() and not win:isMinimized() then
+                        nativeWindows[id] = { pid = pid, title = win:title() }
+                        local titles = frames and frames.tabButtons and frames.tabButtons(pid, id) or {}
+                        cached.shown[#cached.shown + 1] = { id = id, pid = pid, win = win,
+                            frame = win:frame(), titles = titles, count = math.max(1, #titles) }
+                    end
                 end
             end
-            local known = {}
+            local known, wanted, windowCount = {}, {}, 0
             for id, d in pairs(nativeWindows) do if d.pid == pid then known[id] = true end end
+            for id, state in pairs(states or {}) do
+                windowCount = windowCount + 1
+                if state == "tab" and not known[id] then wanted[id] = true end
+            end
             local background = Tabs.detect(states, known)
-            local count = 0
+            local count, expected = 0, 0
             for _ in pairs(background) do count = count + 1 end
-            local now = hs.timer.secondsSinceEpoch()
-            if states and #shown > 0 and count ~= expected and frames.tabWindows
-               and now - (repairedAt[pid] or -math.huge) >= 1 then
-                repairedAt[pid] = now
-                -- Unknown off-screen windows need AXStandardWindow confirmation.
-                -- Repair only a count mismatch, not every layout pass.
-                for id, title in pairs(frames.tabWindows(pid)) do
-                    nativeWindows[id] = { pid = pid, title = title }
-                    known[id] = true
-                end
-                background = Tabs.detect(states, known)
+            for _, w in ipairs(cached.shown) do expected = expected + w.count - 1 end
+            local repairKey = tostring(windowCount) .. ":" .. tostring(expected)
+            if states and next(wanted) and #cached.shown > 0 and count ~= expected
+               and frames and frames.tabWindows and repairBackoff[pid] ~= repairKey then
+                -- An unresolved mismatch is retried only when the app's window
+                -- count changes, not once a second for a permanent document bar.
+                repairBackoff[pid] = repairKey
+                local epoch = generation
+                frames.tabWindows(pid, wanted, function(found)
+                    if stopped or epoch ~= generation then return end
+                    for id, title in pairs(found or {}) do nativeWindows[id] = { pid = pid, title = title } end
+                    if next(found or {}) then require("hyprspoon.layout").scheduleRetile(false) end
+                end)
             end
             for id in pairs(background) do S.nativeBackground[id] = nativeWindows[id] end
-            for _, w in ipairs(shown) do S.nativeShown[#S.nativeShown + 1] = w end
-            -- Keep filtered background objects solely for the old handoff path.
-            -- They must never receive tiles of their own.
-            for _, win in ipairs(windows) do
-                if win:pid() == pid and (background[win:id()] or not states)
-                   and not win:isMinimized() and not seen[win:id()] then
-                    out[#out + 1], seen[win:id()] = win, true
+            for _, w in ipairs(cached.shown) do S.nativeShown[#S.nativeShown + 1] = w end
+            -- Keep the filter's windows when the app list times out or lags.
+            -- Only WindowServer evidence can suppress an otherwise valid one.
+            for _, list in ipairs({ cached.wins, filtered[pid] or {} }) do
+                for _, win in ipairs(list) do
+                    local id = win:id()
+                    if not seen[id] and (not states or states[id] == "shown"
+                       or states[id] == "unknown" or background[id]) then
+                        out[#out + 1], seen[id] = win, true
+                    end
                 end
             end
             for id, d in pairs(nativeWindows) do
                 if d.pid == pid and states and not states[id] then nativeWindows[id] = nil end
             end
         elseif not app then
+            appCache[pid], repairBackoff[pid] = nil, nil
             for id, d in pairs(nativeWindows) do if d.pid == pid then nativeWindows[id] = nil end end
         end
     end
@@ -221,6 +272,9 @@ end
 -- Native tabs: the rules are in Tabs.background; the plain facts about each
 -- window are gathered here, the frames and the app's own list only if asked.
 local function backgroundTabs(windows)
+    -- The shared snapshot already distinguishes tabs from other Spaces and
+    -- detects absorbed tiled windows. No stale frame guesses are needed.
+    if snapshot then return function() return false end end
     local plain = {}
     for _, win in ipairs(windows) do
         local id = win:id()
@@ -235,7 +289,7 @@ local function backgroundTabs(windows)
         function(pid)
             local listed = {}
             local app = hs.application.applicationForPID(pid)
-            for _, w in ipairs(app and app:allWindows() or {}) do
+            for _, w in ipairs(app and appCache[pid] and appCache[pid].wins or {}) do
                 listed[w:id()] = true
             end
             return listed
@@ -258,6 +312,7 @@ S.openIDs = {}
 -- don't repeat them per screen). Windows get their workspace here. With
 -- `onlyUUID`, windows on other screens skip the remaining checks.
 local function windowsByScreen(onlyUUID)
+    stopped = false
     local byScreen = {}
     S.ghosts = {}
     S.openIDs = {}
@@ -309,6 +364,9 @@ end
 -- Cancels every pending frame verification (reload, shutdown).
 local switchTimers = {}
 local function stop()
+    stopped = true
+    generation = generation + 1
+    snapshotPending = false
     for _, timer in pairs(switchTimers) do timer:stop() end
     switchTimers = {}
     for id in pairs(layoutChecks) do cancelLayoutCheck(id) end
@@ -390,12 +448,13 @@ function M.isNativeTab(win)
 end
 
 function M.nativePeer(win)
-    local frames = Util.native("frames")
-    local states = win and frames and frames.tabState and frames.tabState(win:pid())
-    for id, state in pairs(states or {}) do
-        if state == "tab" and nativeWindows[id] then return true end
-    end
+    local pid = win and win:pid()
+    for _, d in pairs(S.nativeBackground) do if d.pid == pid then return true end end
     return false
+end
+
+function M.observe()
+    requestSnapshot(Util.native("frames"))
 end
 
 M.nativeWindows = nativeWindows

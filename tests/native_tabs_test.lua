@@ -3,6 +3,7 @@ package.path = "./?.lua;" .. package.path
 local S = { cfg = { ignoreApps = {} }, trees = {}, setsAway = {}, autoFloat = {} }
 local leaves, filter, listed, states, bars = {}, {}, {}, {}, {}
 local repairs, presses, remembered = 0, {}, {}
+local clock, axCalls, appCalls, frameCalls = 1000, 0, 0, 0
 local function win(id)
     return {
         id = function() return id end, pid = function() return 100 end,
@@ -10,19 +11,29 @@ local function win(id)
         isStandard = function() return true end, isVisible = function() return true end,
         isMinimized = function() return false end, isFullScreen = function() return false end,
         screen = function() return { getUUID = function() return "display" end } end,
-        frame = function() return { x = id * 100, y = 0, w = 100, h = 100 } end,
+        frame = function() frameCalls = frameCalls + 1 return { x = id * 100, y = 0, w = 100, h = 100 } end,
     }
 end
 local wins = { win(1), win(2), win(3) }
-local app = { allWindows = function() return listed end, name = function() return "Test" end,
+local app = { allWindows = function() appCalls = appCalls + 1 return listed end, name = function() return "Test" end,
     bundleID = function() return "test.app" end }
 local native = {
-    tabState = function() return states end,
+    tabSnapshot = function(callback)
+        local copy = {}
+        for id, state in pairs(states) do copy[id] = state end
+        callback({ [100] = copy })
+    end,
+    tabState = function() error("discovery must use one shared snapshot") end,
     tabButtons = function(_, id, delta)
+        axCalls = axCalls + 1
         if delta then presses[#presses + 1] = { id, delta } end
         return bars[id] or {}
     end,
-    tabWindows = function() repairs = repairs + 1 return { [4] = "verified" } end,
+    tabWindows = function(_, wanted, callback)
+        repairs = repairs + 1
+        assert(wanted[4] and wanted[5])
+        callback({ [4] = "verified" })
+    end,
 }
 local function find(id)
     for _, leaf in ipairs(leaves) do
@@ -63,8 +74,9 @@ package.loaded["hyprspoon.spaces"] = {
 }
 package.loaded["hyprspoon.border"] = { sync = function() end }
 hs = { application = { applicationForPID = function() return app end },
-    timer = { secondsSinceEpoch = function() return 1000 end,
+    timer = { secondsSinceEpoch = function() return clock end,
         doAfter = function() return { stop = function() end } end } }
+package.loaded["hyprspoon.layout"] = { scheduleRetile = function() end }
 local Discover = require("hyprspoon.discover")
 leaves = { { windowID = 1 }, { windowID = 2 }, { windowID = 3 } }
 filter, listed = wins, { wins[1], wins[3] }
@@ -77,6 +89,7 @@ assert(remembered[2] == 1 and repairs == 0, "a known standard window needs no AX
 -- A never-shown tab is confirmed by AX; the helper with no Space isn't.
 states[4], states[5], bars[1] = "tab", "tab", { "one", "two", "verified" }
 Discover.windowsByScreen()
+Discover.windowsByScreen() -- the asynchronous repair is consumed next pass
 assert(repairs == 1 and S.nativeBackground[4] and not S.nativeBackground[5])
 assert(leaves[1].members[3] == 4)
 Discover.windowsByScreen()
@@ -89,9 +102,16 @@ byScreen = Discover.windowsByScreen()
 assert(#byScreen.display == 3, "the torn-off window comes from the app list")
 assert(not S.nativeBackground[2])
 
+-- A quiet pass uses the completed snapshot and cached records, with no AX,
+-- app-list or frame calls even after the short dirty period has expired.
+clock = clock + 4
+axCalls, appCalls, frameCalls = 0, 0, 0
+Discover.windowsByScreen()
+assert(axCalls == 0 and appCalls == 0 and frameCalls == 0, "quiet pass performs no accessibility work")
+assert(Discover.nativePeer(wins[1]) == false)
+
 Tree.kinds.native.cycle(wins[1], leaves[1], "ws1", -1)
 assert(presses[1][1] == 1 and presses[1][2] == -1)
-Discover.stop()
 
 -- A floating set can be discovered without ever having a tiled leaf.
 leaves, S.setsAway, S.autoFloat = {}, {}, { [1] = true, [2] = true }
@@ -101,3 +121,5 @@ states, bars = { [1] = "shown", [2] = "tab" }, { [1] = { "one", "two" } }
 Discover.windowsByScreen()
 assert(S.setsAway[1] == S.setsAway[2] and S.setsAway[1].kind == "native")
 assert(#S.setsAway[1].members == 2)
+
+Discover.stop()
