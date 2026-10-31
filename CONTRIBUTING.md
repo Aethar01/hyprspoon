@@ -28,6 +28,9 @@ Reload Hammerspoon to pick up changes, including rebuilt native modules.
   are disabled when their modules are absent. `frames.c`, `drag.c` and
   `focus.c` build into `frames.so`. Its `liveIDs()` query confirms closure
   across Spaces; without it, workspace sync and `rescue()` keep uncertain IDs.
+  `border.m` draws rings and experimental masks; `events.c` filters the
+  extra mask notifications on their shared WindowServer connection.
+  Rebuild both when updating.
 
 ## Tests
 
@@ -36,7 +39,10 @@ tests/run.sh        # unit tests, plain Lua 5.4+, no Hammerspoon needed
 ```
 
 `tests/performance.lua` is a live benchmark that runs inside Hammerspoon
-(see its header).
+(see its header). With borders and `experimental.borderMask` enabled,
+its `border.mask` case measures a fresh snapshot and full mask rebuild.
+Try 10 and 30 windows, including overlapping floats; the target is 0.5ms
+per update with 30 windows, not a measured guarantee.
 
 `tests/opaque_probe.m` is a standalone macOS diagnostic for window alpha
 and the private opaque flag. Build and run it from the repo root:

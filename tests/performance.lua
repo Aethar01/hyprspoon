@@ -3,6 +3,12 @@
 -- The result is written to the given path as JSON once wmPerf.done is true
 -- (and kept in wmPerf.result). Returning it through `hs -c` can hang.
 -- Each case runs once untimed first, so samples measure warm calls.
+-- Enable tiling before running. With border and experimental.borderMask
+-- enabled, border.mask calls native remask(): a fresh on-screen snapshot
+-- and full mask rebuild, waiting for the border queue. This includes queue
+-- wait time and bypasses unchanged-mask caching. Compare 10 and 30 windows
+-- with overlapping floats; 0.5ms at 30 windows is the target, not a result.
+-- On macOS before 13, masking is disabled and this case measures a no-op.
 local M = {}
 
 -- Find internal helpers without adding profiling overhead to production.
@@ -66,6 +72,10 @@ function M.run(rounds, outPath)
     add('snapshot.fresh', function() m.Focus.windowSnapshot(true) end)
     add('snapshot.cached', function() m.Focus.windowSnapshot() end)
     add('spaces.active', function() hs.spaces.activeSpaceOnScreen(hs.screen.mainScreen()) end)
+    -- With experimental.borderMask: a snapshot and every ring's mask, as
+    -- after a burst of window changes (budget 0.5ms with 30 windows).
+    local border = S.cfg.border and S.cfg.experimental and S.cfg.experimental.borderMask and Util.native('border')
+    if border and border.remask then add('border.mask', function() border.remask() end) end
     local windows = hs.window.orderedWindows()
     local apps = {}
     for _, win in ipairs(windows) do

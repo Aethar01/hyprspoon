@@ -54,4 +54,5 @@ static inline CFArrayRef slWindowList(uint32_t wid) {
 // replaces the last. hyprspoon.native.events and hyprspoon.native.border both ask on
 // Hammerspoon's connection, so Lua hands both the same list: the windows
 // it manages (Util.watchWindows), as JankyBorders asks only about the
-// windows it borders.
+// windows it borders. With experimental.borderMask, border.m adds every
+// other window on screen, and events.c leaves those out.

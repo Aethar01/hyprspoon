@@ -7,8 +7,10 @@
 -- They are drawn by hyprspoon.native.border (hyprspoon/native/border.m), which moves them
 -- from WindowServer's own notifications, so they follow drags, resizes and
 -- animated retiles as they happen. A ring shows over windows that cover its
--- own (see border.m). This module only tells it which windows are on
--- show (not parked on another workspace) and which one has focus.
+-- own (see border.m), unless experimental.borderMask masks those parts out.
+-- This module only tells it which windows are on show (not parked on
+-- another workspace), which one has focus, and for the masks, which have
+-- an `opacity` rule.
 
 local M = {}
 package.loaded["hyprspoon.border"] = M
@@ -21,12 +23,16 @@ local Tree = require("hyprspoon.tree")
 -- The native module, loaded and styled by M.start(); false if unavailable.
 local native = false
 local suspended = false -- no rings at all (the overview is open)
+local masking = false -- experimental.borderMask is on
 
+-- The windows to ring, and with masks on, the managed windows' `opacity`
+-- rules (a see-through window shows the ring under it, dimmed).
 local function onShow()
-    local ids = {}
-    if suspended then return ids end
+    local ids, opacity = {}, masking and {} or nil
+    if suspended then return ids, opacity end
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
+        if opacity and id then opacity[id] = tonumber(Util.rulesFor(win).opacity) end
         -- Native full screen, Split View too (border.m also hides those
         -- rings, for windows whose events haven't come yet), and windows
         -- with a `noborder` rule.
@@ -35,7 +41,7 @@ local function onShow()
             ids[#ids + 1] = id
         end
     end
-    return ids
+    return ids, opacity
 end
 
 -- Window set changes come in bursts.
@@ -101,6 +107,14 @@ function M.unfocused(win)
     if native and win and win:id() == native.active() then unfocusCheck:start() end
 end
 
+-- experimental.borderMask as hyprspoon.native.border takes it; nil when off.
+local function maskOptions()
+    local opt = S.cfg.experimental and S.cfg.experimental.borderMask
+    if opt == true then opt = {} end
+    if type(opt) ~= "table" then return nil end
+    return { drags = opt.drags == "show" and "show" or "mask" }
+end
+
 local function rgba(color)
     local rgb = hs.drawing.color.asRGB(type(color) == "string" and { hex = color } or color)
     return { rgb.red, rgb.green, rgb.blue, rgb.alpha or 1 }
@@ -125,6 +139,12 @@ function M.start()
         radius = cfg.radius,
         resolution = resolution,
     })
+    local mask = maskOptions()
+    if mask then
+        masking = native.mask(mask)
+        if S.running.events then S.running.events.filter(masking) end
+        if not masking then print("hyprspoon: experimental.borderMask needs macOS 13 or later") end
+    end
     native.set(onShow())
 end
 
@@ -133,6 +153,11 @@ function M.stop()
     suspended = false
     syncTimer:stop()
     unfocusCheck:stop()
+    if native and masking then
+        native.mask(false)
+        if S.running.events then S.running.events.filter(false) end
+    end
+    masking = false
     if native then native.stop() end
 end
 

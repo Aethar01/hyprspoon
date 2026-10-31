@@ -46,8 +46,10 @@
 --
 -- Native modules (C/Objective-C, built with `make -C hyprspoon/native`),
 -- all optional: Lua keeps the basics working; slides and rings need native.
---   border    the rings, drawn and moved by WindowServer
---   events    window moves and resizes as WindowServer reports them
+--   border    the rings, drawn and moved by WindowServer; optional masks
+--             hide parts covered by other windows
+--   events    window moves and resizes as WindowServer reports them;
+--             filters extra occluder notifications while masking is on
 --   hover     the window under the pointer, from a native event tap
 --   frames    accessibility frame changes, animations and modifier-drags on
 --             a background queue per app; focus without waiting for the

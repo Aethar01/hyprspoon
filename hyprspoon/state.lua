@@ -104,8 +104,8 @@ S.defaults = {
         fade = 0.15,
     },
 
-    -- App names whose windows are never watched or tiled (palettes, overlays,
-    -- anything noisy). Fewer watched windows means fewer events to process.
+    -- App names whose windows are never managed or tiled (palettes, overlays,
+    -- anything noisy). Border masking still watches them as occluders.
     ignoreApps = {},
 
     -- Per-window rules, like Hyprland's windowrules. Each matches on any of
@@ -138,16 +138,15 @@ S.defaults = {
     --   center = true/false  centre a new float (they are by default, but
     --                        not dialogs), or leave it where the app put it
     --   noborder = true      no ring around it
-    --   opacity = 0..1       how see-through the window itself is, for
-    --                        border masking (experimental, PR #38;
-    --                        not read on this branch)
+    --   opacity = 0..1       override alpha for border masking only; does
+    --                        not change the window (managed windows only)
     -- Match fields must all match; only title is a pattern, the others are
     -- exact strings. With no match fields, a rule matches all managed windows.
     -- size/position also accept { w = ..., h = ... } / { x = ..., y = ... };
     -- both coordinates must be numbers. A position wins over centring.
     -- Placement fields do not enable floating. Without them, standard floats
     -- centre and dialogs keep their app's position. noborder defaults false;
-    -- opacity has no effect. Saved manual float choices override float rules
+    -- opacity only affects border masking. Saved manual float choices override float rules
     -- and skip placement. No fields are set by default (rules = {}).
     -- Placement clamps the requested frame to the display's usable area,
     -- with a minimum size of one point. Reloads keep existing float frames.
@@ -188,6 +187,28 @@ S.defaults = {
         animationDuration = 0,
         -- Drag-and-drop landing highlight.
         dropColor = { red = 0.35, green = 0.6, blue = 1 },
+    },
+
+    -- Features still being tried out, off by default. They may change or
+    -- go before they graduate to options of their own.
+    experimental = {
+        -- Hide the parts of a ring that windows above its own cover (a
+        -- float over a tile, Spotlight, another app's panel). false, true
+        -- (the defaults below), or a table:
+        --   drags = "mask"      while a native ring preview is active:
+        --                       "mask" keeps the rings masked as windows
+        --                       move; "show" draws them on top, as without
+        --                       masks, and masks them again on drop
+        -- A ring shows through a faded window, and through a window with an
+        -- `opacity` rule (e.g. { app = "Ghostty", opacity = 0.85 }), dimmed.
+        -- The rule wins over reported alpha and changes only the mask.
+        -- Ignored windows use reported alpha; content transparency needs a
+        -- rule, and blur is not reproduced. Stacked windows multiply.
+        -- "show" removes all masks during native previews; Lua fallback
+        -- drags and ordinary title-bar drags keep their masks.
+        -- Needs hyprspoon.native.border and macOS 13. Rebuild native modules
+        -- after updating. Off means no snapshot or extra window watching.
+        borderMask = false,
     },
 }
 
