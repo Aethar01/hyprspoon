@@ -32,3 +32,7 @@ void dragStop(void);
 
 // focus() (focus.c), registered into the module table at the top of the stack.
 void focusRegister(lua_State *L);
+
+// Native-tab queries and a retained AXWindow omitted from AXWindows.
+void tabsRegister(lua_State *L);
+AXUIElementRef tabsFind(pid_t pid, uint32_t wid);

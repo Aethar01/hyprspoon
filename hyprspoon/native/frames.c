@@ -204,6 +204,14 @@ static AXUIElementRef windowElement(App *app, uint32_t wid) {
             win = (AXUIElementRef)CFDictionaryGetValue(app->windows, key);
         }
     }
+    if (!win) {
+        AXUIElementRef hidden = tabsFind(app->pid, wid);
+        if (hidden) {
+            CFDictionarySetValue(app->windows, key, hidden);
+            CFRelease(hidden);
+            win = (AXUIElementRef)CFDictionaryGetValue(app->windows, key);
+        }
+    }
     CFRelease(key);
     return win;
 }
@@ -520,6 +528,7 @@ int luaopen_hyprspoon_native_frames(lua_State *L) {
     luaL_newlib(L, funcs);
     dragRegister(L);
     focusRegister(L);
+    tabsRegister(L);
 
     lua_newuserdata(L, 1);
     lua_newtable(L);
