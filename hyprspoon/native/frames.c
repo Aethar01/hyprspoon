@@ -119,7 +119,6 @@ typedef struct {
     bool raiseQueued;
     uint32_t tabShown;
     CFStringRef tabTitle;
-    int tabPosition;
     bool running;
 } App;
 
@@ -343,7 +342,6 @@ static void appLoop(void *context) {
         uint32_t raiseWid = app->raise;
         app->raiseQueued = false;
         uint32_t tabShown = app->tabShown;
-        int tabPosition = app->tabPosition;
         CFStringRef tabTitle = app->tabTitle;
         app->tabTitle = NULL;
         app->tabShown = 0;
@@ -358,7 +356,7 @@ static void appLoop(void *context) {
         if (raise) {
             AXUIElementRef win = windowElement(app, raiseWid);
             AXError result = win ? AXUIElementPerformAction(win, kAXRaiseAction) : kAXErrorFailure;
-            if (result != kAXErrorSuccess && tabShown) tabsSelect(app->pid, tabShown, tabTitle, tabPosition);
+            if (result != kAXErrorSuccess && tabShown) tabsSelect(app->pid, tabShown, tabTitle);
         }
 
         if (tabTitle) CFRelease(tabTitle);
@@ -465,7 +463,7 @@ void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sol
 // (7s of every 20 measured), and every other accessibility call to it,
 // Hammerspoon's main thread's included, waited behind them. So a raise
 // still waiting is replaced by the next one for the same app.
-void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title, int position) {
+void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title) {
     App *app = appFor(pid, true);
     if (!app) return;
     os_unfair_lock_lock(&requestsLock);
@@ -473,7 +471,6 @@ void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title, i
     if (app->tabTitle) CFRelease(app->tabTitle);
     app->tabTitle = title ? CFRetain(title) : NULL;
     app->tabShown = shown;
-    app->tabPosition = position;
     app->raiseQueued = true;
     bool start = wake(app);
     os_unfair_lock_unlock(&requestsLock);
@@ -481,7 +478,7 @@ void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title, i
 }
 
 void framesRaise(pid_t pid, uint32_t wid) {
-    framesShowTab(pid, wid, 0, NULL, 0);
+    framesShowTab(pid, wid, 0, NULL);
 }
 
 static void nothing(void *context) {

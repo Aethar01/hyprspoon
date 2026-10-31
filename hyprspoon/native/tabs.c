@@ -151,7 +151,7 @@ static AXUIElementRef groupFor(pid_t pid, uint32_t wid) {
     return group;
 }
 
-bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title, int position) {
+bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title) {
     AXUIElementRef group = groupFor(pid, shown);
     CFArrayRef tabs = group ? attribute(group, CFSTR("AXTabs")) : NULL;
     bool ok = false;
@@ -165,7 +165,8 @@ bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title, int position) {
                 matches++;
             }
         }
-        if (matches != 1) match = position > 0 && position <= count ? position - 1 : -1;
+        // Member order is not AX tab-bar order; duplicate titles must fail safely.
+        if (matches != 1) match = -1;
         if (match >= 0) ok = AXUIElementPerformAction((AXUIElementRef)CFArrayGetValueAtIndex(tabs, match),
             kAXPressAction) == kAXErrorSuccess;
         CFRelease(tabs);
@@ -179,7 +180,7 @@ static int l_tabShow(lua_State *L) {
     uint32_t wid = (uint32_t)luaL_checkinteger(L, 2);
     uint32_t shown = (uint32_t)luaL_checkinteger(L, 3);
     CFStringRef title = CFStringCreateWithCString(NULL, luaL_optstring(L, 4, ""), kCFStringEncodingUTF8);
-    framesShowTab(pid, wid, shown, title, (int)luaL_optinteger(L, 5, 0));
+    framesShowTab(pid, wid, shown, title);
     if (title) CFRelease(title);
     return 0;
 }

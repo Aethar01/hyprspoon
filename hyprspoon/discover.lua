@@ -369,9 +369,7 @@ Tree.registerKind("native", {
             local frames = Util.native("frames")
             local d = S.nativeBackground[to]
             if frames and frames.tabShow then
-                local position = 0
-                for i, id in ipairs(leaf.members) do if id == to then position = i break end end
-                frames.tabShow(d.pid, to, from, d.title, position)
+                frames.tabShow(d.pid, to, from, d.title)
             end
             pollSwitch(d.pid)
         end
