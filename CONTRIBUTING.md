@@ -21,7 +21,10 @@ Reload Hammerspoon to pick up changes, including rebuilt native modules.
   one does.
 - `hyprspoon/state.lua`: every option, with its default and documentation.
 - `hyprspoon/native/`: optional C and Objective-C modules. Each one has a
-  Lua fallback, and the Lua side must keep working without it.
+  Lua path that keeps the basics working without it; borders and slides
+  are disabled when their modules are absent. `frames.c`, `drag.c` and
+  `focus.c` build into `frames.so`. Its `liveIDs()` query confirms closure
+  across Spaces; without it, workspace sync keeps uncertain IDs.
 
 ## Tests
 

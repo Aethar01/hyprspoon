@@ -42,6 +42,7 @@ hs = {
 local noop = function() end
 package.loaded["hyprspoon.util"] = {
     focusHistory = {}, winByID = {},
+    native = noop,
     managedWindows = function() return {} end,
     rulesFor = function() return {} end,
 }

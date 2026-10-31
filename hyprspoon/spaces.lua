@@ -442,21 +442,25 @@ end
 -- Parks the windows of workspaces not showing and brings back the rest.
 -- Parked windows stay put unless `force` (displays changed, so corners did).
 local function sync(force)
-    -- A missed window-filter event can leave a dead window ID in `of` or
-    -- `parked`, keeping its workspace alive. Reconcile those IDs against
-    -- WindowServer whenever workspace state is synced. One CGWindowList
-    -- query, not hs.window.get per ID: that walks every app's windows over
-    -- accessibility each time and stalls the slide animations.
+    -- A missed close event can leave a dead ID keeping its workspace alive.
+    -- Only query all windows if some are off screen; hs.window.list(true)
+    -- omits other Spaces and hidden apps. Neither query uses accessibility.
     local live, stale = {}, {}
     for _, w in ipairs(hs.window.list(true) or {}) do
         if w.kCGWindowNumber then live[w.kCGWindowNumber] = true end
     end
-    if next(live) then
-        for id in pairs(of) do
-            if not live[id] then stale[id] = true end
-        end
-        for id in pairs(parked) do
-            if not live[id] then stale[id] = true end
+    for id in pairs(of) do
+        if not live[id] then stale[id] = true end
+    end
+    for id in pairs(parked) do
+        if not live[id] then stale[id] = true end
+    end
+    if next(stale) then
+        local frames = Util.native("frames")
+        local all = frames and frames.liveIDs and frames.liveIDs()
+        -- Without the native query (or if it fails), keep uncertain IDs.
+        for id in pairs(stale) do
+            if not all or all[id] then stale[id] = nil end
         end
     end
     if next(stale) then

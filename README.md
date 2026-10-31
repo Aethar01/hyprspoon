@@ -56,7 +56,10 @@ If Hammerspoon isn't in `/Applications`, pass its path:
 `make HS_APP=~/Applications/Hammerspoon.app`.
 
 Every native module is optional. Without one, a slower Lua path takes over,
-and slides and borders are off.
+and slides and borders are off. The `frames` module moves, resizes and
+focuses windows and follows modifier-drags. It also checks which window
+IDs still exist across all macOS Spaces, so an off-screen window keeps
+its workspace when Hammerspoon reloads.
 
 ## Permissions
 
@@ -129,6 +132,10 @@ Modifiers held while dragging anywhere on a window, as lists of
 | `mouse.rightResize` | `{"alt"}` | Right-drag to resize |
 
 ### Workspaces
+
+Workspace assignments and parked frames survive a reload while a native
+full-screen Space or another Desktop is showing. Hidden apps keep their
+assignments too.
 
 | Option | Default | Description |
 |---|---|---|
@@ -295,6 +302,11 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
   a corner of the display. Quitting Hammerspoon brings them back, but a
   crash leaves them there. Start Hammerspoon again, then switch to their
   workspace or quit it normally.
+- **Empty workspaces left behind.** If a close event was missed, the
+  native `frames.liveIDs()` query confirms which saved windows have closed.
+  Rebuild `frames` if it is missing or outdated. Without this query, or if
+  it fails, uncertain IDs are kept so off-screen windows keep their
+  assignments; a close event or a later successful query clears them.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
