@@ -532,6 +532,7 @@ local function claim(win, uuid)
     local rule, wanted = nil, nil
     if not n then
         rule = Util.rulesFor(win)
+        if rule.pin then pinned[id] = true end
         wanted = number(rule.workspace)
         if not wanted then
             wanted = Restore.match(win, info[id].app)

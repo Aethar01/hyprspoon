@@ -165,12 +165,16 @@ Spaces.gotoWorkspace(1)
 Spaces.setPinned(stuck, false)
 Spaces.gotoWorkspace(6)
 assert(parkedAt[51] and Spaces.isHidden(51), "unpinned, it stays behind")
-Spaces.setPinned(free, true)
+
+-- A rule can pin a window.
+Util.rulesFor = function(w) return w:id() == 52 and { pin = true } or {} end
+Spaces.claim(win(52), "LAPTOP")
+assert(Spaces.isPinned(52) and not Spaces.isPinned(50))
 
 -- Pins are saved with the rest, and come back on reload.
 Spaces.stop()
 package.loaded["hyprspoon.spaces"] = nil
 Spaces = require("hyprspoon.spaces")
-assert(Spaces.isPinned(50) and not Spaces.isPinned(51), "pins survive a reload")
+assert(Spaces.isPinned(52) and not Spaces.isPinned(51), "pins survive a reload")
 
 print("Spaces tests passed")
