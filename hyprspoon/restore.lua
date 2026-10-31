@@ -114,19 +114,49 @@ end
 -- The tree for workspace `key` (already pruned to the windows in `valid`):
 -- when a window that's back from before the restart has just arrived, the
 -- old layout with the old ids swapped for the new and the windows not back
--- yet left out, plus whatever else is tiled there now.
+-- yet left out, plus whatever else is tiled there now. A tile that held a
+-- set holds the members that are back (on show, or hidden in the tree
+-- already), showing the one it showed if that's on show.
 function M.rebuild(key, tree, valid)
     if not live() or not saved.trees[key] then return tree end
     local present = Tree.collectIDs(tree)
     local arrived = false
+    local function newID(old)
+        local new = saved.claimed[tostring(old)]
+        if new and (valid[new] or present[new]) then return new end
+    end
     local function build(node)
         if not node then return nil end
         if node.windowID ~= nil then
-            local new = saved.claimed[tostring(node.windowID)]
-            if not new or not valid[new] then return nil end
-            if not present[new] then arrived = true end
-            local leaf = Tree.leaf(new)
+            local back, map = {}, {}
+            for _, old in ipairs(node.members or { node.windowID }) do
+                local new = newID(old)
+                if new then back[#back + 1], map[old] = new, new end
+            end
+            if #back == 0 then return nil end
+            for _, new in ipairs(back) do
+                if not present[new] then arrived = true end
+            end
+            local shown = newID(node.windowID)
+            if not (shown and valid[shown]) then
+                shown = nil
+                for _, id in ipairs(back) do
+                    if valid[id] then shown = id break end
+                end
+            end
+            local leaf = Tree.leaf(shown or back[1])
             leaf.pseudo = leaf.pseudo or node.pseudo
+            if node.members and (#back > 1 or node.kind == "group") then
+                leaf.members, leaf.kind = back, node.kind
+                for _, list in ipairs(node.tabs or {}) do
+                    local tabs = {}
+                    for _, old in ipairs(list) do tabs[#tabs + 1] = map[old] end
+                    if #tabs > 1 then
+                        leaf.tabs = leaf.tabs or {}
+                        leaf.tabs[#leaf.tabs + 1] = tabs
+                    end
+                end
+            end
             return leaf
         end
         local a, b = build(node.a), build(node.b)
@@ -135,9 +165,31 @@ function M.rebuild(key, tree, valid)
     end
     local built = build(saved.trees[key])
     if not arrived or not built then return tree end
+    -- The rest go in after, each tile with the windows it holds.
     local inBuilt = Tree.collectIDs(built)
-    for id in pairs(present) do
-        if not inBuilt[id] then built = (Tree.insertAt(built, Tree.rightmostLeafID(built), id)) end
+    for _, old in ipairs(Tree.leaves(tree)) do
+        local rest = {}
+        for _, id in ipairs(old.members or { old.windowID }) do
+            if not inBuilt[id] then rest[#rest + 1] = id end
+        end
+        if #rest > 0 then
+            local shown = inBuilt[old.windowID] and rest[1] or old.windowID
+            built = (Tree.insertAt(built, Tree.rightmostLeafID(built), shown))
+            if old.members and (#rest > 1 or old.kind == "group") then
+                local _, leaf = Tree.ancestors(built, shown)
+                leaf.members, leaf.kind, leaf.pseudo = rest, old.kind, old.pseudo
+                for _, list in ipairs(old.tabs or {}) do
+                    local tabs = {}
+                    for _, id in ipairs(list) do
+                        if not inBuilt[id] then tabs[#tabs + 1] = id end
+                    end
+                    if #tabs > 1 then
+                        leaf.tabs = leaf.tabs or {}
+                        leaf.tabs[#leaf.tabs + 1] = tabs
+                    end
+                end
+            end
+        end
     end
     return built
 end

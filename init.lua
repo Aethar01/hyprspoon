@@ -23,7 +23,8 @@
 -- Modules (all under hyprspoon/):
 --   state     configuration defaults and state shared between the modules
 --   util      logging, window classification and rules, focus records, pointer warping
---   tree      BSP tree structure, pseudotile sizes, persistence and per-workspace keys
+--   tree      BSP tree structure, tiles holding several windows, pseudotile sizes,
+--             persistence and per-workspace keys
 --   float     automatic and manual floats, initial rule placement, kept above tiles
 --   focus     internal focus tracking and the window snapshot for hit testing
 --   tabs      which windows are native tabs and which tile they take over
@@ -103,6 +104,13 @@ local M = {
     closeWindow = Actions.closeWindow,
     focus = Actions.focus,
     focusFloat = Actions.focusFloat,
+    -- groupNext(), groupPrev(), moveOutOfGroup(): for tiles holding several
+    -- windows, show the next or previous one, or take the focused one out
+    -- into a tile of its own. No arguments; nothing happens for a window
+    -- that's alone in its tile.
+    groupNext = Actions.groupNext,
+    groupPrev = Actions.groupPrev,
+    moveOutOfGroup = Actions.moveOutOfGroup,
     mirror = Actions.mirror,
     preselect = Actions.preselect,
     rotate = Actions.rotate,
@@ -157,7 +165,8 @@ local function hotkeyActions()
     local actions = {}
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
         "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
-        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo" }) do
+        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo",
+        "groupNext", "groupPrev", "moveOutOfGroup" }) do
         actions[name] = M[name]
     end
     for suffix, dir in pairs(DIRECTIONS) do
@@ -521,8 +530,12 @@ function M:start(opts)
             Discover.cancelLayoutCheck(id)
             S.fullscreen[id], S.offSpace[id], S.slots[id] = nil, nil, nil
             S.pseudoAway[id] = nil
+            Tree.forget(id)
+            -- A set's tile stays maximized for the member shown next.
+            local set = Tree.setOf(id)
+            local handedOn = set and set.windowID == id and #set.members > 1
             for key, maxID in pairs(S.maximized) do
-                if maxID == id then S.maximized[key] = nil end
+                if maxID == id and not handedOn then S.maximized[key] = nil end
             end
             Spaces.forget(id)
             Float.forgetFloat(id)
@@ -615,7 +628,11 @@ function M:start(opts)
                 Spaces.forget(id)
             end
             -- Not a tab swap: the new tab's focus moves the ring without a fade.
-            if event ~= hs.window.filter.windowNotInCurrentSpace then Border.forget(win:id()) end
+            -- Nor the shown window of a set closing: the next one takes its
+            -- tile and the ring (Layout.showMember).
+            local set = Tree.setOf(id)
+            local handedOn = set and set.windowID == id and #set.members > 1 and not S.fullscreen[id]
+            if event ~= hs.window.filter.windowNotInCurrentSpace and not handedOn then Border.forget(id) end
         end
         Discover.markDirty(win)
         Focus.invalidateWindowCache()

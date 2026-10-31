@@ -63,15 +63,18 @@ end
 -- before telling us it went: hand focus to its tree sibling now instead of
 -- after the retile (which holds back in case the close was a tab swap). Not
 -- when `win` is a native tab taking over the same tile. True if focus moved.
+-- When it was the shown window of a set, the retile shows the next member
+-- in its tile and focuses that instead.
 local function handFocusBack(goneID, win)
     local path, leaf, key = Tree.findByID(goneID)
     if not path or S.autoFloat[goneID] then return false end
+    if leaf.members and #leaf.members > 1 then return false end
     if leaf.rect and win:pid() == (Util.pidByID[goneID] or win:pid()) then
         if Tabs.centredIn(win:frame(), leaf.rect) then return false end
     end
     local tree = S.trees[key]
     local valid = {}
-    for id in pairs(Tree.collectIDs(tree)) do
+    for id in pairs(Tree.shownIDs(tree)) do
         local w = Util.winByID[id]
         if id ~= goneID and w and w:id() == id then valid[id] = true end
     end
@@ -142,6 +145,53 @@ end
 -- Windows a pseudo rule (see S.cfg.rules) has been applied to.
 local pseudoRuled = {}
 
+-- How long a set's tile is kept for its shown window while that's open but
+-- not on show (see reconcileTree) before the set leaves the layout: time
+-- for an app to bring out the tab it switched to. Nothing waits on it.
+local SET_WAIT = 1
+local waitingSince = setmetatable({}, { __mode = "k" }) -- set leaf -> when its wait began
+local waitTimer = nil
+
+-- Window `to` takes over `from`'s place in the focus order (the same tile
+-- showing another window), without being listed twice.
+local function passFocus(from, to)
+    Util.focusTimes[to] = Util.focusTimes[from]
+    if S.ffmFocusedID == from then S.ffmFocusedID = to end
+    local history = Util.focusHistory
+    local fromAt, toAt = nil, nil
+    for i, fid in ipairs(history) do
+        if fid == from and not fromAt then fromAt = i end
+        if fid == to and not toAt then toAt = i end
+    end
+    if not fromAt then return end
+    if toAt and toAt < fromAt then
+        -- Focused since: it keeps its later place.
+        table.remove(history, fromAt)
+    else
+        history[fromAt] = to
+        if toAt then table.remove(history, toAt) end
+    end
+end
+
+-- The tile of set `leaf` shows member `id` from now on (in tree `key`, nil
+-- while the set is away). The tree and a maximized tile follow (see
+-- Tree.setShown), the tile's place in the focus order passes to `id`, the
+-- active ring goes over without a fade, and the kind's `show` handler makes
+-- it so on screen (see Tree.registerKind). The tile is laid out by the
+-- retile that follows.
+local function showMember(leaf, id, key)
+    local from = Tree.setShown(leaf, id)
+    if from == id then return end
+    Util.dlog("set %s -> %s", tostring(from), tostring(id))
+    passFocus(from, id)
+    S.applied[id] = nil
+    if key then signatures[key] = nil end
+    Border.handOver(from, id)
+    Border.sync()
+    local handler = Tree.kinds[leaf.kind]
+    if handler and handler.show then handler.show(leaf, key, from, id) end
+end
+
 local function reconcileTree(key, windows)
     local valid = {}
     local byID = {}
@@ -162,13 +212,39 @@ local function reconcileTree(key, windows)
     -- remember its surviving sibling so the retile can hand focus back.
     local previous = S.trees[key]
 
+    -- Every window still open: seen in this pass (on show, parked, on
+    -- another display) or skipped as a background tab.
+    local open = {}
+    for id in pairs(S.openIDs or {}) do open[id] = true end
+    for _, win in ipairs(S.ghosts or {}) do open[win:id()] = true end
+    local function away(id) return S.fullscreen[id] or S.offSpace[id] end
+
+    -- Sets: a member on show here is the one its tile shows (the app
+    -- switched tabs, or a group brought it out). Before the native tab
+    -- handoff below, so a known member wins over a guess from frames.
+    local rank = {}
+    for i, fid in ipairs(Util.focusHistory) do rank[fid] = rank[fid] or i end
+    local sets = {}
+    for _, leaf in ipairs(Tree.leaves(previous)) do
+        if leaf.members then sets[#sets + 1] = leaf end
+    end
+    local refocusSet = nil
+    for _, leaf in ipairs(sets) do
+        local old = leaf.windowID
+        local pick = Tree.memberOnShow(leaf, valid, rank)
+        if pick and pick ~= old then
+            if not open[old] and not away(old) and wasFocused(old) then refocusSet = pick end
+            showMember(leaf, pick, key)
+        end
+    end
+
     -- Switching, opening or closing a native tab swaps which window id is the
     -- live one, in the same place. A window that vanished and a new window of
     -- the same app now centred inside its tile are the same tile: hand it
     -- over (and its focus) instead of splitting a new one in.
     local before = Tree.collectIDs(previous)
     local beforeIDs = {}
-    for id in pairs(before) do beforeIDs[#beforeIDs + 1] = id end
+    for _, leaf in ipairs(Tree.leaves(previous)) do beforeIDs[#beforeIDs + 1] = leaf.windowID end
     if S.cfg.debug then
         local removed, added = {}, {}
         for id in pairs(before) do if not valid[id] then removed[#removed + 1] = id end end
@@ -202,53 +278,132 @@ local function reconcileTree(key, windows)
             if successor then
                 local newID, win = successor.id, successor.win
                 Util.dlog("handoff %s -> %s", tostring(oldID), tostring(newID))
-                leaf.windowID = newID
                 valid[newID] = true
                 byID[newID] = win
                 Util.winByID[newID] = win
                 Util.pidByID[newID] = win:pid()
-                for i, fid in ipairs(Util.focusHistory) do
-                    if fid == oldID then Util.focusHistory[i] = newID end
+                if leaf.members then
+                    -- In a set the new tab joins it as the old one's tab,
+                    -- and the old one leaves only if it closed.
+                    Tree.addTab(leaf, newID, oldID)
+                    showMember(leaf, newID, key)
+                    if not open[oldID] then
+                        Tree.removeMember(leaf, oldID)
+                        before[oldID] = nil
+                    end
+                else
+                    Tree.replaceID(leaf, oldID, newID)
+                    passFocus(oldID, newID)
+                    before[oldID] = nil
                 end
-                Util.focusTimes[newID] = Util.focusTimes[oldID]
-                if S.ffmFocusedID == oldID then S.ffmFocusedID = newID end
-                before[newID], before[oldID] = true, nil
+                before[newID] = true
             end
         end
     end
 
+    -- A set's shown window closed: the next member still open takes over
+    -- its tile, which stays where it is, and its focus.
+    for _, leaf in ipairs(sets) do
+        local old = leaf.windowID
+        if not valid[old] and not open[old] and not away(old) then
+            local nextID = Tree.memberAfter(leaf, old, 1, function(id) return open[id] end)
+            if nextID then
+                if wasFocused(old) then refocusSet = nextID end
+                showMember(leaf, nextID, key)
+                Tree.removeMember(leaf, old)
+                before[old] = nil
+            else
+                -- Nothing left to show: a maximized tile kept for the
+                -- next member (see init.lua's windowDestroyed) isn't.
+                for k, maxID in pairs(S.maximized) do
+                    if maxID == old then S.maximized[k] = nil end
+                end
+            end
+        end
+    end
+
+    -- A set whose shown window is open but not on show here yet (a
+    -- background tab the app is about to show, a member its group is
+    -- bringing out) keeps its tile for up to SET_WAIT, with a pass at the
+    -- end of it. One whose window has gone elsewhere (floated, or claimed
+    -- by another workspace) leaves with its set below.
+    local waiting = {}
+    local now = hs.timer.secondsSinceEpoch()
+    for _, leaf in ipairs(sets) do
+        local id = leaf.windowID
+        local inPlace = false
+        if not valid[id] and open[id] and not away(id) and not S.autoFloat[id] then
+            local n = Spaces.workspaceOf(id)
+            inPlace = n == nil or "ws" .. tostring(n) == key
+        end
+        waitingSince[leaf] = inPlace and (waitingSince[leaf] or now) or nil
+        if inPlace and now - waitingSince[leaf] < SET_WAIT then
+            waiting[id] = true
+            signatures[key] = nil
+            if not waitTimer then
+                waitTimer = hs.timer.doAfter(SET_WAIT, function()
+                    waitTimer = nil
+                    M.tileNow(true)
+                end)
+            end
+        end
+    end
+
+    -- Members other than the shown one found on show: the kind decides
+    -- (see Tree.registerKind). Ones it lets go are tiled as new windows.
+    for _, leaf in ipairs(sets) do
+        local strays = {}
+        for _, id in ipairs(leaf.members or {}) do
+            if id ~= leaf.windowID and valid[id] then strays[#strays + 1] = id end
+        end
+        local handler = #strays > 0 and Tree.kinds[leaf.kind]
+        if handler and handler.strays then handler.strays(leaf, key, strays) end
+    end
+
     -- Windows that left the tree but are still open keep focus.
     for id in pairs(before) do
-        if not valid[id] and not S.autoFloat[id] and not S.openIDs[id]
+        if not valid[id] and not waiting[id] and not S.autoFloat[id] and not S.openIDs[id]
            and wasFocused(id) then
             pendingRefocus = siblingToFocus(previous, id, valid) or pendingRefocus
             Util.dlog("closed focused %s -> refocus %s", tostring(id), tostring(pendingRefocus))
             break
         end
     end
+    pendingRefocus = refocusSet or pendingRefocus
 
     -- Windows leaving for another macOS Space (full screen) remember their
     -- slots, taken out one at a time after the closed ones so that putting
-    -- them back in reverse undoes it.
-    local away = {}
-    for id in pairs(before) do
-        if not valid[id] and (S.fullscreen[id] or S.offSpace[id]) then away[#away + 1] = id end
+    -- them back in reverse undoes it. A set goes with its shown window,
+    -- every member kept until then.
+    local awayIDs = {}
+    for _, leaf in ipairs(Tree.leaves(previous)) do
+        local id = leaf.windowID
+        if not valid[id] and away(id) then awayIDs[#awayIDs + 1] = id end
     end
     local keep = valid
-    if #away > 0 then
-        table.sort(away)
+    if #awayIDs > 0 or next(waiting) then
+        table.sort(awayIDs)
         keep = {}
         for id in pairs(valid) do keep[id] = true end
-        for _, id in ipairs(away) do keep[id] = true end
+        for id in pairs(waiting) do keep[id] = true end
+        for _, id in ipairs(awayIDs) do
+            local _, leaf = Tree.ancestors(previous, id)
+            for _, m in ipairs(leaf.members or { id }) do keep[m] = true end
+        end
     end
-    previous = Tree.prune(previous, keep)
-    for _, id in ipairs(away) do
+    previous = Tree.prune(previous, keep, open)
+    for _, id in ipairs(awayIDs) do
         rememberSlot(key, previous, id)
         previous = Tree.removeID(previous, id)
     end
 
     local tree = Restore.rebuild(key, previous, valid)
     local present = Tree.collectIDs(tree)
+    -- A window going in can bring its whole set back (see Tree.leaf).
+    local function nowPresent(id)
+        local _, leaf = Tree.ancestors(tree, id)
+        for _, m in ipairs(leaf and leaf.members or { id }) do present[m] = true end
+    end
 
     -- Windows back from another Space return to their slots, latest first.
     local returning = {}
@@ -264,7 +419,7 @@ local function reconcileTree(key, windows)
     for _, r in ipairs(returning) do
         local inserted
         tree, inserted = Tree.insertSlot(tree, r.id, r.slot)
-        if inserted then present[r.id] = true end
+        if inserted then nowPresent(r.id) end
     end
 
     for _, win in ipairs(windows) do
@@ -331,7 +486,7 @@ local function reconcileTree(key, windows)
                 end
             end
 
-            present[id] = true
+            nowPresent(id)
         end
     end
 
@@ -548,7 +703,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                 -- seen at all may only not be found yet (an app after a
                 -- reload); a closed one is forgotten as it closes.
                 local maxID = S.maximized[key]
-                if maxID and not byID[maxID] and S.openIDs[maxID] then
+                if maxID and not byID[maxID] and S.openIDs[maxID] and not Tree.treeContains(tree, maxID) then
                     S.maximized[key], maxID = nil, nil
                     Border.sync()
                 end
@@ -816,6 +971,7 @@ local function stop()
     S.presel = nil
     showPresel()
     if retileTimer then retileTimer:stop() end
+    if waitTimer then waitTimer:stop() waitTimer = nil end
     if spaceMoveTimer then spaceMoveTimer:stop() spaceMoveTimer = nil end
     if S.recheckTimer then S.recheckTimer:stop() S.recheckTimer = nil end
     retileTimer, retilePending, retileForce = nil, false, false
@@ -838,6 +994,7 @@ M.locate = locate
 M.toggleMaximized = toggleMaximized
 M.focused = focused
 M.preselect = preselect
+M.showMember = showMember
 M.toggleWorkspaceTiling = toggleWorkspaceTiling
 
 return M

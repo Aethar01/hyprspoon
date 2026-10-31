@@ -532,6 +532,23 @@ end
 -- Membership
 -- ---------------------------------------------------------------------------
 
+-- The rest of window `id`'s set goes where it goes: to workspace `n`, and
+-- a parked one to that workspace's corner when that's on another display.
+-- Members with no workspace of their own (native tabs never on show) are
+-- left to their app, which moves them with their window.
+local function bringMembers(id, n)
+    for _, m in ipairs(Tree.membersOf(id)) do
+        local was = of[m]
+        if m ~= id and was ~= nil and was ~= n then
+            of[m] = n
+            if parked[m] and displayOf(was) ~= displayOf(n) then
+                local win = Util.windowFor(m)
+                if win then park(win, n) end
+            end
+        end
+    end
+end
+
 -- The display a visible window is laid out on, after giving it a workspace:
 -- the one showing on its display `uuid` if it has none yet, or if it has
 -- since moved to that display. A window we've just sent to another
@@ -579,8 +596,11 @@ local function claim(win, uuid)
         return to
     end
     if not n or (shown[n] ~= uuid and (pins[id] or 0) < hs.timer.secondsSinceEpoch()) then
+        local was = n
         n = active[uuid]
         of[id] = n
+        -- Moved to another display: its set comes along.
+        if was then bringMembers(id, n) end
         save()
     end
     return shown[n]
@@ -602,9 +622,12 @@ end
 -- displays), each keeping its new one while it gets there.
 function M.exchange(a, b)
     local until_ = hs.timer.secondsSinceEpoch() + 1
-    of[a], of[b] = of[b], of[a]
+    local na, nb = of[a], of[b]
+    of[a], of[b] = nb, na
     pins[a], pins[b] = until_, until_
     S.windowInfo[a], S.windowInfo[b] = nil, nil
+    if nb then bringMembers(a, nb) end
+    if na then bringMembers(b, na) end
     save()
 end
 
@@ -822,6 +845,7 @@ function M.moveToWorkspace(n)
     local from = (of[id] and shown[of[id]]) or pointerUUID()
     local to = n > NAMED_BASE and from or targetDisplay(n)
     of[id] = n
+    bringMembers(id, n)
     save()
     if to ~= from then
         pins[id] = hs.timer.secondsSinceEpoch() + 1
@@ -849,6 +873,7 @@ function M.moveToWorkspaceSilent(n)
     local from = (current and shown[current]) or pointerUUID()
     if not home[n] then home[n] = homeFor(n) end
     of[id] = n
+    bringMembers(id, n)
     if shown[n] then
         if shown[n] ~= from then
             pins[id] = hs.timer.secondsSinceEpoch() + 1
@@ -1349,6 +1374,11 @@ end
 
 function M.isPinned(id)
     return pinned[id] == true
+end
+
+-- The workspace window `id` belongs to, or nil if it has none yet.
+function M.workspaceOf(id)
+    return of[id]
 end
 
 function M.hasWindows(n)

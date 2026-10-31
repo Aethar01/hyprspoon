@@ -232,9 +232,8 @@ function M.swap(direction)
     local _, leafA, keyA = Layout.locate(win)
     local _, leafB, keyB = Layout.locate(other)
     if keyA and keyB and keyA ~= keyB then
-        -- Tiles on two displays trade places, and workspaces.
-        leafA.windowID, leafB.windowID = other:id(), win:id()
-        leafA.pseudo, leafB.pseudo = leafB.pseudo, leafA.pseudo
+        -- Tiles on two displays trade places, and workspaces, sets and all.
+        Tree.swapLeaves(leafA, leafB)
         S.keyIndex = {}
         S.applied[win:id()], S.applied[other:id()] = nil, nil
         Spaces.exchange(win:id(), other:id())
@@ -371,11 +370,15 @@ function M.move(direction)
 end
 
 -- Floats a tile, centred on its display, or tiles a float. A pinned
--- window that becomes a tile is unpinned: only floats are pinned.
+-- window that becomes a tile is unpinned: only floats are pinned. A set
+-- floats and tiles as one: whichever of its windows shows is a float.
 local function setFloat(win, float)
     local id = win:id()
-    S.autoFloat[id] = float
-    Float.rememberFloat(win)
+    for _, m in ipairs(Tree.membersOf(id)) do
+        local w = m == id and win or Util.windowFor(m)
+        S.autoFloat[m] = float
+        if w then Float.rememberFloat(w) end
+    end
 
     if float then
         local screen, f = win:screen(), win:frame()
@@ -444,6 +447,34 @@ function M.focusFloat()
     end
     Focus.focus(target)
     Util.warpToWindow(target)
+end
+
+-- Tiles holding several windows (see hyprspoon/tree.lua): these act on the
+-- focused window's set through the handler its kind registered with
+-- Tree.registerKind (native tabs in hyprspoon/tabs.lua, groups in
+-- hyprspoon/group.lua), in a tree or floating. Nothing happens for a
+-- window in no set, or a kind with no handler for it.
+local function onSet(action, ...)
+    local win = Focus.currentWindow()
+    if not win then return end
+    local leaf, key = Tree.setOf(win:id())
+    local handler = leaf and Tree.kinds[leaf.kind]
+    if handler and handler[action] then handler[action](win, leaf, key, ...) end
+end
+
+-- Show the next window in the focused tile's set.
+function M.groupNext()
+    onSet("cycle", 1)
+end
+
+-- Show the previous window in the focused tile's set.
+function M.groupPrev()
+    onSet("cycle", -1)
+end
+
+-- Take the focused window out of its set, into a tile of its own.
+function M.moveOutOfGroup()
+    onSet("moveOut")
 end
 
 -- Pseudotile the focused tile, or stop: it keeps its own size (the one it

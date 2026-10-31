@@ -179,6 +179,16 @@ local function managedWindows()
     return out
 end
 
+-- The hs.window for window `id`, if it's one we manage.
+local function windowFor(id)
+    local win = winByID[id]
+    if win and win:id() == id then return win end
+    for _, w in ipairs(managedWindows()) do
+        if w:id() == id then return w end
+    end
+    return nil
+end
+
 -- The native modules in hyprspoon/native (built with `make -C hyprspoon/native`): nil,
 -- with a note in the console, for one that isn't built or won't load. The
 -- callers then carry on in Lua (and there are no borders).
@@ -301,6 +311,7 @@ M.rulesFor = rulesFor
 M.forgetManagedWindows = forgetManagedWindows
 M.watchWindows = watchWindows
 M.managedWindows = managedWindows
+M.windowFor = windowFor
 M.WARP_MOUSE_EVENT = WARP_MOUSE_EVENT
 M.warpToWindow = warpToWindow
 M.warpToFocusedWindow = warpToFocusedWindow
