@@ -18,4 +18,10 @@ if [ "$(uname -s)" = Darwin ] && command -v pkg-config >/dev/null 2>&1 && pkg-co
         -o "$native_tmp/native_tabs_test"
     "$native_tmp/native_tabs_test"
     echo "ok tests/native_tabs_probe_test.c"
+    clang -std=c11 -O2 -Wall -Wextra $(pkg-config --cflags lua) \
+        tests/native_events_test.c $(pkg-config --libs lua) \
+        -framework CoreGraphics -framework CoreFoundation \
+        -o "$native_tmp/native_events_test"
+    "$native_tmp/native_events_test"
+    echo "ok tests/native_events_test.c"
 fi

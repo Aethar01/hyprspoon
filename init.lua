@@ -508,7 +508,7 @@ function M:start(opts)
     -- filter, which holds each move back half a second. Only our windows.
     local events = Util.native("events")
     if events then
-        events.start(function(id)
+        events.start(function(id, visibilityChanged)
             local win = Util.winByID[id]
             if not (win and win:id() == id) then
                 win = nil
@@ -516,7 +516,14 @@ function M:start(opts)
                     if w:id() == id then win = w break end
                 end
             end
-            if win then onWindowMoved(win) end
+            if win then
+                if visibilityChanged then
+                    -- Native merges need no AX destroy or frame change.
+                    Discover.markDirty(win)
+                else
+                    onWindowMoved(win)
+                end
+            end
         end)
         S.running.events = events
     else
