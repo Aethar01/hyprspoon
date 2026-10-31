@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.0 (2026-10-31)
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating:
+`frames.so` has a new native tab query and `slide.so` changed.
+
+- Window groups, like Hyprland's `togglegroup`: several windows share
+  one tile, one on show and the others parked off screen. New actions,
+  all unbound: `toggleGroup` makes the focused tile a group or dissolves
+  it, `groupNext`/`groupPrev` cycle its members,
+  `moveIntoGroupLeft/Right/Up/Down` (or `moveIntoGroup(dir)`) joins the
+  group in that direction, and `moveOutOfGroup` splits the shown member
+  out beside it. Closing the shown window brings up the next member
+  without moving the other tiles. Groups move between workspaces and
+  displays whole, and survive reloads and restarts.
+- Group bars: a strip along the top of a grouped tile, one segment per
+  member with its title and the shown one in the active border colour.
+  Clicking a segment shows that member. Configured under
+  `group = { bar = { height, font, size, padding, text } }`, or
+  `group.bar = false` for none.
+- Native tabs (Finder, TextEdit, Terminal, Preview, ...) are a set in
+  one tile, detected from WindowServer state rather than guessed from
+  frames. Switching tabs, in the app or with `groupNext`/`groupPrev`,
+  hands the tile and its ring over in place. Window > Merge All Windows
+  folds the app's tiles into one set, a torn-off tab splits in beside
+  it, and a tabbed window keeps all its tabs through moves to another
+  workspace, reloads and restarts. A native tab set can join a group as
+  one member; `moveOutOfGroup` on a native set uses Window > Move Tab to
+  New Window. Without the native module, the old frame guess is kept.
+- Fixed merging already-tiled windows into tabs leaving empty tiles
+  behind.
+- `query()` and the overview leave out a group's hidden members and
+  background tabs.
+
 ## 0.3.0 (2026-10-31)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating.
