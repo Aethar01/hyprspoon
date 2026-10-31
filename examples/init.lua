@@ -35,6 +35,7 @@ spoon.hyprspoon:start({
 -- binding, e.g. to keep Option+S for typing ß:
 --   local keys = spoon.hyprspoon.defaultHotkeys
 --   keys.workspaceS = { { "alt", "ctrl", "cmd" }, "s" }
+-- or bind spoon.hyprspoon.ctrlAltCmdHotkeys for Ctrl+Option+Cmd as SUPER.
 spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.defaultHotkeys)
 
 -- Your own bindings can call the API directly.

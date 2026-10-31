@@ -173,11 +173,41 @@ local function hotkeyActions()
     return actions
 end
 
--- A keymap like Hyprland's default, with Option as SUPER. Pass it (or a
--- copy with changes) to bindHotkeys.
-M.defaultHotkeys = (function()
-    local super, superShift, superCmd, ctrlSuper =
-        { "alt" }, { "alt", "shift" }, { "alt", "cmd" }, { "ctrl", "alt" }
+-- hs.hotkey matches modifier aliases as case-insensitive substrings, ignoring
+-- order and duplicates. Compare the same sets so aliases cannot hide a clash.
+local function modifierSet(mods)
+    local text = table.concat(mods, "-"):lower()
+    local found = {}
+    for _, aliases in ipairs({ { "cmd", "command", "⌘" }, { "ctrl", "control", "⌃" },
+        { "alt", "option", "⌥" }, { "shift", "⇧" } }) do
+        for _, alias in ipairs(aliases) do
+            if text:find(alias, 1, true) then
+                found[#found + 1] = aliases[1]
+                break
+            end
+        end
+    end
+    return table.concat(found, "+")
+end
+
+-- A keymap like Hyprland's default, with the modifiers in `super` as SUPER.
+-- Shift on top of SUPER moves windows; the third layer (silent moves,
+-- preselect, workspace and display switching) is `ctrlSuper`, Ctrl+SUPER
+-- unless given. Pass the result (or a copy with changes) to bindHotkeys.
+function M.hotkeysFor(super, ctrlSuper)
+    local superShift = { table.unpack(super) }
+    superShift[#superShift + 1] = "shift"
+    ctrlSuper = ctrlSuper or { "ctrl", table.unpack(super) }
+    local layers = { super, superShift, ctrlSuper }
+    local names = { "SUPER", "Shift+SUPER", "ctrlSuper" }
+    for i = 1, #layers do
+        for j = i + 1, #layers do
+            if modifierSet(layers[i]) == modifierSet(layers[j]) then
+                error("hyprspoon: hotkeysFor layers " .. names[i] .. " and " .. names[j]
+                    .. " use the same modifiers; choose three distinct layers", 2)
+            end
+        end
+    end
     local map = {
         closeWindow = { super, "w" },
         toggleFill = { super, "f" },
@@ -207,7 +237,7 @@ M.defaultHotkeys = (function()
         map["moveToWorkspace" .. i] = { superShift, key }
         map["moveToWorkspaceSilent" .. i] = { ctrlSuper, key }
     end
-    for _, name in ipairs(S.defaults.namedWorkspaces) do
+    for _, name in ipairs((S.cfg or S.defaults).namedWorkspaces or {}) do
         local key = name:lower()
         map["workspace" .. name] = { super, key }
         map["moveToWorkspace" .. name] = { superShift, key }
@@ -219,9 +249,24 @@ M.defaultHotkeys = (function()
         map["moveWorkspaceToDisplay" .. suffix] = { ctrlSuper, key }
     end
     return map
-end)()
+end
 
--- Binds `mapping` (action name -> { mods, key }, as in defaultHotkeys),
+-- Option as SUPER. Option+letter types characters like å and ß, which these
+-- take over; ctrlAltCmdHotkeys leaves typing alone.
+M.defaultHotkeys = M.hotkeysFor({ "alt" })
+
+-- Ctrl+Option+Cmd as SUPER, with Ctrl+Option+Shift for the
+-- third layer since Ctrl is already part of SUPER.
+M.ctrlAltCmdHotkeys = M.hotkeysFor({ "ctrl", "alt", "cmd" }, { "ctrl", "alt", "shift" })
+-- Nearby keys avoid the contrast shortcuts and Shift+SUPER+. (sysdiagnose).
+-- Keep the same keys across all three layers.
+for suffix, key in pairs({ Prev = "[", Next = "]" }) do
+    for _, action in ipairs({ "focusDisplay", "moveToDisplay", "moveWorkspaceToDisplay" }) do
+        M.ctrlAltCmdHotkeys[action .. suffix][2] = key
+    end
+end
+
+-- Binds `mapping` (action name -> { mods, key }, as from hotkeysFor),
 -- replacing whatever an earlier call bound. Resizes repeat while held.
 -- Call after start() so named workspaces from its options are known.
 function M:bindHotkeys(mapping)

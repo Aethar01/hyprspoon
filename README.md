@@ -256,41 +256,121 @@ rules = {
 
 ## Default keymap
 
-`defaultHotkeys` uses Option as Hyprland's SUPER. To change a binding, edit
-the table before passing it to `bindHotkeys`. Each key is an action name, so
-you can also build your own table from scratch.
+`defaultHotkeys` uses Option as Hyprland's SUPER. It's a table from action
+name to `{ modifiers, key }` (the names are in the table below). To change
+it, edit the table before passing it to `bindHotkeys`:
 
-| Keys | Action |
+```lua
+local keys = spoon.hyprspoon.defaultHotkeys
+keys.workspaceS = { { "ctrl", "alt", "cmd" }, "s" } -- move a binding (frees Option+S for ß)
+keys.closeWindow = nil                             -- drop one
+keys.swapLeft = { { "alt", "cmd" }, "h" }          -- bind one that's unbound by default
+spoon.hyprspoon:bindHotkeys(keys)
+```
+
+You can also build your own table from scratch, or skip `bindHotkeys` and
+bind the actions with `hs.hotkey` yourself (see [Scripting](#scripting)).
+
+The same keymap comes with other modifiers as SUPER:
+
+```lua
+-- Ctrl+Option+Cmd as SUPER; Ctrl+Option+Shift where the table below
+-- says Ctrl+Option. Display keys are [ / ].
+spoon.hyprspoon:bindHotkeys(spoon.hyprspoon.ctrlAltCmdHotkeys)
+
+-- Custom layers: Ctrl+Cmd as SUPER, Shift+Ctrl+Cmd to move windows,
+-- and Ctrl+Option+Cmd+Shift (Hyper) for silent moves and preselection.
+local keys = spoon.hyprspoon.hotkeysFor(
+    { "ctrl", "cmd" }, { "ctrl", "alt", "cmd", "shift" })
+-- Hyper+. is sysdiagnose; use brackets for this layer's display moves.
+keys.moveWorkspaceToDisplayPrev[2] = "["
+keys.moveWorkspaceToDisplayNext[2] = "]"
+spoon.hyprspoon:bindHotkeys(keys)
+```
+
+`hotkeysFor(super, ctrlSuper)` adds Shift to SUPER for the move layer.
+The third layer defaults to Ctrl+SUPER; pass `ctrlSuper` when SUPER already
+includes Ctrl. All three modifier sets must be distinct, including when
+using aliases such as `control`, `option` or `⌘`. Call it after `start()`
+to use the configured named workspaces.
+
+A Caps Lock Hyper key usually sends Ctrl+Option+Cmd+Shift. It cannot drive
+`ctrlAltCmdHotkeys` as SUPER, because that chord is already its Shift layer.
+Hyper cannot itself be SUPER in `hotkeysFor`, either: adding Shift would
+leave the same chord. The custom example above lets Caps Lock drive the
+third layer instead. Custom maps can replace app and system shortcuts;
+check the chords you choose.
+
+| Keys | Action | Action names |
+|---|---|---|
+| Option+H/J/K/L | Focus left/down/up/right (past the last window, the display that way, even an empty one) | `focusLeft`, `focusDown`, `focusUp`, `focusRight` |
+| Option+Shift+H/J/K/L | Move the window in that direction | `moveLeft` etc. |
+| (unbound) | Swap the window with the one in that direction | `swapLeft` etc. |
+| Option+arrows | Resize by 10% (repeats while held) | `resizeLeft` etc. |
+| Ctrl+Option+arrows | Open the next window on that side (again to cancel) | `preselectLeft` etc. |
+| Option+1…0 | Go to workspace 1…10 | `workspace1` … `workspace10` |
+| Option+Shift+1…0 | Move the window to workspace 1…10 | `moveToWorkspace1` … |
+| Ctrl+Option+1…0 | Move the window there without following | `moveToWorkspaceSilent1` … |
+| Option+A/S/D | Toggle scratchpad A/S/D (Shift / Ctrl to move a window there) | `workspaceA`, `moveToWorkspaceA`, `moveToWorkspaceSilentA` … |
+| Ctrl+Option+H/L | Previous / next workspace | `previousWorkspace`, `nextWorkspace` |
+| Option+\` | Back to the previous workspace | `gotoPreviousWorkspace` |
+| Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) | `focusDisplayPrev`/`Next`, `moveToDisplayPrev`/`Next`, `moveWorkspaceToDisplayPrev`/`Next` |
+| Option+B | Toggle tiling (Shift: just this workspace) | `toggleTiling`, `toggleWorkspaceTiling` |
+| Option+T | Toggle floating | `toggleFloat` |
+| Option+G | Cycle through floating windows | `focusFloat` |
+| Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
+| Option+Y | Flip the split | `toggleSplit` |
+| Option+= | Balance the splits | `balance` |
+| Option+R | Rotate the layout (Shift: mirror it) | `rotate`, `mirror` |
+| Option+Tab | Overview | `toggleOverview` |
+| Option+W | Close the window | `closeWindow` |
+
+### Characters and shortcuts each keymap takes over
+
+macOS types a character for most Option and Shift+Option keys, and these
+hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
+(other layouts type other characters):
+
+| Keys | Characters you can no longer type |
 |---|---|
-| Option+H/J/K/L | Focus left/down/up/right (past the last window, the display that way, even an empty one) |
-| Option+Shift+H/J/K/L | Move the window in that direction (`swapLeft` etc. swap instead, unbound) |
-| Option+arrows | Resize by 10% (repeats while held) |
-| Ctrl+Option+arrows | Open the next window on that side (again to cancel) |
-| Option+1…0 | Go to workspace 1…10 |
-| Option+Shift+1…0 | Move the window to workspace 1…10 |
-| Ctrl+Option+1…0 | Move the window there without following |
-| Option+A/S/D | Toggle scratchpad A/S/D (Shift / Ctrl to move a window there) |
-| Ctrl+Option+H/L | Previous / next workspace |
-| Option+\` | Back to the previous workspace |
-| Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) |
-| Option+B | Toggle tiling (Shift: just this workspace) |
-| Option+T | Toggle floating |
-| Option+G | Cycle through floating windows |
-| Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) |
-| Option+Y | Flip the split |
-| Option+= | Balance the splits |
-| Option+R | Rotate the layout (Shift: mirror it) |
-| Option+Tab | Overview |
-| Option+W | Close the window |
+| Option+1…0 | ¡ ™ £ ¢ ∞ § ¶ • ª º |
+| Shift+Option+1…0 | ⁄ € ‹ › ﬁ ﬂ ‡ ° · ‚ |
+| Option+W F B T G Y R | ∑ ƒ ∫ † © ¥ ® |
+| Shift+Option+F B R | Ï ı ‰ |
+| Option+H J K L | ˙ ∆ ˚ ¬ |
+| Shift+Option+H J K L | Ó Ô  (the Apple logo) Ò |
+| Option+A S D | å ß ∂ |
+| Shift+Option+A S D | Å Í Î |
+| Option+= , . | ≠ ≤ ≥ |
+| Shift+Option+, . | ¯ ˘ |
+| Option+\` | the grave accent dead key (à, è, …) |
 
-Option+letter shortcuts replace the characters macOS types with Option
-(å, ß, ∂ and so on). Remap the ones you need for typing.
+Option+arrows also stop moving the text cursor by word or paragraph. The
+Ctrl+Option bindings take over no characters, but may conflict with VoiceOver
+commands when VoiceOver is on.
+
+`ctrlAltCmdHotkeys` takes over no characters: every binding includes Ctrl or Cmd.
+It uses `[` / `]` instead of `,` / `.` for all display actions, which avoids
+macOS's Ctrl+Option+Cmd+Shift+`.` sysdiagnose shortcut and the accessibility
+shortcuts Ctrl+Option+Cmd+`,` / `.` (contrast down/up). Workspace 8 stays on
+Ctrl+Option+Cmd+`8`, which is also the invert-colours shortcut when that's
+turned on in System Settings. Its Ctrl+Option+Shift
+layer may still conflict with VoiceOver commands. Other app or customised
+system shortcuts can also conflict with either map.
+
+Remap or drop the default bindings you need for typing, or use
+`ctrlAltCmdHotkeys`.
 
 ## Scripting
 
 The actions are plain functions on `spoon.hyprspoon`, so you can bind them
 yourself or call them from the `hs` command-line tool
 (`require("hs.ipc")` in your config):
+
+```lua
+hs.hotkey.bind({ "alt" }, "w", spoon.hyprspoon.closeWindow)
+hs.hotkey.bind({ "alt" }, "h", function() spoon.hyprspoon.focus("left") end)
+```
 
 ```sh
 hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
