@@ -36,3 +36,5 @@ void focusRegister(lua_State *L);
 // Native-tab queries and a retained AXWindow omitted from AXWindows.
 void tabsRegister(lua_State *L);
 AXUIElementRef tabsFind(pid_t pid, uint32_t wid);
+void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title, int position);
+bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title, int position);

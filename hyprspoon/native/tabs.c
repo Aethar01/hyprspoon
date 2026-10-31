@@ -132,10 +132,7 @@ static AXUIElementRef tabGroup(AXUIElementRef el, int depth) {
     return group;
 }
 
-static int l_tabButtons(lua_State *L) {
-    pid_t pid = (pid_t)luaL_checkinteger(L, 1);
-    uint32_t wid = (uint32_t)luaL_checkinteger(L, 2);
-    int delta = (int)luaL_optinteger(L, 3, 0);
+static AXUIElementRef groupFor(pid_t pid, uint32_t wid) {
     AXUIElementRef app = AXUIElementCreateApplication(pid);
     AXUIElementSetMessagingTimeout(app, 0.1);
     CFArrayRef windows = attribute(app, kAXWindowsAttribute);
@@ -149,6 +146,47 @@ static int l_tabButtons(lua_State *L) {
         CFRelease(windows);
     }
     CFRelease(app);
+    return group;
+}
+
+bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title, int position) {
+    AXUIElementRef group = groupFor(pid, shown);
+    CFArrayRef tabs = group ? attribute(group, CFSTR("AXTabs")) : NULL;
+    bool ok = false;
+    if (tabs) {
+        CFIndex count = CFArrayGetCount(tabs), match = -1;
+        int matches = 0;
+        for (CFIndex i = 0; i < count; i++) {
+            AXUIElementRef button = (AXUIElementRef)CFArrayGetValueAtIndex(tabs, i);
+            if (title && CFStringGetLength(title) && equalsAttribute(button, kAXTitleAttribute, title)) {
+                match = i;
+                matches++;
+            }
+        }
+        if (matches != 1) match = position > 0 && position <= count ? position - 1 : -1;
+        if (match >= 0) ok = AXUIElementPerformAction((AXUIElementRef)CFArrayGetValueAtIndex(tabs, match),
+            kAXPressAction) == kAXErrorSuccess;
+        CFRelease(tabs);
+    }
+    if (group) CFRelease(group);
+    return ok;
+}
+
+static int l_tabShow(lua_State *L) {
+    pid_t pid = (pid_t)luaL_checkinteger(L, 1);
+    uint32_t wid = (uint32_t)luaL_checkinteger(L, 2);
+    uint32_t shown = (uint32_t)luaL_checkinteger(L, 3);
+    CFStringRef title = CFStringCreateWithCString(NULL, luaL_optstring(L, 4, ""), kCFStringEncodingUTF8);
+    framesShowTab(pid, wid, shown, title, (int)luaL_optinteger(L, 5, 0));
+    if (title) CFRelease(title);
+    return 0;
+}
+
+static int l_tabButtons(lua_State *L) {
+    pid_t pid = (pid_t)luaL_checkinteger(L, 1);
+    uint32_t wid = (uint32_t)luaL_checkinteger(L, 2);
+    int delta = (int)luaL_optinteger(L, 3, 0);
+    AXUIElementRef group = groupFor(pid, wid);
     CFArrayRef tabs = group ? attribute(group, CFSTR("AXTabs")) : NULL;
     lua_newtable(L);
     if (tabs) {
@@ -180,6 +218,7 @@ void tabsRegister(lua_State *L) {
     mainConnection = dlsym(RTLD_DEFAULT, "SLSMainConnectionID");
     windowSpaces = dlsym(RTLD_DEFAULT, "SLSCopySpacesForWindows");
     remoteElement = dlsym(RTLD_DEFAULT, "_AXUIElementCreateWithRemoteToken");
+    lua_pushcfunction(L, l_tabShow); lua_setfield(L, -2, "tabShow");
     lua_pushcfunction(L, l_tabState); lua_setfield(L, -2, "tabState");
     lua_pushcfunction(L, l_tabWindows); lua_setfield(L, -2, "tabWindows");
     lua_pushcfunction(L, l_tabButtons); lua_setfield(L, -2, "tabButtons");

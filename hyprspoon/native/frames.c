@@ -116,6 +116,9 @@ typedef struct {
     // for runs, see framesRaise), and whether the app's loop is on its queue.
     uint32_t raise;
     bool raiseQueued;
+    uint32_t tabShown;
+    CFStringRef tabTitle;
+    int tabPosition;
     bool running;
 } App;
 
@@ -127,6 +130,7 @@ static void releaseApp(void *context) {
     App *app = context;
     if (app->windows) CFRelease(app->windows);
     if (app->element) CFRelease(app->element);
+    if (app->tabTitle) CFRelease(app->tabTitle);
     app->windows = NULL;
     app->element = NULL;
 }
@@ -337,17 +341,26 @@ static void appLoop(void *context) {
         bool raise = app->raiseQueued && !stop;
         uint32_t raiseWid = app->raise;
         app->raiseQueued = false;
+        uint32_t tabShown = app->tabShown;
+        int tabPosition = app->tabPosition;
+        CFStringRef tabTitle = app->tabTitle;
+        app->tabTitle = NULL;
+        app->tabShown = 0;
         if (stop || (takenCount == 0 && animCount == 0 && !raise)) {
             app->running = false;
             os_unfair_lock_unlock(&requestsLock);
+            if (tabTitle) CFRelease(tabTitle);
             break;
         }
         os_unfair_lock_unlock(&requestsLock);
 
         if (raise) {
             AXUIElementRef win = windowElement(app, raiseWid);
-            if (win) AXUIElementPerformAction(win, kAXRaiseAction);
+            AXError result = win ? AXUIElementPerformAction(win, kAXRaiseAction) : kAXErrorFailure;
+            if (result != kAXErrorSuccess && tabShown) tabsSelect(app->pid, tabShown, tabTitle, tabPosition);
         }
+
+        if (tabTitle) CFRelease(tabTitle);
 
         for (int i = 0; i < takenCount; i++) {
             Taken *t = &taken[i];
@@ -451,15 +464,23 @@ void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sol
 // (7s of every 20 measured), and every other accessibility call to it,
 // Hammerspoon's main thread's included, waited behind them. So a raise
 // still waiting is replaced by the next one for the same app.
-void framesRaise(pid_t pid, uint32_t wid) {
+void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title, int position) {
     App *app = appFor(pid, true);
     if (!app) return;
     os_unfair_lock_lock(&requestsLock);
     app->raise = wid;
+    if (app->tabTitle) CFRelease(app->tabTitle);
+    app->tabTitle = title ? CFRetain(title) : NULL;
+    app->tabShown = shown;
+    app->tabPosition = position;
     app->raiseQueued = true;
     bool start = wake(app);
     os_unfair_lock_unlock(&requestsLock);
     if (start) dispatch_async_f(app->queue, app, appLoop);
+}
+
+void framesRaise(pid_t pid, uint32_t wid) {
+    framesShowTab(pid, wid, 0, NULL, 0);
 }
 
 static void nothing(void *context) {
