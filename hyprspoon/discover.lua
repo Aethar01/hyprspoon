@@ -196,7 +196,10 @@ local function withRecentlyChangedApps(windows)
                     if next(found or {}) then require("hyprspoon.layout").scheduleRetile(false) end
                 end)
             end
-            for id in pairs(background) do S.nativeBackground[id] = nativeWindows[id] end
+            for id in pairs(background) do
+                S.nativeBackground[id] = nativeWindows[id]
+                S.offSpace[id] = nil
+            end
             for _, w in ipairs(cached.shown) do S.nativeShown[#S.nativeShown + 1] = w end
             -- Keep the filter's windows when the app list times out or lags.
             -- Only WindowServer evidence can suppress an otherwise valid one.
@@ -423,7 +426,8 @@ local function pollSwitch(pid, remaining, before)
     if switchTimers[pid] then switchTimers[pid]:stop() end
     switchTimers[pid] = hs.timer.doAfter(0.01, function()
         switchTimers[pid] = nil
-        local states = frames and frames.tabState and frames.tabState(pid)
+        requestSnapshot(frames)
+        local states = snapshot and snapshot[pid]
         if not states then
             states = {}
             local app = hs.application.applicationForPID(pid)
@@ -473,8 +477,7 @@ Tree.registerKind("native", {
 })
 
 function M.isNativeTab(win)
-    local frames = Util.native("frames")
-    local states = win and frames and frames.tabState and frames.tabState(win:pid())
+    local states = win and snapshot and snapshot[win:pid()]
     return states and states[win:id()] == "tab"
 end
 

@@ -135,7 +135,13 @@ static void releaseApp(void *context) {
     app->element = NULL;
 }
 
+static void drained(void *context) { (void)context; }
+
 static void drop(App *app) {
+    tabsCancelApp(app->pid);
+    // A running scan can enqueue one final chunk behind this first barrier
+    // while cancellation arrives. The second barrier drains that chunk too.
+    dispatch_sync_f(app->queue, NULL, drained);
     dispatch_sync_f(app->queue, app, releaseApp);
     dispatch_release(app->queue);
     free(app);

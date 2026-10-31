@@ -42,6 +42,7 @@ bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title);
 // Schedule bounded discovery work on the same per-app worker as frames.
 dispatch_queue_t framesWorker(pid_t pid);
 void tabsCancel(void);
+void tabsCancelApp(pid_t pid);
 void tabsStop(void);
 
 void tabsRemember(pid_t pid, uint32_t wid, AXUIElementRef element);

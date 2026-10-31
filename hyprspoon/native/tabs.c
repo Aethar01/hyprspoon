@@ -61,6 +61,7 @@ typedef struct TabQuery {
     dispatch_queue_t queue;
     uint64_t cursor;
     uint32_t raise, shown;
+    atomic_bool cancelled;
     CFStringRef title;
 } TabQuery;
 static TabQuery *queries;
@@ -145,6 +146,11 @@ static void queryDone(void *context) {
     freeQuery(q);
 }
 
+void tabsCancelApp(pid_t pid) {
+    for (TabQuery *q = queries; q; q = q->next)
+        if (q->pid == pid) atomic_store(&q->cancelled, true);
+}
+
 void tabsCancel(void) {
     atomic_store(&cancelling, true);
 }
@@ -168,6 +174,7 @@ static TabQuery *newQuery(lua_State *L, pid_t pid, int callback) {
     if (callback) luaL_checktype(L, callback, LUA_TFUNCTION);
     TabQuery *q = calloc(1, sizeof(*q));
     q->pid = pid;
+    atomic_init(&q->cancelled, false);
     q->callback = (LuaCallback)LUA_CALLBACK_NONE;
     if (callback) luaCallbackSet(&q->callback, L, callback);
     q->queue = framesWorker(pid);
@@ -184,6 +191,7 @@ static TabQuery *newQuery(lua_State *L, pid_t pid, int callback) {
 
 static void scanWindows(void *context) {
     TabQuery *q = context;
+    if (atomic_load(&cancelling) || atomic_load(&q->cancelled)) { finishQuery(q); return; }
     if (!q->result) {
         q->result = dictionary();
         AXUIElementRef cached = q->raise ? cachedWindow(q->pid, q->raise) : NULL;
@@ -200,7 +208,7 @@ static void scanWindows(void *context) {
     // behind a full token sweep. The complete range is still searched.
     double end = CFAbsoluteTimeGetCurrent() + 0.01;
     CFIndex remaining = CFDictionaryGetCount(q->wanted) - CFDictionaryGetCount(q->result);
-    while (q->cursor <= 0x7fff && remaining && !atomic_load(&cancelling)
+    while (q->cursor <= 0x7fff && remaining && !atomic_load(&cancelling) && !atomic_load(&q->cancelled)
            && CFAbsoluteTimeGetCurrent() < end) {
         AXUIElementRef el = remoteWindow(q->pid, q->cursor++);
         if (!el) continue;
@@ -230,11 +238,11 @@ static void scanWindows(void *context) {
         }
         CFRelease(el);
     }
-    if (remaining && q->cursor <= 0x7fff && !atomic_load(&cancelling)) {
+    if (remaining && q->cursor <= 0x7fff && !atomic_load(&cancelling) && !atomic_load(&q->cancelled)) {
         dispatch_async_f(q->queue, q, scanWindows);
         return;
     }
-    if (remaining && q->raise && !atomic_load(&cancelling)) tabsSelect(q->pid, q->shown, q->title);
+    if (remaining && q->raise && !atomic_load(&cancelling) && !atomic_load(&q->cancelled)) tabsSelect(q->pid, q->shown, q->title);
     finishQuery(q);
 }
 
@@ -404,6 +412,8 @@ static int l_tabShow(lua_State *L) {
     CFStringRef title = CFStringCreateWithCString(NULL, luaL_optstring(L, 4, ""), kCFStringEncodingUTF8);
     // Only tabShow (a known background member) can request remote lookup.
     // Ordinary closed-window/other-Space frame misses never scan tokens.
+    for (TabQuery *old = queries; old; old = old->next)
+        if (old->pid == pid && old->raise) atomic_store(&old->cancelled, true);
     TabQuery *q = newQuery(L, pid, 0);
     q->wanted = dictionary();
     put(q->wanted, wid, kCFBooleanTrue);

@@ -1,6 +1,6 @@
 -- Discovery integration: app lists repair stale/missing filter windows.
 package.path = "./?.lua;" .. package.path
-local S = { cfg = { ignoreApps = {} }, trees = {}, setsAway = {}, autoFloat = {} }
+local S = { cfg = { ignoreApps = {} }, trees = {}, offSpace = {}, setsAway = {}, autoFloat = {} }
 local leaves, filter, listed, states, bars = {}, {}, {}, {}, {}
 local repairs, presses, remembered = 0, {}, {}
 local clock, axCalls, appCalls, frameCalls = 1000, 0, 0, 0
