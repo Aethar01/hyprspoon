@@ -104,7 +104,9 @@ static int l_tabState(lua_State *L) {
             CFArrayRef ids = slWindowList(wid);
             CFArrayRef spaces = windowSpaces(mainConnection(), 7, ids);
             CFRelease(ids);
-            if (!spaces) { CFRelease(list); lua_pop(L, 1); lua_pushnil(L); return 1; }
+            // A window may disappear between the snapshot and this query.
+            // Keep the other windows' evidence instead of discarding the pass.
+            if (!spaces) continue;
             if (CFArrayGetCount(spaces) == 0) state = "tab";
             CFRelease(spaces);
         }
