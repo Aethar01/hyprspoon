@@ -116,6 +116,13 @@ S.defaults = {
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
+    --   pseudo = true        on first insertion into a tree, use its saved
+    --                        pre-tiling size, centred and clamped to its tile.
+    --                        Off by default; does not force floating windows
+    --                        to tile. false does not clear saved pseudotiling.
+    -- Pseudotiling follows moves, swaps and floating, and persists with the
+    -- layout across reloads/restarts. Mouse edges change its remembered size;
+    -- keyboard resize changes splits. Maximize/fill temporarily overrides it.
     --   pin = true           float it on every workspace of its display,
     --                        overriding float; off by default. A workspace
     --                        target must already be showing, else ignored.

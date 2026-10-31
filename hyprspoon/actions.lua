@@ -234,6 +234,7 @@ function M.swap(direction)
     if keyA and keyB and keyA ~= keyB then
         -- Tiles on two displays trade places, and workspaces.
         leafA.windowID, leafB.windowID = other:id(), win:id()
+        leafA.pseudo, leafB.pseudo = leafB.pseudo, leafA.pseudo
         S.keyIndex = {}
         S.applied[win:id()], S.applied[other:id()] = nil, nil
         Spaces.exchange(win:id(), other:id())
@@ -443,6 +444,23 @@ function M.focusFloat()
     end
     Focus.focus(target)
     Util.warpToWindow(target)
+end
+
+-- Pseudotile the focused tile, or stop: it keeps its own size (the one it
+-- had before it was tiled), centred in its tile. Resizing it by its edges
+-- changes that size rather than the tile.
+function M.togglePseudo()
+    local win = Focus.currentWindow()
+    local _, leaf, key = Layout.locate(win)
+    if not leaf then return end
+
+    if leaf.pseudo then
+        leaf.pseudo = nil
+    else
+        local f = S.floatingFrames[win:id()] or win:frame()
+        leaf.pseudo = { w = f.w, h = f.h }
+    end
+    Layout.tileNow(false, Tree.keyUUID(key))
 end
 
 -- Flip the split containing the focused window between vertical and

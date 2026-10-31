@@ -24,6 +24,7 @@ local TREES_BOOT_KEY = "hyprspoon.treesBoot"
 local MAXIMIZED_KEY = "hyprspoon.maximized"
 local UNTILED_KEY = "hyprspoon.untiled"
 local FILLED_KEY = "hyprspoon.filled"
+local PSEUDO_AWAY_KEY = "hyprspoon.pseudoAway"
 local bootTime = tonumber(
     (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 
@@ -39,6 +40,13 @@ S.filled = {}
 -- Tree keys of workspaces whose windows float while tiling is on. Their
 -- trees are kept (and ignored) for when tiling comes back.
 S.untiled = {}
+-- A pseudotiled window keeps its own size, centred in its tile: its leaf's
+-- `pseudo` is that size, { w =, h = }. It goes with the window, not the
+-- tile, so a window leaving its tree while still open (moving, floating,
+-- going to another workspace or full screen) leaves it here, window id ->
+-- size, for the leaf it gets when it goes back in.
+S.pseudoAway = {}
+
 do
     local savedBoot = hs.settings.get(TREES_BOOT_KEY)
     if type(savedBoot) == "number" and math.abs(savedBoot - bootTime) < 120 then
@@ -46,12 +54,15 @@ do
         S.maximized = hs.settings.get(MAXIMIZED_KEY) or {}
         S.untiled = hs.settings.get(UNTILED_KEY) or {}
         S.filled = hs.settings.get(FILLED_KEY) or {}
+        for id, size in pairs(hs.settings.get(PSEUDO_AWAY_KEY) or {}) do
+            S.pseudoAway[tonumber(id)] = size
+        end
     end
 end
 
 local function stripTree(node)
     if not node then return nil end
-    if node.windowID ~= nil then return { windowID = node.windowID } end
+    if node.windowID ~= nil then return { windowID = node.windowID, pseudo = node.pseudo } end
     return {
         split = node.split,
         ratio = node.ratio,
@@ -76,13 +87,35 @@ local function saveTreesNow()
         filled[key] = S.filled[key]
     end
     for key in pairs(S.untiled) do untiled[key] = true end
-    local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled, filled = filled })
+    -- Like workspace state, prune against WindowServer rather than walking
+    -- every app's windows over accessibility. The on-screen list leaves out
+    -- other Spaces and hidden apps, so a window missing from it is only
+    -- dropped once the all-window query confirms it's gone; without that
+    -- query it's kept.
+    local live, pseudoAway, all = {}, {}, nil
+    for _, win in ipairs(hs.window.list(true) or {}) do
+        if win.kCGWindowNumber then live[win.kCGWindowNumber] = true end
+    end
+    for id, size in pairs(S.pseudoAway) do
+        if not live[id] and all == nil then
+            local frames = Util.native("frames")
+            all = frames and frames.liveIDs and frames.liveIDs() or false
+        end
+        if not live[id] and all and not all[id] then
+            S.pseudoAway[id] = nil
+        else
+            pseudoAway[tostring(id)] = size
+        end
+    end
+    local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled,
+        filled = filled, pseudoAway = pseudoAway })
     if encoded == savedTrees then return end
     savedTrees = encoded
     hs.settings.set(TREES_KEY, out)
     hs.settings.set(MAXIMIZED_KEY, maximized)
     hs.settings.set(UNTILED_KEY, untiled)
     hs.settings.set(FILLED_KEY, filled)
+    hs.settings.set(PSEUDO_AWAY_KEY, pseudoAway)
     hs.settings.set(TREES_BOOT_KEY, bootTime)
 end
 
@@ -94,9 +127,23 @@ local function saveTrees()
     end)
 end
 
-
 local function bspLeaf(windowID)
-    return { windowID = windowID }
+    local pseudo = S.pseudoAway[windowID]
+    S.pseudoAway[windowID] = nil
+    return { windowID = windowID, pseudo = pseudo }
+end
+
+-- Where a pseudotiled window goes in its tile `rect`: its own `size`,
+-- centred, and no bigger than the tile.
+local function pseudoRect(rect, size)
+    local w = math.min(size.w, rect.w)
+    local h = math.min(size.h, rect.h)
+    return {
+        x = rect.x + math.floor((rect.w - w) / 2),
+        y = rect.y + math.floor((rect.h - h) / 2),
+        w = w,
+        h = h,
+    }
 end
 
 local function isLeaf(node)
@@ -117,6 +164,9 @@ local function prune(node, valid)
 
     if isLeaf(node) then
         if valid[node.windowID] then return node end
+        if node.pseudo and S.openIDs and S.openIDs[node.windowID] then
+            S.pseudoAway[node.windowID] = node.pseudo
+        end
         return nil
     end
 
@@ -259,7 +309,10 @@ local function removeID(node, windowID)
     if not node then return nil end
 
     if isLeaf(node) then
-        if node.windowID == windowID then return nil end
+        if node.windowID == windowID then
+            S.pseudoAway[windowID] = node.pseudo
+            return nil
+        end
         return node
     end
 
@@ -271,20 +324,26 @@ local function removeID(node, windowID)
     return node
 end
 
+-- The two windows trade places, each keeping its own pseudotiling.
 local function swapIDs(node, idA, idB)
-    if not node then return end
-
-    if isLeaf(node) then
-        if node.windowID == idA then
-            node.windowID = idB
-        elseif node.windowID == idB then
-            node.windowID = idA
+    local leaves = {}
+    local function walk(n)
+        if not n then return end
+        if isLeaf(n) then
+            if n.windowID == idA or n.windowID == idB then leaves[#leaves + 1] = n end
+            return
         end
-        return
+        walk(n.a)
+        walk(n.b)
     end
+    walk(node)
 
-    swapIDs(node.a, idA, idB)
-    swapIDs(node.b, idA, idB)
+    for _, leaf in ipairs(leaves) do
+        leaf.windowID = leaf.windowID == idA and idB or idA
+    end
+    if #leaves == 2 then
+        leaves[1].pseudo, leaves[2].pseudo = leaves[2].pseudo, leaves[1].pseudo
+    end
 end
 
 -- Split nodes above a leaf, nearest first, with the branch the leaf is in.
@@ -412,11 +471,12 @@ end
 
 -- Floats are never tiles, even while a tree that hasn't been reconciled
 -- since they started floating still holds them.
--- A maximized tile's is the area it fills.
+-- A maximized tile's is the area it fills, and a pseudotiled one's its
+-- own size in its tile.
 local function rectFor(windowID)
     if not S.tilingEnabled or S.autoFloat[windowID] then return nil end
     local _, leaf = findByID(windowID)
-    return leaf and (leaf.fullRect or leaf.rect)
+    return leaf and (leaf.fullRect or leaf.pseudoRect or leaf.rect)
 end
 
 -- Whether a tile is out of sight under its workspace's maximized window.
@@ -548,6 +608,7 @@ M.bootTime = bootTime
 M.saveTreesNow = saveTreesNow
 M.saveTrees = saveTrees
 M.leaf = bspLeaf
+M.pseudoRect = pseudoRect
 M.isLeaf = isLeaf
 M.treeContains = treeContains
 M.prune = prune

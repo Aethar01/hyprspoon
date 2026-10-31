@@ -4,8 +4,9 @@ A Hyprland-inspired tiling window manager for macOS, as a
 [Hammerspoon](https://www.hammerspoon.org) Spoon.
 
 - **BSP tiling**, toggled globally or per workspace, with gaps, rotate,
-  mirror, balance and preselection. Drag a tile onto another to move it, and
-  resize splits with the mouse, the keyboard or the windows' own edges.
+  mirror, balance, preselection and pseudotiling. Drag a tile onto another
+  to move it, and resize splits with the mouse, the keyboard or the
+  windows' own edges.
 - **Workspaces of its own**, numbered 1 to 10 plus named scratchpads, switched
   instantly by hotkey or a three-finger swipe. They don't use macOS
   Spaces, so there's no Mission Control animation. Give displays their
@@ -16,8 +17,8 @@ A Hyprland-inspired tiling window manager for macOS, as a
   inactive colours.
 - **Modifier + drag** anywhere on a window to move or resize it.
 - **Focus follows mouse** (optional), and cursor warping on keyboard focus.
-- **Window rules**: float, pin, size, place or send a window to a workspace
-  by app, title or role.
+- **Window rules**: float, pin, pseudotile, size, place or send a window to
+  a workspace by app, title or role.
 - **An overview** of every workspace, in place of Mission Control.
 - **Layouts survive** reloads and restarts.
 - **Scriptable** from the `hs` command line, like `hyprctl`.
@@ -121,6 +122,25 @@ Defaults are in [`hyprspoon/state.lua`](hyprspoon/state.lua).
 | `tiling.minRatio` / `tiling.maxRatio` | `0.20` / `0.80` | How far a split can be moved towards either side |
 | `tiling.animationDuration` | `0` | Seconds to animate retiles over; `0` snaps. Mouse drags always snap |
 | `tiling.dropColor` | `{ red = 0.35, green = 0.6, blue = 1 }` | Colour of the highlight where a dragged tile will land |
+
+### Pseudotiling
+
+A pseudotiled window keeps its own size, centred in its tile and clamped to
+fit. Its tile still reserves the full area for splits and navigation.
+`togglePseudo()` turns this on or off for the focused tile. Turning it off
+makes the window fill its tile again. The initial size is the frame saved
+before tiling, or the current frame if none was saved.
+
+Drag a native edge or use modifier-drag resize to change the remembered
+size. It is clamped to the tile and centred again on release. Keyboard
+resize (Option+arrows) still moves the splits. Moving the window within
+its tile snaps it back to the centre; dropping it onto another tile moves
+it through the layout as usual.
+
+Pseudotiling follows the window through swaps, moves, drops, floating,
+workspace and display changes, and native full screen. It survives reloads
+and is restored with matched windows after a restart. Maximizing or filling
+temporarily overrides it; returning to the tile restores it.
 
 ### Mouse (`mouse`)
 
@@ -262,6 +282,7 @@ e.g. `"AXWindow"` and `"AXDialog"`), and sets any of:
 | `float` | `true` to float a standard window, `false` to tile it even if it would float; dialogs and panels always float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
+| `pseudo` | `true` to pseudotile it when first inserted into a tree, using its saved pre-tiling size; off by default |
 | `size` | A float's size when it first appears, `{ w, h }`: points, or fractions of the display for `0 < v <= 1`, e.g. `{ 0.5, 0.6 }`; `1` means the full display |
 | `position` | A float's top left when it first appears, `{ x, y }` from the display's top left, in points or fractions like `size` |
 | `center` | `true` to centre a new float (floats are by default, dialogs aren't), `false` to leave it where the app put it |
@@ -290,6 +311,11 @@ For a pinned window, a `workspace` rule only applies if that workspace is
 already showing; it can take the window to that display. A hidden target
 is ignored. `pin = false` does not undo a saved manual pin.
 
+`pseudo` does not force a window to tile. Add `float = false` for a standard
+window that would automatically float; dialogs and panels always float.
+`pseudo = false` prevents rule-based activation but does not clear saved
+pseudotiling. A restored leaf keeps its saved size.
+
 Rules are read once per window, when it first appears; later matching rules
 win for each field they set. Titles that change later do not update rules.
 
@@ -298,6 +324,7 @@ rules = {
     { app = "1Password", float = true },
     { app = "Slack", workspace = 4, silent = true },
     { app = "Finder", title = "^Copy", float = true },
+    { app = "Terminal", pseudo = true },
     { app = "Activity Monitor", float = true, size = { 0.5, 0.6 } },
     { subrole = "AXDialog", noborder = true },
 }
@@ -367,6 +394,7 @@ check the chords you choose.
 | Option+B | Toggle tiling (Shift: just this workspace) | `toggleTiling`, `toggleWorkspaceTiling` |
 | Option+T | Toggle floating | `toggleFloat` |
 | (unbound) | Pin or unpin the focused window on its display | `togglePin` |
+| (unbound) | Pseudotile the focused tile: keep its own size, centred in the tile | `togglePseudo` |
 | Option+G | Cycle through floating windows | `focusFloat` |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
 | Option+Y | Flip the split | `toggleSplit` |
@@ -425,11 +453,15 @@ hs.hotkey.bind({ "alt" }, "h", function() spoon.hyprspoon.focus("left") end)
 ```sh
 hs -c 'spoon.hyprspoon.gotoWorkspace(3)'
 hs -c 'spoon.hyprspoon.togglePin()'
+hs -c 'spoon.hyprspoon.togglePseudo()'
 hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 ```
 
 `togglePin()` takes no arguments and acts on the focused managed window.
 With no focused window it does nothing. It also works with tiling off.
+
+`togglePseudo()` takes no arguments. It acts on the focused tile and does
+nothing for a floating window, with tiling off, or with no focused tile.
 
 `spoon.hyprspoon:rescue()` returns the number of parked windows brought
 back. See [Getting windows back](#getting-windows-back) for a command that
@@ -482,6 +514,9 @@ after updating from source.
 - **A pinned window stopped following.** Turning it into a tile or moving
   it silently to a hidden workspace removes the pin. Focus it and call
   `togglePin` to pin it again.
+- **Pseudotiling looks unchanged.** If the remembered size fills the tile,
+  drag an edge inward to choose a smaller size. Keyboard resize changes the
+  tile's splits instead. Leave maximized or filled mode to see pseudotiling.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
@@ -499,6 +534,11 @@ after updating from source.
   for recovery limits after a crash or macOS restart.
 - Pinned windows stay out of workspace slide pictures, but the picture is
   drawn over them. A pin may be covered until the slide ends.
+- After a reload, an already tiled window has no saved pre-tiling frame.
+  Enabling pseudotiling uses its current frame, which may fill the tile.
+  Existing pseudotiled windows keep their remembered size.
+- Apps may enforce minimum sizes larger than a tile, so a pseudotiled
+  window may not fit the requested frame exactly.
 - Native full-screen windows still get their own Space, which macOS
   manages. Border checks use the Space type before Lua learns a window is
   full screen. If that private call is unavailable, the native check only

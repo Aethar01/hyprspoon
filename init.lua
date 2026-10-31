@@ -23,12 +23,12 @@
 -- Modules (all under hyprspoon/):
 --   state     configuration defaults and state shared between the modules
 --   util      logging, window classification and rules, focus records, pointer warping
---   tree      BSP tree structure, persistence and per-workspace keys
+--   tree      BSP tree structure, pseudotile sizes, persistence and per-workspace keys
 --   float     automatic and manual floats, initial rule placement, kept above tiles
 --   focus     internal focus tracking and the window snapshot for hit testing
 --   discover  finding the manageable windows on each screen
---   layout    laying the trees out onto windows, and scheduling retiles
---   resize    resizing tiles by keyboard, mouse or native window edges
+--   layout    laying out tiles and pseudotiles, and scheduling retiles
+--   resize    resizing splits and pseudotile sizes by keyboard or mouse
 --   drop      dragging a tile onto another to move it in the layout
 --   mouse     modifier + drag anywhere on a window
 --   ffm       focus follows mouse
@@ -123,6 +123,10 @@ local M = {
     -- A tile floats first (centred with tiling on). Unpinning keeps it floating.
     -- Works with tiling off; no focused window means no change.
     togglePin = Actions.togglePin,
+    -- togglePseudo(): toggle the focused tile's own size, centred in its tile.
+    -- Uses its saved pre-tiling frame, else its current frame. No arguments;
+    -- no change for floats, no focused tile, or with tiling off.
+    togglePseudo = Actions.togglePseudo,
     toggleSplit = Actions.toggleSplit,
     toggleTiling = Actions.toggleTiling,
     toggleWorkspaceTiling = Actions.toggleWorkspaceTiling,
@@ -143,7 +147,7 @@ local function hotkeyActions()
     local actions = {}
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
         "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
-        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace" }) do
+        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo" }) do
         actions[name] = M[name]
     end
     for suffix, dir in pairs(DIRECTIONS) do
@@ -505,6 +509,7 @@ function M:start(opts)
         if id then
             Discover.cancelLayoutCheck(id)
             S.fullscreen[id], S.offSpace[id], S.slots[id] = nil, nil, nil
+            S.pseudoAway[id] = nil
             for key, maxID in pairs(S.maximized) do
                 if maxID == id then S.maximized[key] = nil end
             end
