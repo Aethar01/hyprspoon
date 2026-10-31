@@ -70,8 +70,6 @@ local function placeFloat(win, rule, centre)
     -- automatic floats still pick up changes to their classification rules.
     local id, app = tostring(win:id()), appName(win)
     if placedFloats[id] == app then return end
-    placedFloats[id] = app
-    saveFloats()
     if rule.center ~= nil then centre = rule.center == true end
     local size, pos = rule.size, rule.position
     if not size and not pos and not centre then return end
@@ -103,6 +101,10 @@ local function placeFloat(win, rule, centre)
     if x ~= f.x or y ~= f.y then
         win:setTopLeft({ x = x, y = y })
     end
+    -- Only once it's placed: saving writes the settings file, and a float
+    -- no rule places has nothing to keep.
+    placedFloats[id] = app
+    saveFloats()
 end
 
 local function shouldFloat(win)
