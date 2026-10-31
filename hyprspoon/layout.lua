@@ -6,6 +6,7 @@ package.loaded["hyprspoon.layout"] = M
 local S = require("hyprspoon.state")
 local Util = require("hyprspoon.util")
 local Tree = require("hyprspoon.tree")
+local Tabs = require("hyprspoon.tabs")
 local Float = require("hyprspoon.float")
 local Focus = require("hyprspoon.focus")
 local Discover = require("hyprspoon.discover")
@@ -66,8 +67,7 @@ local function handFocusBack(goneID, win)
     local path, leaf, key = Tree.findByID(goneID)
     if not path or S.autoFloat[goneID] then return false end
     if leaf.rect and win:pid() == (Util.pidByID[goneID] or win:pid()) then
-        local f = win:frame()
-        if Util.pointInFrame({ x = f.x + f.w / 2, y = f.y + f.h / 2 }, leaf.rect) then return false end
+        if Tabs.centredIn(win:frame(), leaf.rect) then return false end
     end
     local tree = S.trees[key]
     local valid = {}
@@ -184,32 +184,35 @@ local function reconcileTree(key, windows)
         if not valid[oldID] then
             local _, leaf = Tree.ancestors(previous, oldID)
             local candidates = {}
-            for _, win in ipairs(windows) do candidates[#candidates + 1] = win end
-            for _, win in ipairs(S.ghosts) do candidates[#candidates + 1] = win end
-            for _, win in ipairs(candidates) do
-                local newID = win:id()
-                if not before[newID] and win:pid() == Util.pidByID[oldID]
-                   and leaf and leaf.rect then
-                    local f = win:frame()
-                    Util.dlog("candidate %s for %s: frame=%d,%d,%d,%d rect=%d,%d,%d,%d", tostring(newID),
+            if leaf and leaf.rect then
+                for _, win in ipairs(windows) do
+                    candidates[#candidates + 1] = { id = win:id(), pid = win:pid(), win = win }
+                end
+                for _, win in ipairs(S.ghosts) do
+                    candidates[#candidates + 1] = { id = win:id(), pid = win:pid(), win = win }
+                end
+            end
+            local successor = Tabs.successor(Util.pidByID[oldID], leaf and leaf.rect, candidates, before,
+                function(c) return c.win:frame() end,
+                function(c, f)
+                    Util.dlog("candidate %s for %s: frame=%d,%d,%d,%d rect=%d,%d,%d,%d", tostring(c.id),
                         tostring(oldID), f.x, f.y, f.w, f.h,
                         leaf.rect.x, leaf.rect.y, leaf.rect.w, leaf.rect.h)
-                    if Util.pointInFrame({ x = f.x + f.w / 2, y = f.y + f.h / 2 }, leaf.rect) then
-                        Util.dlog("handoff %s -> %s", tostring(oldID), tostring(newID))
-                        leaf.windowID = newID
-                        valid[newID] = true
-                        byID[newID] = win
-                        Util.winByID[newID] = win
-                        Util.pidByID[newID] = win:pid()
-                        for i, fid in ipairs(Util.focusHistory) do
-                            if fid == oldID then Util.focusHistory[i] = newID end
-                        end
-                        Util.focusTimes[newID] = Util.focusTimes[oldID]
-                        if S.ffmFocusedID == oldID then S.ffmFocusedID = newID end
-                        before[newID], before[oldID] = true, nil
-                        break
-                    end
+                end)
+            if successor then
+                local newID, win = successor.id, successor.win
+                Util.dlog("handoff %s -> %s", tostring(oldID), tostring(newID))
+                leaf.windowID = newID
+                valid[newID] = true
+                byID[newID] = win
+                Util.winByID[newID] = win
+                Util.pidByID[newID] = win:pid()
+                for i, fid in ipairs(Util.focusHistory) do
+                    if fid == oldID then Util.focusHistory[i] = newID end
                 end
+                Util.focusTimes[newID] = Util.focusTimes[oldID]
+                if S.ffmFocusedID == oldID then S.ffmFocusedID = newID end
+                before[newID], before[oldID] = true, nil
             end
         end
     end

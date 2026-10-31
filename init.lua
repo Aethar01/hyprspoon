@@ -26,6 +26,7 @@
 --   tree      BSP tree structure, pseudotile sizes, persistence and per-workspace keys
 --   float     automatic and manual floats, initial rule placement, kept above tiles
 --   focus     internal focus tracking and the window snapshot for hit testing
+--   tabs      which windows are native tabs and which tile they take over
 --   discover  finding the manageable windows on each screen
 --   layout    laying out tiles and pseudotiles, and scheduling retiles
 --   resize    resizing splits and pseudotile sizes by keyboard or mouse
