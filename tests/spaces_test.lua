@@ -69,6 +69,7 @@ S.cfg = {
     },
 }
 S.trees, S.maximized, S.untiled, S.windowInfo, S.applied = {}, {}, {}, {}, {}
+S.autoFloat = {}
 S.settleUntil = 0
 
 local Spaces = require("hyprspoon.spaces")
@@ -82,6 +83,7 @@ local function win(id)
     return {
         id = function() return id end,
         application = function() return nil end,
+        screen = function() return LAPTOP end,
         moveToScreen = function(_, screen) moved[id] = screen:getUUID() end,
         frame = function() return { x = 100, y = 100, w = 300, h = 200 } end,
     }
@@ -170,6 +172,51 @@ assert(parkedAt[51] and Spaces.isHidden(51), "unpinned, it stays behind")
 Util.rulesFor = function(w) return w:id() == 52 and { pin = true } or {} end
 Spaces.claim(win(52), "LAPTOP")
 assert(Spaces.isPinned(52) and not Spaces.isPinned(50))
+
+-- Minimize and full screen forget membership, but a pin rejoins the
+-- workspace its display shows on return, with tiling on or off.
+screens = { LAPTOP, DELL }
+Spaces.screensChanged()
+assert(showing("DELL") == 6, "the original rule's workspace shows on another display")
+local returning = win(53)
+local function workspaceOf(id)
+    for _, ws in ipairs(Spaces.overview()) do
+        for _, w in ipairs(ws.windows) do
+            if w.id == id then return ws.n end
+        end
+    end
+end
+Util.managedWindows = function() return { returning } end
+for _, tiling in ipairs({ true, false }) do
+    S.tilingEnabled = tiling
+    for _, event in ipairs({ "minimize", "full screen" }) do
+        Spaces.gotoWorkspace(1)
+        Util.rulesFor = function() return {} end
+        Spaces.claim(returning, "LAPTOP")
+        Spaces.setPinned(returning, true)
+        Spaces.forget(53)
+        assert(Spaces.isPinned(53) and not workspaceOf(53), event .. " keeps only the pin")
+        Spaces.gotoWorkspace(3)
+        -- A surviving pin must not reapply its original workspace rule.
+        Util.rulesFor = function() return { workspace = 6 } end
+        Spaces.place(returning)
+        assert(workspaceOf(53) == 3 and Spaces.isPinned(53), event .. " restores pinned membership")
+        Spaces.gotoWorkspace(1)
+        assert(workspaceOf(53) == 1, event .. " keeps following the display")
+        assert(not parkedAt[53], event .. " never parks the pin")
+        Spaces.forget(53)
+    end
+end
+Util.rulesFor = function() return {} end
+
+-- Cmd-H keeps membership while the window is absent from the managed list.
+Spaces.claim(returning, "LAPTOP")
+Util.managedWindows = function() return {} end
+Spaces.gotoWorkspace(3)
+Util.managedWindows = function() return { returning } end
+Spaces.place(returning)
+assert(workspaceOf(53) == 3, "an unhidden pin follows its display")
+assert(Spaces.isPinned(53) and not parkedAt[53], "an unhidden window stays pinned and is never parked")
 
 -- Pins are saved with the rest, and come back on reload.
 Spaces.stop()

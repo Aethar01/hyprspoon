@@ -530,7 +530,8 @@ local function claim(win, uuid)
         info[id] = { app = app and app:bundleID() }
     end
     local rule, wanted = nil, nil
-    if not n then
+    -- A surviving pin rejoins its display without reapplying its first rule.
+    if not n and not pinned[id] then
         rule = Util.rulesFor(win)
         if rule.pin then pinned[id] = true end
         wanted = number(rule.workspace)
@@ -1049,9 +1050,10 @@ function M.place(win, force)
     local id = win and win:id()
     local n = id and follow(id)
     if not n then
+        -- A pin returning from minimize or full screen rejoins its display.
         -- With tiling off nothing else claims a new window straight away;
         -- one a rule sends to a workspace shouldn't wait for a switch.
-        if id and not S.tilingEnabled and Util.rulesFor(win).workspace then
+        if id and (pinned[id] or (not S.tilingEnabled and Util.rulesFor(win).workspace)) then
             local screen = win:screen()
             if screen then claim(win, screen:getUUID()) end
         end
