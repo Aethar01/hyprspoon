@@ -1197,6 +1197,18 @@ function M.overview()
     return list
 end
 
+-- The connected displays, the primary first and then left to right, as
+-- { uuid =, screen =, n = the workspace it shows }.
+function M.displays()
+    refresh()
+    local list = {}
+    for _, screen in ipairs(orderedScreens()) do
+        local uuid = screen:getUUID()
+        list[#list + 1] = { uuid = uuid, screen = screen, n = active[uuid] }
+    end
+    return list
+end
+
 -- The workspace with focus: the empty one whose display took focus, else
 -- the focused window `win`'s, else the one showing on its display (an app
 -- we don't track) or the pointer's.
@@ -1208,6 +1220,10 @@ function M.focusedWorkspace(win)
     if n and shown[n] and not behind[n] then return n end
     local screen = win and win:screen()
     return active[screen and screen:getUUID() or pointerUUID()]
+end
+
+function M.isScratchpad(n)
+    return n > NAMED_BASE
 end
 
 function M.hasWindows(n)

@@ -118,6 +118,10 @@ pointer = LAPTOP
 -- too, and a window opening on the laptop goes there.
 assert(Spaces.focusDisplayToward("left"), "an empty display can take focus")
 assert(Spaces.focusedWorkspace(nil) == tv, "the empty display's workspace has focus")
+local displays = Spaces.displays()
+assert(#displays == 3 and displays[1].uuid == "LAPTOP" and displays[1].n == 2
+    and displays[2].uuid == "TV" and displays[2].n == tv and displays[3].uuid == "DELL",
+    "the primary first, then left to right")
 assert(not Spaces.focusDisplayToward("up"), "no display that way")
 Spaces.claim(win(42), "LAPTOP")
 assert(moved[42] == "TV" and Spaces.hasWindows(tv), "a new window opens on the focused empty display")

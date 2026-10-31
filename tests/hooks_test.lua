@@ -1,7 +1,7 @@
 -- Run with: lua tests/hooks_test.lua
 -- Unit tests for hyprspoon/hooks.lua: hooks run once per turn of the run
--- loop and never inline, a failing callback breaks nothing, and commands
--- don't pile up, with a stubbed `hs`.
+-- loop and never inline, a failing callback breaks nothing, commands don't
+-- pile up, and query() keeps one shape, with a stubbed `hs`.
 package.path = "./?.lua;" .. package.path
 
 -- The run loop: doAfter(0) callbacks wait for turn().
@@ -162,5 +162,44 @@ Hooks.fire("workspace")
 Hooks.stop()
 turn()
 assert(#tasks == 4, "nothing runs after stop")
+
+-- query(): every key there, false where there's no value.
+focusedWin, focusedN = win(11, "Terminal", "zsh"), 1
+local q = Hooks.query()
+assert(q.focus.window == 11 and q.focus.app == "Terminal" and q.focus.workspace == "1"
+    and q.focus.display == "LAPTOP")
+assert(#q.displays == 1)
+local d = q.displays[1]
+assert(d.uuid == "LAPTOP" and d.name == "Built-in Retina Display" and d.primary == true
+    and d.workspace == "1" and d.focused == true)
+assert(#q.workspaces == 3)
+local w1, w2, wa = q.workspaces[1], q.workspaces[2], q.workspaces[3]
+assert(w1.name == "1" and w1.number == 1 and w1.display == "LAPTOP" and w1.showing == true
+    and w1.focused == true and w1.scratchpad == false)
+assert(#w1.windows == 2 and w1.windows[1] == 11 and w1.windows[2] == 12)
+assert(w2.focused == false and w2.showing == false and #w2.windows == 1)
+assert(wa.name == "A" and wa.number == 101 and wa.scratchpad == true and #wa.windows == 0)
+assert(#q.windows == 3)
+local byID = {}
+for _, w in ipairs(q.windows) do byID[w.id] = w end
+assert(byID[11].focused == true and byID[11].floating == false and byID[11].hidden == false
+    and byID[11].app == "Terminal" and byID[11].title == "zsh" and byID[11].workspace == "1")
+assert(byID[12].floating == true and byID[12].focused == false)
+assert(byID[13].hidden == true and byID[13].workspace == "2")
+
+-- The same keys whatever the state.
+local function keys(t)
+    local list = {}
+    for k in pairs(t) do list[#list + 1] = k end
+    table.sort(list)
+    return table.concat(list, ",")
+end
+focusedWin, focusedN = nil, nil
+local empty = Hooks.query()
+assert(keys(empty) == keys(q))
+assert(keys(empty.focus) == keys(q.focus), "focus keeps its keys with nothing focused")
+assert(empty.focus.window == false and empty.focus.workspace == false and empty.focus.display == false)
+assert(keys(empty.displays[1]) == keys(d) and empty.displays[1].focused == false)
+assert(keys(empty.workspaces[1]) == keys(w1) and empty.workspaces[1].focused == false)
 
 print("Hooks tests passed")

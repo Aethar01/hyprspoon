@@ -1,4 +1,4 @@
--- hyprspoon/hooks.lua: Callbacks and shell commands run on changes, for status bars.
+-- hyprspoon/hooks.lua: Callbacks and shell commands run on changes, and query() for status bars.
 
 local M = {}
 package.loaded["hyprspoon.hooks"] = M
@@ -11,7 +11,7 @@ local Focus = require("hyprspoon.focus")
 -- What has focus
 -- ---------------------------------------------------------------------------
 
--- What the hooks are given: { window = id,
+-- What the hooks are given and query() reports as `focus`: { window = id,
 -- app = name, workspace = name, display = UUID }, false for any there
 -- isn't. Also the focused workspace's number. Accessibility calls only
 -- when an app we don't track is in front: for its window and display.
@@ -144,6 +144,67 @@ end
 function M.stop()
     if timer then timer:stop() end
     timer, pending, lastFocus, rerun = nil, {}, nil, {}
+end
+
+-- ---------------------------------------------------------------------------
+-- query()
+-- ---------------------------------------------------------------------------
+--
+-- Everything a status bar shows, as a table for hs.json.encode. Its shape
+-- doesn't change: every key is always there, false where there's no value,
+-- and lists are lists (possibly empty).
+--   focus       as above: { window, app, workspace, display }
+--   displays    { uuid, name, primary, workspace = the name of the one it
+--               shows (a scratchpad over its own), focused }, the primary
+--               first, then left to right
+--   workspaces  { name, number = what gotoWorkspace takes, display = UUID
+--               it's on, showing (also beneath a scratchpad), focused,
+--               scratchpad, windows = ids, tiles first }, in use only, in
+--               the order the menu bar shows them
+--   windows     { id, app, title, workspace = name, floating, hidden =
+--               parked or beneath a scratchpad, focused }, those with a
+--               workspace (not minimized or full screen)
+-- Titles take an accessibility call per window.
+function M.query()
+    local focus, focusedN = focused()
+    local out = { focus = focus, displays = {}, workspaces = {}, windows = {} }
+    for _, ws in ipairs(Spaces.overview()) do
+        local name = Spaces.label(ws.n)
+        local ids = {}
+        for i, entry in ipairs(ws.windows) do
+            local id, win = entry.id, entry.win
+            ids[i] = id
+            local app = win:application()
+            out.windows[#out.windows + 1] = {
+                id = id,
+                app = app and app:name() or false,
+                title = win:title() or false,
+                workspace = name,
+                floating = S.autoFloat[id] == true,
+                hidden = Spaces.isHidden(id) == true,
+                focused = id == focus.window,
+            }
+        end
+        out.workspaces[#out.workspaces + 1] = {
+            name = name,
+            number = ws.n,
+            display = ws.display or false,
+            showing = ws.showing == true,
+            focused = ws.n == focusedN,
+            scratchpad = Spaces.isScratchpad(ws.n),
+            windows = ids,
+        }
+    end
+    for i, d in ipairs(Spaces.displays()) do
+        out.displays[i] = {
+            uuid = d.uuid,
+            name = d.screen:name() or false,
+            primary = i == 1,
+            workspace = d.n and Spaces.label(d.n) or false,
+            focused = d.uuid == focus.display,
+        }
+    end
+    return out
 end
 
 return M

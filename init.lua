@@ -40,7 +40,7 @@
 --   border    rings around the windows, like Hyprland's borders
 --   slide     workspaces sliding in and out as they switch
 --   overview  every workspace at a glance, in place of Mission Control
---   hooks     callbacks and shell commands on changes, for status bars
+--   hooks     callbacks and shell commands on changes, and query() for status bars
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
@@ -125,6 +125,9 @@ local M = {
     warpToFocusedWindow = Actions.warpToFocusedWindow,
     warpToWindow = Actions.warpToWindow,
     workspaces = Spaces.workspaces,
+    -- spoon.hyprspoon:query(): workspaces, windows and focus for status
+    -- bars, the shape documented in hyprspoon/hooks.lua.
+    query = Hooks.query,
 }
 
 -- ---------------------------------------------------------------------------
