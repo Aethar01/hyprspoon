@@ -439,4 +439,25 @@ test("native tabs switch inside the shown group unit and tear off", function()
     assert(group.windowID == 3 and not parkedIDs[2], "shown unit stays selected")
 end)
 
+test("untile and retile keep hidden members parked", function()
+    local Spaces = package.loaded["hyprspoon.spaces"]
+    local previousHidden = Spaces.isHidden
+    Spaces.isHidden = function(id)
+        local l = Tree.setOf(id)
+        return l and l.kind == "group" and l.windowID ~= id
+    end
+    pass({ A = { 1, 2 } })
+    local group = S.trees.ws1.b
+    group.members, group.kind = { 2, 3 }, "group"
+    S.floatingFrames[3] = { x = 10, y = 20, w = 300, h = 200 }
+    Util.setFrame = function(w, f) w:setFrame(f) end
+    local before = wins[3].moves
+    Layout.toggleWorkspaceTiling("ws1")
+    assert(Spaces.isHidden(3) and wins[3].moves == before, "untile leaves hidden frames parked")
+    Layout.toggleWorkspaceTiling("ws1")
+    pass({ A = { 1, 2 } }, { 3 })
+    assert(Spaces.isHidden(3) and wins[3].moves == before, "retile keeps the hidden member parked")
+    Spaces.isHidden = previousHidden
+end)
+
 print("Layout tests passed")

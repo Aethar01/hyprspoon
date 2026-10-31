@@ -747,6 +747,12 @@ end
 local function setOf(id)
     local _, leaf, key = findByID(id)
     if leaf and leaf.members then return leaf, key end
+    -- Untiling removes tile geometry, not group membership. Keep hidden
+    -- members parked so toggling back cannot expose stale parked windows.
+    for untiledKey in pairs(S.untiled) do
+        local _, member = ancestors(S.trees[untiledKey], id)
+        if member and member.members then return member, untiledKey end
+    end
     local away = S.setsAway[id]
     if away then return away, nil end
     return nil
