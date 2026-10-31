@@ -291,6 +291,7 @@ assert(focusCount == 2)
 Spaces.gotoWorkspace(8)
 Spaces.gotoWorkspace(7)
 assert(focusCount == 3 and nativeLeaf.windowID == 70)
+assert(workspaceOf(70) == 7 and workspaceOf(71) == nil, "the overview and query omit background tabs")
 -- A silent move and return park/unpark only the shown window too.
 Spaces.moveToWorkspaceSilent(8)
 for _, id in ipairs(nativeLeaf.members) do assert(Spaces.workspaceOf(id) == 8) end

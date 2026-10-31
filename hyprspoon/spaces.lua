@@ -1371,7 +1371,9 @@ function M.overview()
     local floats = {}
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        local ws = of[id] and byN[of[id]]
+        -- A background native tab has no window on screen of its own: its
+        -- set shows as the tab in front, like a group's hidden members.
+        local ws = of[id] and not nativeBackground(id) and byN[of[id]]
         if ws then
             local frame = Tree.rectFor(id) or parked[id]
             if not frame then
