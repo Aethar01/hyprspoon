@@ -334,14 +334,15 @@ static AXUIElementRef tabGroup(AXUIElementRef win) {
         return NULL;
     }
     AXUIElementRef group = NULL;
-    for (CFIndex i = 0; i < CFArrayGetCount(children) && !group; i++) {
+    double end = CFAbsoluteTimeGetCurrent() + 0.1;
+    for (CFIndex i = 0; i < CFArrayGetCount(children) && !group && CFAbsoluteTimeGetCurrent() < end; i++) {
         AXUIElementRef child = (AXUIElementRef)CFArrayGetValueAtIndex(children, i);
         if (!equalsAttribute(child, kAXRoleAttribute, CFSTR("AXTabGroup"))) continue;
         CFArrayRef buttons = attribute(child, CFSTR("AXTabs"));
         bool native = buttons && CFGetTypeID(buttons) == CFArrayGetTypeID() && CFArrayGetCount(buttons) > 0;
         for (CFIndex j = 0; native && j < CFArrayGetCount(buttons); j++) {
             AXUIElementRef button = (AXUIElementRef)CFArrayGetValueAtIndex(buttons, j);
-            native = equalsAttribute(button, kAXSubroleAttribute, CFSTR("AXTabButton"));
+            native = CFAbsoluteTimeGetCurrent() < end && equalsAttribute(button, kAXSubroleAttribute, CFSTR("AXTabButton"));
         }
         if (native) group = CFRetain(child);
         if (buttons) CFRelease(buttons);
@@ -356,7 +357,8 @@ static AXUIElementRef groupFor(pid_t pid, uint32_t wid) {
     CFArrayRef windows = attribute(app, kAXWindowsAttribute);
     AXUIElementRef group = NULL;
     if (windows) {
-        for (CFIndex i = 0; i < CFArrayGetCount(windows) && !group; i++) {
+        double end = CFAbsoluteTimeGetCurrent() + 0.1;
+        for (CFIndex i = 0; i < CFArrayGetCount(windows) && !group && CFAbsoluteTimeGetCurrent() < end; i++) {
             AXUIElementRef win = (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
             AXUIElementSetMessagingTimeout(win, 0.05);
             CGWindowID id = 0;
@@ -375,7 +377,10 @@ bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title) {
     if (tabs) {
         CFIndex count = CFArrayGetCount(tabs), match = -1;
         int matches = 0;
-        for (CFIndex i = 0; i < count; i++) {
+        CFIndex checked = 0;
+        double end = CFAbsoluteTimeGetCurrent() + 0.1;
+        for (CFIndex i = 0; i < count && CFAbsoluteTimeGetCurrent() < end; i++) {
+            checked++;
             AXUIElementRef button = (AXUIElementRef)CFArrayGetValueAtIndex(tabs, i);
             if (title && CFStringGetLength(title) && equalsAttribute(button, kAXTitleAttribute, title)) {
                 match = i;
@@ -383,7 +388,7 @@ bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title) {
             }
         }
         // Member order is not AX tab-bar order; duplicate titles must fail safely.
-        if (matches != 1) match = -1;
+        if (matches != 1 || checked != count) match = -1;
         if (match >= 0) ok = AXUIElementPerformAction((AXUIElementRef)CFArrayGetValueAtIndex(tabs, match),
             kAXPressAction) == kAXErrorSuccess;
         CFRelease(tabs);
@@ -418,8 +423,10 @@ static int l_tabButtons(lua_State *L) {
     CFArrayRef tabs = group ? attribute(group, CFSTR("AXTabs")) : NULL;
     lua_newtable(L);
     if (tabs) {
-        CFIndex count = CFArrayGetCount(tabs), selected = -1;
-        for (CFIndex i = 0; i < count; i++) {
+        CFIndex count = CFArrayGetCount(tabs), selected = -1, checked = 0;
+        double end = CFAbsoluteTimeGetCurrent() + 0.1;
+        for (CFIndex i = 0; i < count && CFAbsoluteTimeGetCurrent() < end; i++) {
+            checked++;
             AXUIElementRef button = (AXUIElementRef)CFArrayGetValueAtIndex(tabs, i);
             CFTypeRef title = attribute(button, kAXTitleAttribute);
             pushString(L, title);
@@ -431,7 +438,8 @@ static int l_tabButtons(lua_State *L) {
             if (value == kCFBooleanTrue || v == 1) selected = i;
             if (value) CFRelease(value);
         }
-        if (delta && count && selected >= 0) {
+        if (checked != count) { lua_pop(L, 1); lua_newtable(L); }
+        if (delta && checked == count && count && selected >= 0) {
             CFIndex next = (selected + (delta > 0 ? 1 : count - 1)) % count;
             AXUIElementPerformAction((AXUIElementRef)CFArrayGetValueAtIndex(tabs, next), kAXPressAction);
         }
