@@ -161,6 +161,7 @@ hs -c 'for _, s in ipairs(hs.screen.allScreens()) do print(s:name(), s:getUUID()
 ### Borders (`border`)
 
 Rings around the windows on show, drawn in the gap outside their edges.
+Native full-screen windows, including Split View, have no rings.
 Colours are `"#rrggbb"` strings or `hs.drawing.color` tables. Set
 `border = false` to disable. Needs the native `border` module.
 
@@ -307,7 +308,10 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 - It wraps `hs.reload` to tell a reload apart from a quit, so that windows
   stay parked across a reload.
 - Native full-screen windows still get their own Space, which macOS
-  manages.
+  manages. Border checks use the Space type before Lua learns a window is
+  full screen. If that private call is unavailable, the native check only
+  hides windows that fill a display; Lua still removes rings once it
+  discovers the full-screen state.
 
 ## Contributing
 

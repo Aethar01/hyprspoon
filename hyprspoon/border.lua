@@ -1,6 +1,7 @@
 -- hyprspoon/border.lua: Rings around the windows, like Hyprland's borders.
 --
--- Every window on show gets a ring just outside it, in the gap between
+-- Windows on show, except native full screen (Split View too), get a ring
+-- just outside them, in the gap between
 -- tiles: the focused window's in the active colour, the others in the
 -- (see-through) inactive one, blending between the two as focus moves.
 -- They are drawn by hyprspoon.native.border (hyprspoon/native/border.m), which moves them
