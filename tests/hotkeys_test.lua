@@ -78,3 +78,44 @@ assert(mods(cmdKeys.moveLeft) == "cmd+shift")
 assert(mods(cmdKeys.preselectLeft) == "ctrl+cmd")
 -- ...which can't work when SUPER already has it.
 assert(not pcall(M.hotkeysFor, { "ctrl", "alt" }))
+
+-- Aliases, case, order and duplicate modifiers must not disguise equal layers.
+local function rejects(super, ctrlSuper)
+    local ok, err = pcall(M.hotkeysFor, super, ctrlSuper)
+    assert(not ok and err:find("use the same modifiers", 1, true), tostring(err))
+end
+for _, ctrl in ipairs({ "ctrl", "control", "⌃", "CONTROL" }) do
+    rejects({ ctrl, "alt" })
+end
+rejects({ "cmd", "shift" }, { "alt" })
+rejects({ "⌘", "⇧" }, { "alt" })
+rejects({ "command", "option" }, { "ALT", "CMD", "command" })
+rejects({ "cmd", "alt" }, { "⇧", "⌥", "⌘" })
+rejects({ "ctrl", "alt", "cmd", "shift" }, { "alt" })
+local custom = M.hotkeysFor({ "control", "command" }, { "⌃", "⌥", "⌘", "⇧" })
+assert(mods(custom.focusLeft) == "control+command")
+assert(mods(custom.moveLeft) == "control+command+shift")
+assert(mods(custom.preselectLeft) == "⌃+⌥+⌘+⇧")
+
+-- Model the configuration installed by start(), without starting live services.
+local S = require("hyprspoon.state")
+S.cfg = { namedWorkspaces = { "Q" } }
+local configured = M.hotkeysFor({ "alt" })
+assert(not configured.workspaceA and not configured.moveToWorkspaceSilentD)
+assert(configured.workspaceQ[2] == "q")
+assert(mods(configured.moveToWorkspaceQ) == "alt+shift")
+assert(mods(configured.moveToWorkspaceSilentQ) == "ctrl+alt")
+local bound = 0
+hs.hotkey = { bind = function()
+    bound = bound + 1
+    return { delete = function() end }
+end }
+M:bindHotkeys({
+    workspaceQ = configured.workspaceQ,
+    moveToWorkspaceQ = configured.moveToWorkspaceQ,
+    moveToWorkspaceSilentQ = configured.moveToWorkspaceSilentQ,
+})
+assert(bound == 3, "configured named workspaces must have matching actions")
+S.cfg = { namedWorkspaces = {} }
+assert(not M.hotkeysFor({ "alt" }).workspaceA)
+S.cfg = nil

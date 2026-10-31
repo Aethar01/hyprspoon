@@ -171,6 +171,23 @@ local function hotkeyActions()
     return actions
 end
 
+-- hs.hotkey matches modifier aliases as case-insensitive substrings, ignoring
+-- order and duplicates. Compare the same sets so aliases cannot hide a clash.
+local function modifierSet(mods)
+    local text = table.concat(mods, "-"):lower()
+    local found = {}
+    for _, aliases in ipairs({ { "cmd", "command", "⌘" }, { "ctrl", "control", "⌃" },
+        { "alt", "option", "⌥" }, { "shift", "⇧" } }) do
+        for _, alias in ipairs(aliases) do
+            if text:find(alias, 1, true) then
+                found[#found + 1] = aliases[1]
+                break
+            end
+        end
+    end
+    return table.concat(found, "+")
+end
+
 -- A keymap like Hyprland's default, with the modifiers in `super` as SUPER.
 -- Shift on top of SUPER moves windows; the third layer (silent moves,
 -- preselect, workspace and display switching) is `ctrlSuper`, Ctrl+SUPER
@@ -178,13 +195,14 @@ end
 function M.hotkeysFor(super, ctrlSuper)
     local superShift = { table.unpack(super) }
     superShift[#superShift + 1] = "shift"
-    if not ctrlSuper then
-        ctrlSuper = { "ctrl", table.unpack(super) }
-        -- With Ctrl already in SUPER, Ctrl+SUPER would be SUPER itself and
-        -- its bindings would shadow SUPER's.
-        for _, mod in ipairs(super) do
-            if mod == "ctrl" then
-                error("hyprspoon: SUPER includes ctrl, so pass hotkeysFor a ctrlSuper", 2)
+    ctrlSuper = ctrlSuper or { "ctrl", table.unpack(super) }
+    local layers = { super, superShift, ctrlSuper }
+    local names = { "SUPER", "Shift+SUPER", "ctrlSuper" }
+    for i = 1, #layers do
+        for j = i + 1, #layers do
+            if modifierSet(layers[i]) == modifierSet(layers[j]) then
+                error("hyprspoon: hotkeysFor layers " .. names[i] .. " and " .. names[j]
+                    .. " use the same modifiers; choose three distinct layers", 2)
             end
         end
     end
@@ -217,7 +235,7 @@ function M.hotkeysFor(super, ctrlSuper)
         map["moveToWorkspace" .. i] = { superShift, key }
         map["moveToWorkspaceSilent" .. i] = { ctrlSuper, key }
     end
-    for _, name in ipairs(S.defaults.namedWorkspaces) do
+    for _, name in ipairs((S.cfg or S.defaults).namedWorkspaces or {}) do
         local key = name:lower()
         map["workspace" .. name] = { super, key }
         map["moveToWorkspace" .. name] = { superShift, key }
