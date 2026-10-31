@@ -444,6 +444,7 @@ function M:start(opts)
         if win and Util.windowKind(win) == "ignored" then return end
         if win then
             local id = win:id()
+            Discover.markDirty(win)
             local requested = id == S.requestedFocus
             if requested then
                 S.requestedFocus = nil
@@ -591,8 +592,7 @@ function M:start(opts)
         -- the filter's list has dropped the old Space's, and a pass then
         -- would lay the old windows out in the new Space's tree.
         local created = event == hs.window.filter.windowCreated
-        Layout.scheduleRetile(false, win and (Tree.setOf(win:id()) ~= nil or Discover.nativePeer(win)
-            or (created and not Layout.mayBeTab(win))))
+        Layout.scheduleRetile(false, win and created and not Layout.mayBeTab(win))
         Layout.scheduleRecheck()
     end)
 

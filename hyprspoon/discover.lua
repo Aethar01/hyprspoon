@@ -42,11 +42,14 @@ end
 -- tab after the selected one closes), so for these apps the app's own window
 -- list is consulted as well.
 local dirtyPids = {}
+local eventWindows = {}
 local BSP_DIRTY_FOR = 3
 
 local function markDirty(win)
     local pid = win and win:pid()
     if pid then
+        eventWindows[pid] = eventWindows[pid] or {}
+        eventWindows[pid][win:id()] = win
         dirtyPids[pid] = hs.timer.secondsSinceEpoch() + BSP_DIRTY_FOR
         if M.observe then M.observe() end
     end
@@ -106,9 +109,23 @@ end
 local function withRecentlyChangedApps(windows)
     local pids, filtered, out, seen = {}, {}, {}, {}
     local now = hs.timer.secondsSinceEpoch()
+    -- Focus/visible events can carry the new tab before AXWindows or the
+    -- filter lists it. Trust that object as soon as WindowServer shows it.
+    local candidates = {}
+    for _, win in ipairs(windows) do candidates[#candidates + 1] = win end
+    for pid, recent in pairs(eventWindows) do
+        if not dirtyPids[pid] or dirtyPids[pid] < now then eventWindows[pid] = nil
+        else
+            for id, win in pairs(recent) do
+                if snapshot and snapshot[pid] and snapshot[pid][id] == "shown" then
+                    candidates[#candidates + 1] = win
+                end
+            end
+        end
+    end
     local ignored = {}
     for _, name in ipairs(S.cfg.ignoreApps or {}) do ignored[name] = true end
-    for _, win in ipairs(windows) do
+    for _, win in ipairs(candidates) do
         local pid, id = win:pid(), win:id()
         pids[pid], filtered[pid] = true, filtered[pid] or {}
         filtered[pid][#filtered[pid] + 1] = win
@@ -133,7 +150,15 @@ local function withRecentlyChangedApps(windows)
             if changed or (dirtyPids[pid] and now - cached.time >= BSP_APP_CACHE_TTL) then
                 -- Empty/failed AXWindows is uncertainty, not evidence of closure.
                 local listed = appWindows(pid, app)
-                local wins = listed or filtered[pid] or {}
+                local wins, included = {}, {}
+                for _, win in ipairs(listed or filtered[pid] or {}) do
+                    wins[#wins + 1], included[win:id()] = win, true
+                end
+                for _, win in ipairs(filtered[pid] or {}) do
+                    if states and states[win:id()] == "shown" and not included[win:id()] then
+                        wins[#wins + 1], included[win:id()] = win, true
+                    end
+                end
                 cached = { time = now, signature = signature, shown = {}, wins = wins,
                     failed = listed == nil }
                 appCache[pid] = cached

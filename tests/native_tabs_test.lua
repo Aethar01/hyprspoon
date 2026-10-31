@@ -5,9 +5,9 @@ local leaves, filter, listed, states, bars = {}, {}, {}, {}, {}
 local repairs, presses, remembered = 0, {}, {}
 local clock, axCalls, appCalls, frameCalls = 1000, 0, 0, 0
 local failList = false
-local function win(id)
+local function win(id, pid)
     return {
-        id = function() return id end, pid = function() return 100 end,
+        id = function() return id end, pid = function() return pid or 100 end,
         title = function() return "window " .. id end,
         isStandard = function() return true end, isVisible = function() return true end,
         isMinimized = function() return false end, isFullScreen = function() return false end,
@@ -34,7 +34,7 @@ local native = {
     end,
     tabWindows = function(_, wanted, callback)
         repairs = repairs + 1
-        assert(wanted[4] and wanted[5])
+        assert(wanted[5])
         callback({ [4] = "verified" })
     end,
 }
@@ -98,6 +98,19 @@ assert(leaves[1].members[3] == 4)
 Discover.windowsByScreen()
 assert(repairs == 1, "a matched count doesn't rescan accessibility")
 
+-- A permanently mismatched count cannot trigger another scan every second.
+bars[1] = { "one", "two", "verified", "unresolved" }
+clock = clock + 1
+Discover.markDirty(wins[1])
+Discover.windowsByScreen()
+local afterMismatch = repairs
+for _ = 1, 4 do
+    clock = clock + 1
+    Discover.markDirty(wins[1])
+    Discover.windowsByScreen()
+end
+assert(repairs == afterMismatch, "unresolved mismatch backs off by pid and window count")
+
 -- Tear-off: the app lists 2 even though the filter has lost it.
 filter, listed = { wins[1], wins[3] }, wins
 states[2], states[4], bars[1] = "shown", nil, {}
@@ -124,6 +137,27 @@ for _, failure in ipairs({ "empty", "timeout" }) do
 end
 listed, failList = wins, false
 
+-- App-driven switch: the focus event arrives before AXWindows/filter catch
+-- up. Nothing runs a full immediate layout; snapshot completion schedules
+-- a pass, and that pass hands discovery the shown member at the same clock.
+local pendingSnapshot, scheduled = nil, 0
+package.loaded["hyprspoon.layout"].scheduleRetile = function() scheduled = scheduled + 1 end
+local snapshotQuery = native.tabSnapshot
+native.tabSnapshot = function(callback) pendingSnapshot = callback end
+filter, listed = { wins[1], wins[3] }, { wins[1], wins[3] }
+Discover.markDirty(wins[2])
+assert(pendingSnapshot and scheduled == 0)
+states, bars = { [1] = "tab", [2] = "shown", [3] = "shown" }, { [2] = { "one", "two" } }
+pendingSnapshot({ [100] = states })
+assert(scheduled == 1)
+local before = clock
+byScreen = Discover.windowsByScreen()
+assert(byScreen.display[1]:id() == 2 and #byScreen.display == 2)
+assert(S.nativeBackground[1] and clock == before, "snapshot handoff needs no SET_WAIT")
+native.tabSnapshot = snapshotQuery
+-- Complete the observation queued by the pass before subsequent cases.
+pendingSnapshot({ [100] = states })
+
 Tree.kinds.native.cycle(wins[1], leaves[1], "ws1", -1)
 assert(presses[1][1] == 1 and presses[1][2] == -1)
 
@@ -135,5 +169,27 @@ states, bars = { [1] = "shown", [2] = "tab" }, { [1] = { "one", "two" } }
 Discover.windowsByScreen()
 assert(S.setsAway[1] == S.setsAway[2] and S.setsAway[1].kind == "native")
 assert(#S.setsAway[1].members == 2)
+
+-- Ten quiet apps share one snapshot request and perform no AX/app/frame
+-- reads, even though all their records have outlived the 0.1-second TTL.
+local apps, allStates = {}, {}
+filter = {}
+for i = 1, 10 do
+    local pid, id = 200 + i, 100 + i
+    local w = win(id, pid)
+    filter[#filter + 1] = w
+    apps[pid] = { name = function() return "app " .. pid end,
+        allWindows = function() appCalls = appCalls + 1 return { w } end }
+    allStates[pid] = { [id] = "shown" }
+end
+hs.application.applicationForPID = function(pid) return apps[pid] end
+local snapshots = 0
+native.tabSnapshot = function(callback) snapshots = snapshots + 1 callback(allStates) end
+Discover.windowsByScreen()
+clock = clock + 4
+axCalls, appCalls, frameCalls, snapshots = 0, 0, 0, 0
+byScreen = Discover.windowsByScreen()
+assert(#byScreen.display == 10 and snapshots == 1)
+assert(axCalls == 0 and appCalls == 0 and frameCalls == 0, "ten quiet apps need no AX work")
 
 Discover.stop()
