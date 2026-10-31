@@ -53,7 +53,7 @@ local Util = {
 package.loaded["hyprspoon.util"] = Util
 -- Window id -> the members of its set, for the windows that have one.
 local sets = {}
-package.loaded["hyprspoon.tree"] = { bootTime = 0, rectFor = noop,
+package.loaded["hyprspoon.tree"] = { bootTime = 0, setOf = noop, rectFor = noop,
     membersOf = function(id) return sets[id] or { id } end }
 package.loaded["hyprspoon.focus"] = { invalidateWindowCache = noop, focus = noop, currentWindow = noop }
 package.loaded["hyprspoon.discover"] = { cancelLayoutCheck = noop, windowInfoFor = function() return {} end }
@@ -250,6 +250,58 @@ assert(Spaces.workspaceOf(62) == nil)
 assert(parkedAt[60].x > 1000 and parkedAt[61].x > 1000, "both parked on the Dell")
 sets[60] = nil
 Focus.currentWindow = noop
+
+-- Native sets make a round trip through the public move operation. The
+-- filter still holds a background AX object, and another tab has never
+-- had one. Neither may be focused, parked, moved or given a frame.
+screens, pointer = { LAPTOP }, LAPTOP
+Spaces.screensChanged()
+Spaces.gotoWorkspace(7)
+local nativeShown, nativeOld = win(70), win(71)
+Spaces.claim(nativeShown, "LAPTOP")
+Spaces.claim(nativeOld, "LAPTOP")
+Util.managedWindows = function() return { nativeOld, nativeShown } end
+Focus.currentWindow = function() return nativeOld end
+Spaces.moveToWorkspaceSilent(6)
+assert(Spaces.isHidden(71), "simulate parking left over from before the merge")
+local nativeLeaf = { windowID = 70, members = { 70, 71, 72 }, kind = "native" }
+local Tree = package.loaded["hyprspoon.tree"]
+Tree.setOf = function(id) if id >= 70 and id <= 72 then return nativeLeaf end end
+Tree.membersOf = function(id) return Tree.setOf(id) and nativeLeaf.members or { id } end
+S.nativeBackground = { [71] = {}, [72] = {} }
+Focus.currentWindow = function() return nativeShown end
+Util.winByID[70], Util.winByID[71] = nativeShown, nativeOld
+Util.focusHistory = { 71, 70 }
+local focusCount = 0
+Focus.focus = function(w)
+    assert(w:id() == 70, "workspace focus must never select a background tab")
+    focusCount = focusCount + 1
+end
+Util.setFrame = function(w) assert(w:id() == 70, "only the shown tab may be parked") end
+package.loaded["hyprspoon.discover"].windowInfoFor = function() return { uuid = "LAPTOP" } end
+for _, n in ipairs({ 8, 7 }) do
+    Spaces.moveToWorkspace(n)
+    for _, id in ipairs(nativeLeaf.members) do
+        assert(Spaces.workspaceOf(id) == n and not Spaces.isHidden(id))
+    end
+    assert(nativeLeaf.windowID == 70 and #nativeLeaf.members == 3)
+end
+assert(focusCount == 2)
+-- Fallback focus starts with the stale object in both history and filter.
+Spaces.gotoWorkspace(8)
+Spaces.gotoWorkspace(7)
+assert(focusCount == 3 and nativeLeaf.windowID == 70)
+-- A silent move and return park/unpark only the shown window too.
+Spaces.moveToWorkspaceSilent(8)
+for _, id in ipairs(nativeLeaf.members) do assert(Spaces.workspaceOf(id) == 8) end
+Spaces.gotoWorkspace(8)
+assert(nativeLeaf.windowID == 70 and focusCount == 4)
+-- Saved background assignments are repaired to the shown member's workspace.
+Spaces.nativeMember(72, 70, "test.app", "never shown")
+assert(Spaces.workspaceOf(72) == 8)
+S.nativeBackground = {}
+Focus.currentWindow, Focus.focus = noop, noop
+Util.managedWindows = function() return {} end
 
 -- Pins are saved with the rest, and come back on reload.
 Spaces.stop()

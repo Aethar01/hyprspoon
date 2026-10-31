@@ -291,6 +291,21 @@ test("a set sent to another workspace goes whole", function()
     assert(same(S.trees.ws2.members, { 2, 3 }))
 end)
 
+test("a native set keeps its shown member through a workspace round trip", function()
+    pass({ A = { 1, 2 } })
+    local native = S.trees.ws1.b
+    native.members, native.kind = { 2, 3, 4 }, "native"
+    for _, n in ipairs({ 2, 1 }) do
+        for _, id in ipairs(native.members) do workspaceOf[id] = n end
+        if n == 2 then pass({ A = { 1 }, B = { 2 } }, {}, { 3, 4 })
+        else pass({ A = { 1, 2 } }, {}, { 3, 4 }) end
+        local found, key = Tree.setOf(2)
+        assert(found and key == "ws" .. n)
+        assert(found.windowID == 2 and same(found.members, { 2, 3, 4 }))
+    end
+    assert(wins[3].moves == 0 and wins[4].moves == 0)
+end)
+
 test("a set going full screen keeps its slot and comes back whole", function()
     pass({ A = { 1, 2, 4 } })
     local tree = S.trees.ws1

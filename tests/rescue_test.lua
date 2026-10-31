@@ -96,7 +96,7 @@ package.loaded["hyprspoon.util"] = {
         return p.x >= f.x and p.x < f.x + f.w and p.y >= f.y and p.y < f.y + f.h
     end,
 }
-package.loaded["hyprspoon.tree"] = { bootTime = 1000, rectFor = noop }
+package.loaded["hyprspoon.tree"] = { bootTime = 1000, setOf = noop, rectFor = noop }
 package.loaded["hyprspoon.focus"] = { invalidateWindowCache = noop }
 package.loaded["hyprspoon.discover"] = { cancelLayoutCheck = noop }
 package.loaded["hyprspoon.layout"] = { tileNow = noop, scheduleRetile = noop, BSP_SETTLE = 0 }
