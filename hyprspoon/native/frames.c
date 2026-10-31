@@ -170,6 +170,13 @@ static App *appFor(pid_t pid, bool create) {
     return app;
 }
 
+bool framesQueue(pid_t pid, void *context, void (*work)(void *)) {
+    App *app = appFor(pid, true);
+    if (!app) return false;
+    dispatch_async_f(app->queue, context, work);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Accessibility, on the app's queue
 // ---------------------------------------------------------------------------
@@ -529,6 +536,7 @@ static int l_gc(lua_State *L) {
     dragStop();
     atomic_store(&stopping, true);
     for (int i = 0; i < appCount; i++) drop(apps[i]);
+    tabsStop();
     appCount = 0;
     requestCount = 0;
     return 0;

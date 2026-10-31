@@ -38,3 +38,7 @@ void tabsRegister(lua_State *L);
 AXUIElementRef tabsFind(pid_t pid, uint32_t wid);
 void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title);
 bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title);
+
+// Schedule bounded discovery work on the same per-app worker as frames.
+bool framesQueue(pid_t pid, void *context, void (*work)(void *));
+void tabsStop(void);

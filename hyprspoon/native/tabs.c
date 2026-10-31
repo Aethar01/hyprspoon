@@ -3,6 +3,8 @@
 #include "frames.h"
 #include "skylight.h"
 #include <string.h>
+#include <stdlib.h>
+#include "luacall.h"
 
 extern AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *);
 static AXUIElementRef (*remoteElement)(CFDataRef);
@@ -40,7 +42,7 @@ static AXUIElementRef remoteWindow(pid_t pid, uint64_t index) {
 
 AXUIElementRef tabsFind(pid_t pid, uint32_t wid) {
     double end = CFAbsoluteTimeGetCurrent() + 0.25;
-    for (uint64_t i = 0; i < 2000 && CFAbsoluteTimeGetCurrent() < end; i++) {
+    for (uint64_t i = 0; i <= 0x7fff && CFAbsoluteTimeGetCurrent() < end; i++) {
         AXUIElementRef el = remoteWindow(pid, i);
         if (!el) continue;
         AXUIElementSetMessagingTimeout(el, 0.05);
@@ -63,62 +65,208 @@ static void pushString(lua_State *L, CFTypeRef value) {
     else lua_pushliteral(L, "");
 }
 
-static int l_tabWindows(lua_State *L) {
-    pid_t pid = (pid_t)luaL_checkinteger(L, 1);
+// Results cross back through a run-loop source, never through Lua on a
+// worker. Shutdown drains workers before invalidating and freeing sources.
+typedef struct TabQuery {
+    struct TabQuery *next;
+    pid_t pid;
+    CFMutableDictionaryRef wanted;
+    CFMutableDictionaryRef result;
+    CFRunLoopSourceRef source;
+    LuaCallback callback;
+} TabQuery;
+static TabQuery *queries;
+
+static void pushDictionary(lua_State *L, CFDictionaryRef dict) {
     lua_newtable(L);
+    if (!dict) return;
+    CFIndex count = CFDictionaryGetCount(dict);
+    const void **keys = calloc((size_t)count, sizeof(void *));
+    const void **values = calloc((size_t)count, sizeof(void *));
+    CFDictionaryGetKeysAndValues(dict, keys, values);
+    for (CFIndex i = 0; i < count; i++) {
+        int64_t key = 0;
+        CFNumberGetValue(keys[i], kCFNumberSInt64Type, &key);
+        if (CFGetTypeID(values[i]) == CFDictionaryGetTypeID()) pushDictionary(L, values[i]);
+        else pushString(L, values[i]);
+        lua_rawseti(L, -2, key);
+    }
+    free(keys);
+    free(values);
+}
+
+static CFMutableDictionaryRef dictionary(void) {
+    return CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+}
+
+static void put(CFMutableDictionaryRef dict, int64_t id, CFTypeRef value) {
+    CFNumberRef key = CFNumberCreate(NULL, kCFNumberSInt64Type, &id);
+    CFDictionarySetValue(dict, key, value);
+    CFRelease(key);
+}
+
+static void freeQuery(TabQuery *q) {
+    CFRunLoopSourceInvalidate(q->source);
+    CFRelease(q->source);
+    luaCallbackClear(&q->callback);
+    if (q->wanted) CFRelease(q->wanted);
+    if (q->result) CFRelease(q->result);
+    free(q);
+}
+
+static void queryDone(void *context) {
+    TabQuery *q = context;
+    TabQuery **link = &queries;
+    while (*link && *link != q) link = &(*link)->next;
+    if (*link) *link = q->next;
+    if (luaCallbackPush(&q->callback)) {
+        if (q->result) pushDictionary(q->callback.L, q->result);
+        else lua_pushnil(q->callback.L);
+        luaCallbackCall(&q->callback, 1);
+    }
+    freeQuery(q);
+}
+
+void tabsStop(void) {
+    while (queries) {
+        TabQuery *q = queries;
+        queries = q->next;
+        freeQuery(q);
+    }
+}
+
+static void finishQuery(TabQuery *q) {
+    CFRunLoopSourceSignal(q->source);
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+}
+
+static TabQuery *newQuery(lua_State *L, pid_t pid, int callback) {
+    luaL_checktype(L, callback, LUA_TFUNCTION);
+    TabQuery *q = calloc(1, sizeof(*q));
+    q->pid = pid;
+    q->callback = (LuaCallback)LUA_CALLBACK_NONE;
+    luaCallbackSet(&q->callback, L, callback);
+    CFRunLoopSourceContext context = {0};
+    context.info = q;
+    context.perform = queryDone;
+    q->source = CFRunLoopSourceCreate(NULL, 0, &context);
+    CFRunLoopAddSource(CFRunLoopGetMain(), q->source, kCFRunLoopCommonModes);
+    q->next = queries;
+    queries = q;
+    return q;
+}
+
+static void scanWindows(void *context) {
+    TabQuery *q = context;
+    q->result = dictionary();
     double end = CFAbsoluteTimeGetCurrent() + 0.25;
-    for (uint64_t i = 0; i < 2000 && CFAbsoluteTimeGetCurrent() < end; i++) {
-        AXUIElementRef el = remoteWindow(pid, i);
+    CFIndex remaining = CFDictionaryGetCount(q->wanted);
+    for (uint64_t i = 0; i <= 0x7fff && remaining && CFAbsoluteTimeGetCurrent() < end; i++) {
+        AXUIElementRef el = remoteWindow(q->pid, i);
         if (!el) continue;
-        AXUIElementSetMessagingTimeout(el, 0.05);
+        AXUIElementSetMessagingTimeout(el, 0.01);
         CGWindowID wid = 0;
-        if (_AXUIElementGetWindow(el, &wid) == kAXErrorSuccess && wid
-            && equalsAttribute(el, kAXRoleAttribute, kAXWindowRole)
-            && equalsAttribute(el, kAXSubroleAttribute, kAXStandardWindowSubrole)) {
-            CFTypeRef title = attribute(el, kAXTitleAttribute);
-            pushString(L, title);
-            lua_rawseti(L, -2, wid);
-            if (title) CFRelease(title);
+        if (_AXUIElementGetWindow(el, &wid) == kAXErrorSuccess && wid) {
+            int64_t id = wid;
+            CFNumberRef key = CFNumberCreate(NULL, kCFNumberSInt64Type, &id);
+            if (CFDictionaryContainsKey(q->wanted, key)
+                && !CFDictionaryContainsKey(q->result, key)
+                && equalsAttribute(el, kAXRoleAttribute, kAXWindowRole)
+                && equalsAttribute(el, kAXSubroleAttribute, kAXStandardWindowSubrole)) {
+                CFTypeRef title = attribute(el, kAXTitleAttribute);
+                CFDictionarySetValue(q->result, key, title ? title : CFSTR(""));
+                if (title) CFRelease(title);
+                remaining--;
+            }
+            CFRelease(key);
         }
         CFRelease(el);
     }
-    return 1;
+    finishQuery(q);
 }
 
-static int l_tabState(lua_State *L) {
+static int l_tabWindows(lua_State *L) {
     pid_t pid = (pid_t)luaL_checkinteger(L, 1);
-    if (!windowSpaces || !mainConnection) { lua_pushnil(L); return 1; }
+    luaL_checktype(L, 2, LUA_TTABLE);
+    TabQuery *q = newQuery(L, pid, 3);
+    q->wanted = dictionary();
+    lua_pushnil(L);
+    while (lua_next(L, 2)) {
+        put(q->wanted, luaL_checkinteger(L, -2), kCFBooleanTrue);
+        lua_pop(L, 1);
+    }
+    if (!framesQueue(pid, q, scanWindows)) finishQuery(q);
+    return 0;
+}
+
+// One snapshot for all apps. It runs on a worker; the main thread only
+// consumes the completed dictionary. Off-screen Space lookups happen once.
+static CFMutableDictionaryRef snapshot(void) {
+    if (!windowSpaces || !mainConnection) return NULL;
     CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
-    if (!list) { lua_pushnil(L); return 1; }
-    lua_newtable(L);
+    if (!list) return NULL;
+    CFMutableDictionaryRef result = dictionary();
     for (CFIndex i = 0; i < CFArrayGetCount(list); i++) {
         CFDictionaryRef row = CFArrayGetValueAtIndex(list, i);
         int owner = 0, layer = -1;
         uint32_t wid = 0;
         CFNumberRef n = CFDictionaryGetValue(row, kCGWindowOwnerPID);
         if (n) CFNumberGetValue(n, kCFNumberIntType, &owner);
-        if (owner != pid) continue;
         n = CFDictionaryGetValue(row, kCGWindowLayer);
         if (n) CFNumberGetValue(n, kCFNumberIntType, &layer);
         n = CFDictionaryGetValue(row, kCGWindowNumber);
         if (n) CFNumberGetValue(n, kCFNumberSInt32Type, &wid);
         CFBooleanRef on = CFDictionaryGetValue(row, kCGWindowIsOnscreen);
-        const char *state = "other";
-        if (layer == 0 && on && CFBooleanGetValue(on)) state = "shown";
+        CFStringRef state = CFSTR("other");
+        if (layer == 0 && on && CFBooleanGetValue(on)) state = CFSTR("shown");
         else if (layer == 0) {
             CFArrayRef ids = slWindowList(wid);
             CFArrayRef spaces = windowSpaces(mainConnection(), 7, ids);
             CFRelease(ids);
-            // A window may disappear between the snapshot and this query.
-            // Keep the other windows' evidence instead of discarding the pass.
-            if (!spaces) continue;
-            if (CFArrayGetCount(spaces) == 0) state = "tab";
-            CFRelease(spaces);
+            // A destroyed or unqueryable window is uncertain, not closed.
+            state = CFSTR("unknown");
+            if (spaces) {
+                state = CFArrayGetCount(spaces) == 0 ? CFSTR("tab") : CFSTR("other");
+                CFRelease(spaces);
+            }
         }
-        lua_pushstring(L, state);
-        lua_rawseti(L, -2, wid);
+        int64_t pid = owner;
+        CFNumberRef key = CFNumberCreate(NULL, kCFNumberSInt64Type, &pid);
+        CFMutableDictionaryRef states = (CFMutableDictionaryRef)CFDictionaryGetValue(result, key);
+        if (!states) {
+            states = dictionary();
+            CFDictionarySetValue(result, key, states);
+            CFRelease(states);
+        }
+        put(states, wid, state);
+        CFRelease(key);
     }
     CFRelease(list);
+    return result;
+}
+
+static void readSnapshot(void *context) {
+    TabQuery *q = context;
+    q->result = snapshot();
+    finishQuery(q);
+}
+
+static int l_tabSnapshot(lua_State *L) {
+    TabQuery *q = newQuery(L, 0, 1);
+    if (!framesQueue(0, q, readSnapshot)) finishQuery(q);
+    return 0;
+}
+
+// Compatibility for older callers; discovery uses the shared async query.
+static int l_tabState(lua_State *L) {
+    int64_t pid = luaL_checkinteger(L, 1);
+    CFMutableDictionaryRef all = snapshot();
+    if (!all) { lua_pushnil(L); return 1; }
+    CFNumberRef key = CFNumberCreate(NULL, kCFNumberSInt64Type, &pid);
+    pushDictionary(L, CFDictionaryGetValue(all, key));
+    CFRelease(key);
+    CFRelease(all);
     return 1;
 }
 
@@ -237,6 +385,7 @@ void tabsRegister(lua_State *L) {
     windowSpaces = dlsym(RTLD_DEFAULT, "SLSCopySpacesForWindows");
     remoteElement = dlsym(RTLD_DEFAULT, "_AXUIElementCreateWithRemoteToken");
     lua_pushcfunction(L, l_tabShow); lua_setfield(L, -2, "tabShow");
+    lua_pushcfunction(L, l_tabSnapshot); lua_setfield(L, -2, "tabSnapshot");
     lua_pushcfunction(L, l_tabState); lua_setfield(L, -2, "tabState");
     lua_pushcfunction(L, l_tabWindows); lua_setfield(L, -2, "tabWindows");
     lua_pushcfunction(L, l_tabButtons); lua_setfield(L, -2, "tabButtons");
