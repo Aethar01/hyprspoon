@@ -180,7 +180,7 @@ static CFNumberRef widNumber(uint32_t wid) {
 
 // The window's element, from the app's window list (read again when the
 // window isn't in what was read last).
-static AXUIElementRef windowElement(App *app, uint32_t wid) {
+static AXUIElementRef windowElement(App *app, uint32_t wid, bool background) {
     if (!app->element) {
         app->element = AXUIElementCreateApplication(app->pid);
         AXUIElementSetMessagingTimeout(app->element, 1.0);
@@ -208,7 +208,7 @@ static AXUIElementRef windowElement(App *app, uint32_t wid) {
             win = (AXUIElementRef)CFDictionaryGetValue(app->windows, key);
         }
     }
-    if (!win) {
+    if (!win && background) {
         AXUIElementRef hidden = tabsFind(app->pid, wid);
         if (hidden) {
             CFDictionarySetValue(app->windows, key, hidden);
@@ -354,7 +354,7 @@ static void appLoop(void *context) {
         os_unfair_lock_unlock(&requestsLock);
 
         if (raise) {
-            AXUIElementRef win = windowElement(app, raiseWid);
+            AXUIElementRef win = windowElement(app, raiseWid, tabShown != 0);
             AXError result = win ? AXUIElementPerformAction(win, kAXRaiseAction) : kAXErrorFailure;
             if (result != kAXErrorSuccess && tabShown) tabsSelect(app->pid, tabShown, tabTitle);
         }
@@ -368,7 +368,7 @@ static void appLoop(void *context) {
             for (int j = 0; j < animCount; j++) {
                 if (anims[j].wid == t->wid) removeAnimation(anims, &animCount, j--);
             }
-            AXUIElementRef win = windowElement(app, t->wid);
+            AXUIElementRef win = windowElement(app, t->wid, false);
             if (!win) continue;
             if (!checkedEnhanced) {
                 restore = enhancedOff(app);

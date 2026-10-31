@@ -10,6 +10,7 @@ static int (*mainConnection)(void);
 static CFArrayRef (*windowSpaces)(int, int, CFArrayRef);
 
 static CFTypeRef attribute(AXUIElementRef el, CFStringRef name) {
+    AXUIElementSetMessagingTimeout(el, 0.05);
     CFTypeRef value = NULL;
     AXUIElementCopyAttributeValue(el, name, &value);
     return value;
@@ -45,7 +46,11 @@ AXUIElementRef tabsFind(pid_t pid, uint32_t wid) {
         AXUIElementSetMessagingTimeout(el, 0.05);
         CGWindowID id = 0;
         if (_AXUIElementGetWindow(el, &id) == kAXErrorSuccess && id == wid
-            && equalsAttribute(el, kAXRoleAttribute, kAXWindowRole)) return el;
+            && equalsAttribute(el, kAXRoleAttribute, kAXWindowRole)) {
+            // Frame operations use the ordinary worker timeout, not the scan timeout.
+            AXUIElementSetMessagingTimeout(el, 1.0);
+            return el;
+        }
         CFRelease(el);
     }
     return NULL;
@@ -117,19 +122,28 @@ static int l_tabState(lua_State *L) {
     return 1;
 }
 
-// A shallow bounded walk avoids wandering through document contents.
-static AXUIElementRef tabGroup(AXUIElementRef el, int depth) {
-    if (equalsAttribute(el, kAXRoleAttribute, CFSTR("AXTabGroup"))) return CFRetain(el);
-    if (!depth) return NULL;
-    CFArrayRef children = attribute(el, kAXChildrenAttribute);
+// Native window tab bars are direct window children. Document tab strips
+// and nested NSTabViews must not trigger remote-token repair scans.
+static AXUIElementRef tabGroup(AXUIElementRef win) {
+    if (!equalsAttribute(win, kAXSubroleAttribute, kAXStandardWindowSubrole)) return NULL;
+    CFArrayRef children = attribute(win, kAXChildrenAttribute);
     if (!children || CFGetTypeID(children) != CFArrayGetTypeID()) {
         if (children) CFRelease(children);
         return NULL;
     }
     AXUIElementRef group = NULL;
-    CFIndex count = CFArrayGetCount(children);
-    for (CFIndex i = 0; i < count && i < 100 && !group; i++)
-        group = tabGroup((AXUIElementRef)CFArrayGetValueAtIndex(children, i), depth - 1);
+    for (CFIndex i = 0; i < CFArrayGetCount(children) && !group; i++) {
+        AXUIElementRef child = (AXUIElementRef)CFArrayGetValueAtIndex(children, i);
+        if (!equalsAttribute(child, kAXRoleAttribute, CFSTR("AXTabGroup"))) continue;
+        CFArrayRef buttons = attribute(child, CFSTR("AXTabs"));
+        bool native = buttons && CFGetTypeID(buttons) == CFArrayGetTypeID() && CFArrayGetCount(buttons) > 0;
+        for (CFIndex j = 0; native && j < CFArrayGetCount(buttons); j++) {
+            AXUIElementRef button = (AXUIElementRef)CFArrayGetValueAtIndex(buttons, j);
+            native = equalsAttribute(button, kAXSubroleAttribute, CFSTR("AXTabButton"));
+        }
+        if (native) group = CFRetain(child);
+        if (buttons) CFRelease(buttons);
+    }
     CFRelease(children);
     return group;
 }
@@ -142,8 +156,9 @@ static AXUIElementRef groupFor(pid_t pid, uint32_t wid) {
     if (windows) {
         for (CFIndex i = 0; i < CFArrayGetCount(windows) && !group; i++) {
             AXUIElementRef win = (AXUIElementRef)CFArrayGetValueAtIndex(windows, i);
+            AXUIElementSetMessagingTimeout(win, 0.05);
             CGWindowID id = 0;
-            if (_AXUIElementGetWindow(win, &id) == kAXErrorSuccess && id == wid) group = tabGroup(win, 4);
+            if (_AXUIElementGetWindow(win, &id) == kAXErrorSuccess && id == wid) group = tabGroup(win);
         }
         CFRelease(windows);
     }
