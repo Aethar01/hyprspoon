@@ -73,7 +73,10 @@ local function shouldFloat(win)
         S.autoFloat[id] = true
         return true
     end
-    local rule = Util.rulesFor(win).float
+    local rules = Util.rulesFor(win)
+    -- Pinned windows float.
+    local rule = rules.float
+    if rules.pin then rule = true end
     if rule ~= nil then
         S.autoFloat[id] = rule == true
     else

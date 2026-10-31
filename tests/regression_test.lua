@@ -110,6 +110,8 @@ rules = { float = true }
 assert(classify(true) == true and axReads == 0, "a float rule overrides full-screen support")
 rules = { float = false }
 assert(classify(false) == false and S.autoFloat[1] == false and axReads == 0, "a tile rule keeps it tiled")
+rules = { pin = true, float = false }
+assert(classify(true) == true and axReads == 0, "a pin rule floats it")
 rules = {}
 
 -- Dialog/panel roles are managed only when they have a close button, are

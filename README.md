@@ -16,7 +16,8 @@ A Hyprland-inspired tiling window manager for macOS, as a
   inactive colours.
 - **Modifier + drag** anywhere on a window to move or resize it.
 - **Focus follows mouse** (optional), and cursor warping on keyboard focus.
-- **Window rules**: float a window or send it to a workspace by app or title.
+- **Window rules**: float a window, pin it, or send it to a workspace by app
+  or title.
 - **An overview** of every workspace, in place of Mission Control.
 - **Layouts survive** reloads and restarts.
 - **Scriptable** from the `hs` command line, like `hyprctl`.
@@ -233,6 +234,7 @@ pattern), and sets any of:
 | `float` | `true` to float the window, `false` to tile it even if it would float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
+| `pin` | `true` to float it on every workspace of its display, like Hyprland's pin |
 
 Rules are read once per window, when it first appears; later matching rules
 win.
@@ -265,7 +267,7 @@ you can also build your own table from scratch.
 | Option+\` | Back to the previous workspace |
 | Option+, / . | Focus the display to the left / right (Shift: move the window, Ctrl: move the workspace) |
 | Option+B | Toggle tiling (Shift: just this workspace) |
-| Option+T | Toggle floating |
+| Option+T | Toggle floating (`togglePin`, unbound, pins the window to every workspace of its display) |
 | Option+G | Cycle through floating windows |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) |
 | Option+Y | Flip the split |
