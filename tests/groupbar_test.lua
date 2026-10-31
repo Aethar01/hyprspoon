@@ -23,11 +23,11 @@ hs = {
 local S = require("hyprspoon.state")
 S.cfg = { group = { bar = S.defaults.group.bar }, border = S.defaults.border }
 S.tilingEnabled, S.ffmFocusedID = true, 3
-S.untiled, S.fullscreen, S.offSpace, S.autoFloat = {}, {}, {}, {}
+S.untiled, S.fullscreen, S.offSpace, S.autoFloat, S.applied = {}, {}, {}, {}, {}
 local rect = { x = -100, y = 20, w = 101, h = 60 }
 local leaf = { kind = "group", windowID = 3 }
 local info = { rect = rect, key = "ws1", shown = 3, members = { { 1 }, { 2, 3 } } }
-local hidden, behind, selected, cleared = false, false, nil, nil
+local hidden, behind, selected, restored = false, false, nil, nil
 local wins = {}
 for id = 1, 3 do
     wins[id] = { id = function() return id end, title = function() return "Window " .. id end }
@@ -35,6 +35,7 @@ end
 package.loaded["hyprspoon.util"] = {
     managedWindows = function() return { wins[1], wins[3] } end,
     windowFor = function(id) return wins[id] end,
+    setFrame = function(_, frame, duration) restored = frame assert(duration == 0) end,
 }
 package.loaded["hyprspoon.tree"] = {
     setOf = function() return leaf end,
@@ -45,7 +46,6 @@ package.loaded["hyprspoon.spaces"] = { isHidden = function() return hidden end }
 package.loaded["hyprspoon.group"] = {
     info = function() return info end,
     selectMember = function(id) selected = id end,
-    inset = function(id, height) cleared = { id, height } end,
 }
 S.trees = { ws1 = leaf }
 local Bar = require("hyprspoon.groupbar")
@@ -122,8 +122,10 @@ Bar.update()
 assert(canvases[#canvases].deleted)
 info = original
 Bar.update()
+leaf.rect, leaf.groupInset = rect, 24
 Bar.stop()
-assert(canvases[#canvases].deleted and cleared[2] == 0)
+assert(canvases[#canvases].deleted and leaf.groupInset == nil)
+assert(restored == rect, "stop restores the window synchronously without a timer")
 count = #canvases
 Bar.update()
 assert(#canvases == count)

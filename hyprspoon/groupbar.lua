@@ -161,9 +161,23 @@ end
 function M.stop()
     running = false
     for leaf, bar in pairs(bars) do bar.canvas:delete() bars[leaf] = nil end
-    for _, tree in pairs(S.trees) do
+    for key, tree in pairs(S.trees) do
         for _, leaf in ipairs(Tree.leaves(tree)) do
-            if leaf.kind == "group" then Group.inset(leaf.windowID, 0) end
+            if leaf.kind == "group" then
+                local id, amount = leaf.windowID, leaf.groupInset or 0
+                leaf.groupInset = nil
+                S.applied[id] = nil
+                local rect = leaf.fullRect or leaf.pseudoRect or leaf.rect
+                local win = Util.windowFor(id)
+                -- Layout.stop cancels pending retiles. Restore visible content
+                -- here, including maximized/pseudotiled frames, before it runs.
+                if amount > 0 and rect and win and S.tilingEnabled and not S.untiled[key]
+                   and not S.autoFloat[id] and not S.fullscreen[id] and not S.offSpace[id]
+                   and not Spaces.isHidden(id) then
+                    leaf.windowRect = rect
+                    Util.setFrame(win, rect, 0)
+                end
+            end
         end
     end
     for _, leaf in pairs(S.setsAway or {}) do
