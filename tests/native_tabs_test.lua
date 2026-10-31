@@ -137,9 +137,12 @@ assert(repairs == afterMismatch, "unresolved mismatch backs off by pid and windo
 -- Tear-off: the app lists 2 even though the filter has lost it.
 filter, listed = { wins[1], wins[3] }, wins
 states[2], states[4], bars[1] = "shown", nil, {}
+S.applied[1], S.applied[2] = "kept", "stale"
 byScreen = Discover.windowsByScreen()
 assert(#byScreen.display == 3, "the torn-off window comes from the app list")
 assert(not S.nativeBackground[2])
+-- The app gave the newly shown tab its window's frame: lay it out again.
+assert(S.applied[2] == nil and S.applied[1] == "kept", "a newly shown tab's frame is applied again")
 
 -- A quiet pass uses the completed snapshot and cached records, with no AX,
 -- app-list or frame calls even after the short dirty period has expired.

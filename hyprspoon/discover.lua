@@ -254,10 +254,16 @@ local function withRecentlyChangedApps(windows)
         end
     end
     -- Util.managedWindows adds the shown native windows the filter misses,
-    -- so its cached list is stale once that set changes.
+    -- so its cached list is stale once that set changes. A tab coming to
+    -- the front takes its window's frame from the app (after a tear-off,
+    -- the whole old window's), so a frame applied to it before no longer
+    -- holds: the next pass applies its tile again.
     local same = true
     for _, w in ipairs(S.nativeShown) do
-        if not previousShown[w.id] then same = false break end
+        if not previousShown[w.id] then
+            same = false
+            S.applied[w.id] = nil
+        end
         previousShown[w.id] = nil
     end
     if not same or next(previousShown) then Util.forgetManagedWindows() end
