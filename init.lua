@@ -43,10 +43,12 @@
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
--- Native modules (hyprspoon/native/*.c, built with `make -C hyprspoon/native`), each
--- optional: without one, the Lua path it replaces carries on.
---   border    the rings, drawn and moved by WindowServer
---   events    window moves and resizes as WindowServer reports them
+-- Native modules (C/Objective-C, built with `make -C hyprspoon/native`),
+-- all optional: Lua keeps the basics working; slides and rings need native.
+--   border    the rings, drawn and moved by WindowServer; optional masks
+--             hide parts covered by other windows
+--   events    window moves and resizes as WindowServer reports them;
+--             filters extra occluder notifications while masking is on
 --   hover     the window under the pointer, from a native event tap
 --   frames    accessibility frame changes, animations and modifier-drags on
 --             a background queue per app

@@ -2,6 +2,11 @@
 //
 // Loaded by hyprspoon/init.lua as hyprspoon.native.events (build: make -C hyprspoon/native).
 //
+// Lua functions: start(onMoved), watch(ids), filter(on), mute(idOrNil),
+// stop(). filter limits delivery to watch(ids) while border masking adds
+// occluders on the shared connection. Without this module, init.lua uses
+// hs.window.filter move notifications, which arrive later.
+//
 // hs.window.filter hears of moves through accessibility notifications and
 // holds each back half a second. WindowServer reports them as they happen;
 // this hands them to Lua once per run loop pass, each window once however

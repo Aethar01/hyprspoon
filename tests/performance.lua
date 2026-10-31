@@ -3,6 +3,12 @@
 -- The result is written to the given path as JSON once wmPerf.done is true
 -- (and kept in wmPerf.result). Returning it through `hs -c` can hang.
 -- Each case runs once untimed first, so samples measure warm calls.
+-- Enable tiling before running. With border and experimental.borderMask
+-- enabled, border.mask calls native remask(): a fresh on-screen snapshot
+-- and full mask rebuild, waiting for the border queue. This includes queue
+-- wait time and bypasses unchanged-mask caching. Compare 10 and 30 windows
+-- with overlapping floats; 0.5ms at 30 windows is the target, not a result.
+-- On macOS before 13, masking is disabled and this case measures a no-op.
 local M = {}
 
 -- Find internal helpers without adding profiling overhead to production.

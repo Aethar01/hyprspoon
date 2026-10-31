@@ -21,7 +21,10 @@ Reload Hammerspoon to pick up changes, including rebuilt native modules.
   one does.
 - `hyprspoon/state.lua`: every option, with its default and documentation.
 - `hyprspoon/native/`: optional C and Objective-C modules. Each one has a
-  Lua fallback, and the Lua side must keep working without it.
+  Lua path that keeps the basics working without it; borders and slides
+  are disabled when their modules are absent. `border.m` draws rings and
+  experimental masks; `events.c` filters the extra mask notifications on
+  their shared WindowServer connection. Rebuild both when updating.
 
 ## Tests
 
@@ -30,7 +33,10 @@ tests/run.sh        # unit tests, plain Lua 5.4+, no Hammerspoon needed
 ```
 
 `tests/performance.lua` is a live benchmark that runs inside Hammerspoon
-(see its header).
+(see its header). With borders and `experimental.borderMask` enabled,
+its `border.mask` case measures a fresh snapshot and full mask rebuild.
+Try 10 and 30 windows, including overlapping floats; the target is 0.5ms
+per update with 30 windows, not a measured guarantee.
 
 Window management depends on timing, so also try a change live: tiling on
 and off, several displays if you have them, full-screen windows, and

@@ -162,7 +162,9 @@ hs -c 'for _, s in ipairs(hs.screen.allScreens()) do print(s:name(), s:getUUID()
 
 Rings around the windows on show, drawn in the gap outside their edges.
 Colours are `"#rrggbb"` strings or `hs.drawing.color` tables. Set
-`border = false` to disable. Needs the native `border` module.
+`border = false` to disable. Needs the native `border` module. Rings show
+over windows covering their target unless
+[`experimental.borderMask`](#experimental-options) is enabled.
 
 | Option | Default | Description |
 |---|---|---|
@@ -223,7 +225,7 @@ or `false`.
 | Option | Default | Description |
 |---|---|---|
 | `rules` | `{}` | Per-window rules, like Hyprland's windowrules (below) |
-| `ignoreApps` | `{}` | App names whose windows are never watched or tiled, e.g. `{"Raycast"}` |
+| `ignoreApps` | `{}` | App names whose windows are never managed or tiled, e.g. `{"Raycast"}` |
 
 Each rule matches on `app` (the app's name) and/or `title` (a Lua
 pattern), and sets any of:
@@ -233,6 +235,7 @@ pattern), and sets any of:
 | `float` | `true` to float the window, `false` to tile it even if it would float |
 | `workspace` | Workspace to put it on when it first appears: a number, or a named workspace like `"A"` |
 | `silent` | With `workspace`, `true` to stay on the current workspace instead of going there |
+| `opacity` | `0` to `1`: opacity used by border masking for this managed window; overrides reported alpha without changing the window |
 
 Rules are read once per window, when it first appears; later matching rules
 win.
@@ -253,7 +256,7 @@ may change or go before they graduate to options of their own.
 | Option | Default | Description |
 |---|---|---|
 | `experimental.borderMask` | `false` | Hide the parts of a ring that windows above its own cover; `true` for the defaults below, or a table |
-| `experimental.borderMask.drags` | `"mask"` | During a modifier-drag or a tile drop: `"mask"` keeps the rings masked as windows move; `"show"` draws them on top, as without masks, and masks them again on drop |
+| `experimental.borderMask.drags` | `"mask"` | While a native drag preview is active: `"mask"` keeps the rings masked as windows move; `"show"` draws them on top, as without masks, and masks them again on drop |
 
 Rings are drawn above every window, so without masks a ring shows over a
 float, a panel or Spotlight covering its window. With `borderMask`, each
@@ -262,8 +265,16 @@ window, or a window with an `opacity` rule (e.g. `{ app = "Ghostty",
 opacity = 0.85 }`), shows through it, dimmed; the rule wins over what the
 window reports. A window whose content alone is see-through (a terminal
 background) looks opaque from outside the app, so it needs a rule. Blur
-isn't reproduced. Needs the native `border` module and
-macOS 13.
+isn't reproduced. `opacity` only affects masks, not the window itself.
+Rules apply to managed windows; ignored apps use their reported alpha.
+Stacked see-through windows multiply the amount of ring showing through.
+Needs the native `border` module and macOS 13. Rebuild native modules
+when updating from source so `border` and `events` both support masking.
+
+`drags = "show"` removes every ring's mask while a native ring preview is
+active. Without the `frames` module, drags fall back to Lua and keep their
+masks. Ordinary app title-bar drags also keep their masks. With masking
+off, there is no snapshot or extra window watching.
 
 ```lua
 experimental = { borderMask = { drags = "show" } },
@@ -318,6 +329,10 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
   a corner of the display. Quitting Hammerspoon brings them back, but a
   crash leaves them there. Start Hammerspoon again, then switch to their
   workspace or quit it normally.
+- **Masks not appearing.** On macOS before 13, the console reports that
+  masking is unavailable and rings keep their usual appearance. Rebuild
+  the native modules after updating the source. To turn masking off, set
+  `experimental = { borderMask = false }` in your config and reload.
 - **Logs.** Set `debug = true` in the options to log tiling decisions to
   the Hammerspoon console.
 - **Native modules not loading.** The console says which one and why.
@@ -328,6 +343,13 @@ hs -c 'return hs.json.encode(spoon.hyprspoon.workspaces())'
 - It uses private macOS (SkyLight) APIs for borders, slides and window
   events, so a macOS update can break them. The Lua fallbacks keep the
   basics working.
+- Experimental border masks use rounded window bounds and cannot reproduce
+  blur. See-through content needs an `opacity` rule. Masks skip Hammerspoon overlays, windows at screen-saver level or above, and
+  windows above normal level that cover a whole display.
+- Mask snapshots keep at most 256 eligible windows. If truncated, a ring
+  whose target is missing is hidden until it appears in the snapshot. Each
+  ring uses at most 32 overlapping windows and 16 transparency regions, so
+  dense stacks may leave parts of a ring too visible.
 - It wraps `hs.reload` to tell a reload apart from a quit, so that windows
   stay parked across a reload.
 - Native full-screen windows still get their own Space, which macOS

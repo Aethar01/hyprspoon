@@ -2,6 +2,12 @@
 //
 // Loaded by hyprspoon/border.lua as hyprspoon.native.border (build: make -C hyprspoon/native).
 //
+// Lua functions: set(ids, opacityByID), focus(id, duration), active(),
+// overview(on), watch(ids), previewer(), style(options), stop(),
+// mask(optionsOrFalse), remask(). mask returns whether masking is enabled
+// (macOS 13+); remask waits for a fresh snapshot and full mask recomputation
+// for benchmarks. Without this module, border.lua draws no rings.
+//
 // Every window hyprspoon/border.lua lists gets a ring: the focused window's in the
 // active colour, the rest in the inactive one, blending between the two as
 // focus moves. Each ring is a window of our own (see Ring), ordered just
@@ -533,6 +539,12 @@ static Ring *newRing(uint32_t target) {
 // with masks on every window in the snapshot is asked about too, and any
 // window coming or going is a cue to update. Off, none of this runs: no
 // snapshot, no notifications beyond the managed windows'.
+//
+// Limits: 256 eligible windows per snapshot, 32 overlapping occluders per
+// ring and 16 transparency regions. A target missing from a truncated
+// snapshot gets a fully hidden ring; excess occluders or region splits
+// are skipped. Above-normal-level windows covering a display are skipped
+// regardless of owner, as are Hammerspoon overlays and screen-saver levels.
 
 static struct {
     bool on;

@@ -103,8 +103,8 @@ S.defaults = {
         fade = 0.15,
     },
 
-    -- App names whose windows are never watched or tiled (palettes, overlays,
-    -- anything noisy). Fewer watched windows means fewer events to process.
+    -- App names whose windows are never managed or tiled (palettes, overlays,
+    -- anything noisy). Border masking still watches them as occluders.
     ignoreApps = {},
 
     -- Per-window rules, like Hyprland's windowrules. Each matches on `app`
@@ -113,6 +113,8 @@ S.defaults = {
     --   workspace = n        put it on workspace n when it first appears,
     --                        and go there unless `silent = true` (n can
     --                        be a named workspace, e.g. "A")
+    --   opacity = 0..1       override alpha for border masking only; does
+    --                        not change the window (managed windows only)
     -- Rules are read once per window, when it first appears (titles that
     -- change later don't count); later matching rules win. E.g.
     --   rules = {
@@ -138,13 +140,19 @@ S.defaults = {
         -- Hide the parts of a ring that windows above its own cover (a
         -- float over a tile, Spotlight, another app's panel). false, true
         -- (the defaults below), or a table:
-        --   drags = "mask"      during a modifier-drag or a tile drop:
+        --   drags = "mask"      while a native ring preview is active:
         --                       "mask" keeps the rings masked as windows
         --                       move; "show" draws them on top, as without
         --                       masks, and masks them again on drop
         -- A ring shows through a faded window, and through a window with an
         -- `opacity` rule (e.g. { app = "Ghostty", opacity = 0.85 }), dimmed.
-        -- Needs hyprspoon.native.border and macOS 13.
+        -- The rule wins over reported alpha and changes only the mask.
+        -- Ignored windows use reported alpha; content transparency needs a
+        -- rule, and blur is not reproduced. Stacked windows multiply.
+        -- "show" removes all masks during native previews; Lua fallback
+        -- drags and ordinary title-bar drags keep their masks.
+        -- Needs hyprspoon.native.border and macOS 13. Rebuild native modules
+        -- after updating. Off means no snapshot or extra window watching.
         borderMask = false,
     },
 }
