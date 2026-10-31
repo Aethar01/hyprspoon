@@ -15,7 +15,8 @@ local Layout = require("hyprspoon.layout")
 -- Resizing tiled windows moves the split lines bordering them. Each window
 -- edge that moved drags the split on that side of the window to match; edges
 -- against the screen have no split and snap back. This covers mouse
--- resizing (applied on release) and native edge dragging.
+-- resizing (applied on release) and native edge dragging. A pseudotiled
+-- window's edges change its own size instead, and it's centred again.
 
 local BSP_EDGE_TOLERANCE = 4
 
@@ -38,7 +39,7 @@ local function adoptFrame(win)
     if leaf.fullRect then return end
 
     local f = win:frame()
-    local r = leaf.rect
+    local r = leaf.pseudoRect or leaf.rect
     -- An unreadable frame (a busy app) reads as all zeros, not a resize.
     if f.w <= 0 or f.h <= 0 then return end
     local function differs(a, b) return math.abs(a - b) > BSP_EDGE_TOLERANCE end
@@ -61,7 +62,11 @@ local function adoptFrame(win)
 
     print(string.format("hyprspoon: adopting frame of %s: %s (tile %.0f,%.0f,%.0f,%.0f)",
         tostring(win:id()), seen, r.x, r.y, r.w, r.h))
-    if differs(f.w, r.w) or differs(f.h, r.h) then
+    if leaf.pseudo then
+        if differs(f.w, r.w) or differs(f.h, r.h) then
+            leaf.pseudo = { w = math.min(f.w, leaf.rect.w), h = math.min(f.h, leaf.rect.h) }
+        end
+    elseif differs(f.w, r.w) or differs(f.h, r.h) then
         local edges = {
             { edge = "left",   split = "vertical",   branch = "b", now = f.x,       was = r.x },
             { edge = "right",  split = "vertical",   branch = "a", now = f.x + f.w, was = r.x + r.w },
@@ -125,13 +130,13 @@ local function beginResize(win, point)
     resizeState = nil
 
     local f = win:frame()
-    local path = Layout.locate(win)
-    if not path then
-        -- Floating: grow from the corner nearest the cursor.
+    local path, leaf = Layout.locate(win)
+    if not path or leaf.pseudo then
+        -- Floating or pseudotiled: grow from the corner nearest the cursor.
         resizeState = {
             win = win,
             frame = f,
-            floating = true,
+            floating = not path,
             xBranch = point.x > f.x + f.w / 2 and "a" or "b",
             yBranch = point.y > f.y + f.h / 2 and "a" or "b",
         }
