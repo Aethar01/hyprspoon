@@ -550,6 +550,7 @@ typedef struct {
 #define MAX_SEEN 256
 static Seen seen[MAX_SEEN]; // front to back
 static int seenCount = 0;
+static bool snapshotTruncated = false;
 static bool snapshotTaken = false; // `seen` is this update's
 
 // Rules' `opacity` for windows that have one (Util.rulesFor), from set().
@@ -592,6 +593,7 @@ static int number(CFDictionaryRef info, CFStringRef key, CFNumberType type, void
 // keep over whole displays (as hover.c).
 static void takeSnapshot(void) {
     snapshotTaken = true;
+    snapshotTruncated = false;
     seenCount = 0;
     CFArrayRef list = CGWindowListCopyWindowInfo(
         kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
@@ -600,7 +602,7 @@ static void takeSnapshot(void) {
     uint32_t displayCount = 0;
     if (CGGetActiveDisplayList(16, displays, &displayCount) != kCGErrorSuccess) displayCount = 0;
     pid_t self = getpid();
-    for (CFIndex i = 0; i < CFArrayGetCount(list) && seenCount < MAX_SEEN; i++) {
+    for (CFIndex i = 0; i < CFArrayGetCount(list); i++) {
         CFDictionaryRef info = CFArrayGetValueAtIndex(list, i);
         int32_t pid = 0, level = 0, wid = 0;
         double alpha = 1;
@@ -620,6 +622,10 @@ static void takeSnapshot(void) {
             coversDisplay = CGRectContainsRect(bounds, CGDisplayBounds(displays[d]));
         }
         if (coversDisplay) continue;
+        if (seenCount == MAX_SEEN) {
+            snapshotTruncated = true;
+            break;
+        }
         seen[seenCount++] = (Seen){ (uint32_t)wid, bounds, level, alpha };
     }
     CFRelease(list);
@@ -668,6 +674,13 @@ static int coversOf(Ring *ring, Cover *covers) {
             target = i;
             break;
         }
+    }
+    // A target beyond the fixed snapshot limit has unknown occluders.
+    // Hide its whole ring until it is in the snapshot, rather than draw
+    // over windows that may cover it.
+    if (target < 0 && snapshotTruncated) {
+        covers[0] = (Cover){ (CGRect){ CGPointZero, area.size }, 0, 0 };
+        return 1;
     }
     int count = 0;
     for (int i = 0; i < target && count < MAX_COVERS; i++) {
@@ -1535,6 +1548,7 @@ int luaopen_hyprspoon_native_border(lua_State *L) {
     noted.movedCount = noted.otherCount = 0;
     noted.restack = noted.queued = noted.preview.changed = false;
     memset(&masks, 0, sizeof(masks));
+    snapshotTruncated = false;
     snapshotTaken = false;
     seenCount = opacityCount = radiusCount = managedCount = extraCount = askedCount = 0;
     registerEvents(true);
