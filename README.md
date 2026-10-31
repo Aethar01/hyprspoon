@@ -245,6 +245,29 @@ rules = {
 }
 ```
 
+### Experimental options
+
+Features still being tried out, off by default, under `experimental`. They
+may change or go before they graduate to options of their own.
+
+| Option | Default | Description |
+|---|---|---|
+| `experimental.borderMask` | `false` | Hide the parts of a ring that windows above its own cover; `true` for the defaults below, or a table |
+| `experimental.borderMask.drags` | `"mask"` | During a modifier-drag or a tile drop: `"mask"` keeps the rings masked as windows move; `"show"` draws them on top, as without masks, and masks them again on drop |
+| `experimental.borderMask.seeThrough` | `0.3` | How much of a ring shows through a see-through window that doesn't report its own opacity, `0` to `1` (not used yet) |
+
+Rings are drawn above every window, so without masks a ring shows over a
+float, a panel or Spotlight covering its window. With `borderMask`, each
+ring is cut out where windows above its own cover it. A ring under a faded
+window, or a window with an `opacity` rule (e.g. `{ app = "Ghostty",
+opacity = 0.85 }`), shows through it, dimmed; the rule wins over what the
+window reports. Blur isn't reproduced. Needs the native `border` module and
+macOS 13.
+
+```lua
+experimental = { borderMask = { drags = "show" } },
+```
+
 ## Default keymap
 
 `defaultHotkeys` uses Option as Hyprland's SUPER. To change a binding, edit

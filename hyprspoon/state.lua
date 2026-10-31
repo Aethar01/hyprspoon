@@ -131,6 +131,25 @@ S.defaults = {
         -- Drag-and-drop landing highlight.
         dropColor = { red = 0.35, green = 0.6, blue = 1 },
     },
+
+    -- Features still being tried out, off by default. They may change or
+    -- go before they graduate to options of their own.
+    experimental = {
+        -- Hide the parts of a ring that windows above its own cover (a
+        -- float over a tile, Spotlight, another app's panel). false, true
+        -- (the defaults below), or a table:
+        --   drags = "mask"      during a modifier-drag or a tile drop:
+        --                       "mask" keeps the rings masked as windows
+        --                       move; "show" draws them on top, as without
+        --                       masks, and masks them again on drop
+        --   seeThrough = 0.3    how much of a ring shows through a
+        --                       see-through window that doesn't report its
+        --                       own opacity: 0 to 1 (not used yet)
+        -- A ring shows through a faded window, and through a window with an
+        -- `opacity` rule (e.g. { app = "Ghostty", opacity = 0.85 }), dimmed.
+        -- Needs hyprspoon.native.border and macOS 13.
+        borderMask = false,
+    },
 }
 
 S.cfg = nil
