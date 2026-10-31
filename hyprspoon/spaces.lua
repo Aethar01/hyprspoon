@@ -734,9 +734,10 @@ local function switchTo(n, uuid)
     end
     -- Hyprland's hide_special_on_workspace_change.
     hideScratchpad(uuid)
+    local slid = false
     if active[uuid] ~= n then
         local left = active[uuid]
-        Slide.switch(connected[uuid], left, n, left and windowsOf(left) or {}, windowsOf(n),
+        slid = Slide.switch(connected[uuid], left, n, left and windowsOf(left) or {}, windowsOf(n),
             (left and n < left) and -1 or 1)
         active[uuid] = n
         home[n] = uuid
@@ -746,7 +747,12 @@ local function switchTo(n, uuid)
     end
     -- Not just changed screens: a workspace coming back has the same
     -- windows as when it was last laid out, but they're all parked.
+    -- Under a slide they go straight to their tiles: easing them out of
+    -- the corner only shows (beneath a picture sliding off) or gets
+    -- captured mid-way if the workspace is left again straight after.
+    S.instantLayout = slid
     Layout.tileNow()
+    S.instantLayout = nil
     focusWorkspace(n, uuid ~= pointer)
     Hud.switched(uuid)
 end
