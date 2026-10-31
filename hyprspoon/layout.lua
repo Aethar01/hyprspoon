@@ -154,9 +154,11 @@ local waitTimer = nil
 
 -- Window `to` takes over `from`'s place in the focus order (the same tile
 -- showing another window), without being listed twice.
-local function passFocus(from, to)
+local function passFocus(from, to, focused)
     Util.focusTimes[to] = Util.focusTimes[from]
-    if S.ffmFocusedID == from then S.ffmFocusedID = to end
+    -- Only inherit actual focus when the app switched its own tabs.
+    -- Group selection requests focus afterwards and still needs the old ID.
+    if focused and S.ffmFocusedID == from then S.ffmFocusedID = to end
     local history = Util.focusHistory
     local fromAt, toAt = nil, nil
     for i, fid in ipairs(history) do
@@ -183,7 +185,7 @@ local function showMember(leaf, id, key)
     local from = Tree.setShown(leaf, id)
     if from == id then return end
     Util.dlog("set %s -> %s", tostring(from), tostring(id))
-    passFocus(from, id)
+    passFocus(from, id, leaf.kind == "native")
     S.applied[id] = nil
     if key then signatures[key] = nil end
     Border.handOver(from, id)
@@ -293,7 +295,7 @@ local function reconcileTree(key, windows)
                     end
                 else
                     Tree.replaceID(leaf, oldID, newID)
-                    passFocus(oldID, newID)
+                    passFocus(oldID, newID, true)
                     before[oldID] = nil
                 end
                 before[newID] = true
@@ -398,6 +400,15 @@ local function reconcileTree(key, windows)
     end
 
     local tree = Restore.rebuild(key, previous, valid)
+    -- Park restored members before this pass places any windows.
+    for _, leaf in ipairs(Tree.leaves(tree)) do
+        local handler = Tree.kinds[leaf.kind]
+        if leaf.kind == "group" and handler and handler.strays then
+            handler.strays(leaf, key, {})
+            -- A close can unpark its replacement during this very pass.
+            byID[leaf.windowID] = byID[leaf.windowID] or Util.windowFor(leaf.windowID)
+        end
+    end
     local present = Tree.collectIDs(tree)
     -- A window going in can bring its whole set back (see Tree.leaf).
     local function nowPresent(id)
@@ -576,6 +587,10 @@ local function applyTree(node, rect, byID, full)
             local p = Tree.pseudoRect(rect, node.pseudo)
             rect = hs.geometry.rect(p.x, p.y, p.w, p.h)
             node.pseudoRect = rect
+        end
+        if node.kind == "group" and (node.groupInset or 0) > 0 then
+            local height = math.min(node.groupInset, math.max(0, rect.h - 1))
+            rect = hs.geometry.rect(rect.x, rect.y + height, rect.w, rect.h - height)
         end
         local win = byID[node.windowID]
         if win then

@@ -7,7 +7,7 @@ package.path = "./?.lua;" .. package.path
 hs = { settings = { get = function() return nil end } }
 for _, name in ipairs({ "actions", "util", "tree", "float", "focus", "discover", "layout",
     "resize", "mouse", "ffm", "spaces", "swipe", "bar", "hud", "border", "slide", "overview",
-    "restore" }) do
+    "restore", "group" }) do
     package.loaded["hyprspoon." .. name] = {}
 end
 local M = dofile("init.lua")
