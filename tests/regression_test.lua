@@ -600,3 +600,24 @@ assert(#switches == 2, "short movements don't switch")
 assert(onGesture({ getTouches = function() return nil end }) == false, "non-gesture events pass through")
 
 print("Window classification, rules, layout, snapshots, discovery, PiP, BSP navigation, pseudotile resizing, borders, and swipe regressions passed")
+
+-- Focus requests must raise same-app group members, including after reload.
+do
+    local raised
+    local state = {}
+    local env = setmetatable({
+        S = state, superseded = {}, covered = function() return false end,
+        noteFocus = function(w) state.ffmFocusedID = w:id() end,
+        hs = { timer = { secondsSinceEpoch = function() return 1000 end } },
+        Util = { pidByID = { [1] = 10, [2] = 10 },
+            focusWindow = function(_, raise) raised = raise end },
+    }, { __index = _G })
+    local request = assert(load(extract("focus", "local function request(win)",
+        "-- Focus a window on our own initiative.") .. "return request", "request", "t", env))()
+    local win = { id = function() return 2 end }
+    request(win)
+    assert(raised, "first group selection after reload raises without a focus record")
+    state.ffmFocusedID = 1
+    request(win)
+    assert(raised, "cycling between same-app members raises the newly shown one")
+end

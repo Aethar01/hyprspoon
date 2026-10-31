@@ -285,12 +285,13 @@ local function saveTrees()
 end
 
 -- A new leaf for a window going into a tree. One whose set is away brings
--- the whole set back, showing it.
+-- the whole set back. Groups retain their selection even if discovery saw
+-- a parked member first; native sets follow the tab their app brought out.
 local function bspLeaf(windowID)
     local set = S.setsAway[windowID]
     if set and indexOf(set.members, windowID) then
         for _, id in ipairs(set.members) do S.setsAway[id] = nil end
-        set.windowID = windowID
+        if set.kind ~= "group" then set.windowID = windowID end
         return set
     end
     S.setsAway[windowID] = nil

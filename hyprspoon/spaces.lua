@@ -549,6 +549,12 @@ end
 -- Members with no workspace of their own (native tabs never on show) are
 -- left to their app, which moves them with their window.
 local function bringMembers(id, n)
+    local leaf, key = Tree.setOf(id)
+    -- Sync can forget an emptied source workspace before discovery runs.
+    -- Detach its set now, while membership and the selected member still exist.
+    if leaf and key and key ~= "ws" .. tostring(n) then
+        S.trees[key] = Tree.removeID(S.trees[key], leaf.windowID)
+    end
     for _, m in ipairs(Tree.membersOf(id)) do
         local was = of[m]
         if m ~= id and was ~= nil and was ~= n then

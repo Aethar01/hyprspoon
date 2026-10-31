@@ -122,7 +122,9 @@ local function request(win)
     -- the front changes nothing: only a raise makes it switch windows.
     local from = S.ffmFocusedID
     local pid = Util.pidByID[id]
-    local raise = covered(id) or (from ~= nil and from ~= id and pid ~= nil and Util.pidByID[from] == pid)
+    -- After reload there may be no recorded focus; a raise also switches
+    -- between same-app windows before the first focus notification arrives.
+    local raise = from == nil or covered(id) or (from ~= nil and from ~= id and pid ~= nil and Util.pidByID[from] == pid)
     noteFocus(win)
     S.requestedFocus = id
     Util.focusWindow(win, raise)

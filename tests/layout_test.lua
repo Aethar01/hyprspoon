@@ -465,4 +465,18 @@ test("untile and retile keep hidden members parked", function()
     Spaces.isHidden = previousHidden
 end)
 
+test("group handoff preserves the old focus until requested", function()
+    pass({ A = { 1, 2 } })
+    local group = S.trees.ws1.b
+    group.members, group.kind = { 2, 3 }, "group"
+    S.ffmFocusedID = 2
+    Layout.showMember(group, 3, "ws1")
+    assert(S.ffmFocusedID == 2, "group selection must still raise from the old window")
+    group.kind = "native"
+    Layout.showMember(group, 2, "ws1")
+    S.ffmFocusedID = 2
+    Layout.showMember(group, 3, "ws1")
+    assert(S.ffmFocusedID == 3, "app tab switches inherit actual focus")
+end)
+
 print("Layout tests passed")

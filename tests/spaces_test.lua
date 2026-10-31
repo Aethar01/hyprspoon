@@ -53,7 +53,7 @@ local Util = {
 package.loaded["hyprspoon.util"] = Util
 -- Window id -> the members of its set, for the windows that have one.
 local sets = {}
-package.loaded["hyprspoon.tree"] = { bootTime = 0, rectFor = noop,
+package.loaded["hyprspoon.tree"] = { bootTime = 0, rectFor = noop, setOf = noop,
     membersOf = function(id) return sets[id] or { id } end }
 package.loaded["hyprspoon.focus"] = { invalidateWindowCache = noop, focus = noop, currentWindow = noop }
 package.loaded["hyprspoon.discover"] = { cancelLayoutCheck = noop, windowInfoFor = function() return {} end }
