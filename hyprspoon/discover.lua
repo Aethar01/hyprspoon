@@ -6,6 +6,7 @@ package.loaded["hyprspoon.discover"] = M
 local S = require("hyprspoon.state")
 local Util = require("hyprspoon.util")
 local Tree = require("hyprspoon.tree")
+local Tabs = require("hyprspoon.tabs")
 local Float = require("hyprspoon.float")
 local Spaces = require("hyprspoon.spaces")
 local Border = require("hyprspoon.border")
@@ -116,70 +117,28 @@ local function windowInfoFor(win)
     return info
 end
 
--- Native tabs: the filter reports every tab of a tabbed window as a window,
--- all "visible" and at the same frame, but only one is the live tab. Separate
--- windows can also open at identical frames (e.g. Ghostty), so keep every
--- window the app itself lists and only suppress unlisted duplicates. If none
--- are listed yet, prefer the one already tiled, else the oldest.
--- A window alone at its frame is always
--- live: the app's own list can lag behind events (e.g. right after the
--- selected tab closes), so it's only used to choose within a group.
+-- Native tabs: the rules are in Tabs.background; the plain facts about each
+-- window are gathered here, the frames and the app's own list only if asked.
 local function backgroundTabs(windows)
-    local perPid = {}
+    local plain = {}
     for _, win in ipairs(windows) do
-        local pid = win:pid()
-        perPid[pid] = perPid[pid] or {}
-        table.insert(perPid[pid], win)
+        local id = win:id()
+        plain[#plain + 1] = {
+            id = id, pid = win:pid(), win = win,
+            tiled = Tree.rectFor(id) ~= nil,
+            inTree = Tree.findByID(id) ~= nil,
+        }
     end
-
-    local background = {}
-    for pid, wins in pairs(perPid) do
-        -- Tiles never share a frame, so if every window of the app already
-        -- holds its own tile there are no background tabs to find (and no
-        -- reason to ask the app for frames).
-        local allTiled = #wins >= 2
-        for _, win in ipairs(wins) do
-            if not Tree.rectFor(win:id()) then allTiled = false break end
-        end
-        if #wins >= 2 and not allTiled then
-            local groups = {}
-            for _, win in ipairs(wins) do
-                local f = win:frame()
-                local gk = string.format("%d,%d,%d,%d",
-                    math.floor(f.x + 0.5), math.floor(f.y + 0.5),
-                    math.floor(f.w + 0.5), math.floor(f.h + 0.5))
-                groups[gk] = groups[gk] or {}
-                table.insert(groups[gk], win)
+    local background = Tabs.background(plain,
+        function(p) return p.win:frame() end,
+        function(pid)
+            local listed = {}
+            local app = hs.application.applicationForPID(pid)
+            for _, w in ipairs(app and app:allWindows() or {}) do
+                listed[w:id()] = true
             end
-
-            local listed = nil
-            for _, group in pairs(groups) do
-                if #group >= 2 then
-                    if not listed then
-                        listed = {}
-                        local app = hs.application.applicationForPID(pid)
-                        for _, w in ipairs(app and app:allWindows() or {}) do
-                            listed[w:id()] = true
-                        end
-                    end
-                    local function rank(win)
-                        local id = win:id()
-                        return (listed[id] and 0 or 2) + (Tree.findByID(id) and 0 or 1), id
-                    end
-                    table.sort(group, function(a, b)
-                        local ra, ia = rank(a)
-                        local rb, ib = rank(b)
-                        if ra ~= rb then return ra < rb end
-                        return ia < ib
-                    end)
-                    for i = 2, #group do
-                        local id = group[i]:id()
-                        if not listed[id] then background[id] = true end
-                    end
-                end
-            end
-        end
-    end
+            return listed
+        end)
     return function(win) return background[win:id()] == true end
 end
 
