@@ -26,7 +26,10 @@ local function onShow()
     if suspended then return ids end
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        if id and not Spaces.isHidden(id) and not Tree.behindMaximized(id) and not Tree.filling(id) then
+        -- Native full screen, Split View too (border.m also hides those
+        -- rings, for windows whose events haven't come yet).
+        if id and not S.fullscreen[id] and not Spaces.isHidden(id) and not Tree.behindMaximized(id)
+           and not Tree.filling(id) then
             ids[#ids + 1] = id
         end
     end
