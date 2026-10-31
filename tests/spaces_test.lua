@@ -251,6 +251,34 @@ assert(parkedAt[60].x > 1000 and parkedAt[61].x > 1000, "both parked on the Dell
 sets[60] = nil
 Focus.currentWindow = noop
 
+-- Group parking survives sync even on the visible workspace, and hidden
+-- members never become overview/query entries or workspace focus targets.
+Spaces.gotoWorkspace(3)
+local gshown, ghidden = win(70), win(71)
+gshown.title = function() return "group" end
+Util.managedWindows = function() return { gshown, ghidden } end
+Spaces.claim(gshown, "LAPTOP")
+Spaces.claim(ghidden, "LAPTOP")
+local group = { windowID = 70, members = { 70, 71 }, kind = "group" }
+package.loaded["hyprspoon.tree"].setOf = function(id)
+    if id == 70 or id == 71 then return group, "ws3" end
+end
+package.loaded["hyprspoon.tree"].findByID = noop
+Spaces.place(ghidden)
+assert(Spaces.isHidden(71) and not Spaces.isHidden(70))
+local corner = parkedAt[71]
+Spaces.gotoWorkspace(2)
+Spaces.gotoWorkspace(3)
+assert(parkedAt[71] == corner, "sync never unparks a hidden group member")
+assert(workspaceOf(70) == 3 and workspaceOf(71) == nil, "overview omits hidden members")
+Spaces.place(ghidden)
+assert(parkedAt[71] == corner, "placement leaves a parked group member alone")
+Focus.currentWindow = function() return gshown end
+Spaces.focusedWorkspace = function() return 3 end
+local query = require("hyprspoon.hooks").query()
+assert(#query.windows == 1 and query.windows[1].id == 70, "query ignores hidden group members")
+Focus.currentWindow = noop
+
 -- Pins are saved with the rest, and come back on reload.
 Spaces.stop()
 package.loaded["hyprspoon.spaces"] = nil

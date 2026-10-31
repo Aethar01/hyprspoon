@@ -389,4 +389,30 @@ test("groupNext, groupPrev and moveOutOfGroup go to the focused set's kind", fun
     assert(#calls == 4)
 end)
 
+test("group close handoff unparks and places the next member in the same pass", function()
+    local Spaces = package.loaded["hyprspoon.spaces"]
+    Util.windowFor = function(id) return wins[id] end
+    Spaces.park = noop
+    local unparked = nil
+    Spaces.unpark = function(w) unparked = w:id() end
+    package.loaded["hyprspoon.group"] = nil
+    local Group = require("hyprspoon.group")
+    pass({ A = { 1, 2 } })
+    local group = S.trees.ws1.b
+    group.members, group.kind = { 2, 3 }, "group"
+    local rect = group.rect
+    Util.focusHistory[1] = 2
+    pass({ A = { 1 } }, { 3 })
+    group = S.trees.ws1.b
+    assert(group.windowID == 3 and #group.members == 1 and group.kind == "group")
+    assert(unparked == 3 and wins[3].frame_.x == rect.x and wins[3].frame_.w == rect.w)
+    assert(focused[#focused] == 3, "focus follows the replacement")
+    Group.inset(3, 24)
+    pass({ A = { 1, 3 } })
+    assert(wins[3].frame_.y == group.rect.y + 24 and wins[3].frame_.h == group.rect.h - 24)
+    Group.inset(3, 0)
+    pass({ A = { 1, 3 } })
+    assert(wins[3].frame_.y == group.rect.y and wins[3].frame_.h == group.rect.h)
+end)
+
 print("Layout tests passed")
