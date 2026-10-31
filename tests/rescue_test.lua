@@ -46,9 +46,11 @@ local function win(id)
         setFrame = function(_, f) frames[id] = f end,
     }
 end
--- 13 is on another Space, out of hs.window's reach for now.
+-- 11 belongs to a hidden app; 13 is on another Desktop, out of
+-- hs.window's reach. Neither appears in the on-screen list.
 local reachable = { win(11), win(12), win(14) }
 local alive = { 11, 12, 13, 14 }
+local onScreen = { 12, 14 }
 
 hs = {
     settings = {
@@ -67,17 +69,27 @@ hs = {
         allWindows = function() return reachable end,
         list = function()
             local out = {}
-            for _, id in ipairs(alive) do out[#out + 1] = { kCGWindowNumber = id } end
+            for _, id in ipairs(onScreen) do out[#out + 1] = { kCGWindowNumber = id } end
             return out
         end,
     },
     reload = function() end,
 }
 
+local queries = 0
+local function liveIDs()
+    queries = queries + 1
+    local out = {}
+    for _, id in ipairs(alive) do out[id] = true end
+    return out
+end
+local native = { liveIDs = liveIDs }
+
 local noop = function() end
 local forgotten = false
 package.loaded["hyprspoon.util"] = {
     focusHistory = {}, winByID = {},
+    native = function(name) assert(name == "frames") return native end,
     managedWindows = function() return {} end,
     rulesFor = function() return {} end,
     pointInFrame = function(p, f)
@@ -111,6 +123,8 @@ Spaces.setParkedFrame(11, { x = 30, y = 40, w = 300, h = 200 })
 
 local back, missing = Spaces.rescue()
 assert(back == 2 and missing == 1, "two back, one out of reach, the closed one not counted")
+assert(queries == 1, "one all-window query confirms every missing ID")
+assert(frames[11], "a hidden app's window is rescued despite being off screen")
 assert(frames[11].x == 30 and frames[11].y == 40, "this run's frame wins over the saved one")
 assert(frames[12].x == 300 and frames[12].y == 250 and frames[12].w == 400,
     "a frame on a display that has gone is centred on the primary")
@@ -124,12 +138,44 @@ assert(saved.parked["13"] and not saved.parked["11"] and not saved.parked["15"],
     "only the window out of reach stays saved as parked")
 assert(not Spaces.hasWindows(2) and not Spaces.isHidden(13))
 
--- From 13's Space, again: it comes back too.
+-- Behind a full-screen Space, even an empty on-screen list must keep
+-- the unreachable window's saved frame for a later rescue.
+onScreen = {}
+reachable = {}
+back, missing = Spaces.rescue()
+assert(back == 0 and missing == 1 and settings["hyprspoon.workspaces"].parked["13"],
+    "a full-screen Space does not erase an unreachable window's saved frame")
+Spaces.start()
+Spaces.stop()
+assert(settings["hyprspoon.workspaces"].parked["13"], "sync also keeps the unreachable parked frame")
+
+-- Old/absent native modules and query failures preserve uncertain IDs.
+for _, mode in ipairs({ "old", "absent", "failed" }) do
+    native = mode == "old" and {} or mode == "failed" and { liveIDs = function() return nil end } or nil
+    back, missing = Spaces.rescue()
+    assert(back == 0 and missing == 1 and settings["hyprspoon.workspaces"].parked["13"],
+        mode .. " native query keeps the saved frame")
+end
+native = { liveIDs = liveIDs }
+
+-- From 13's Space, again: it comes back too. No all-window query is needed
+-- once the only saved ID is on screen.
+onScreen = { 11, 13 }
+local before = queries
 reachable = { win(11), win(13) }
 frames = {}
 back, missing = Spaces.rescue()
 assert(back == 1 and missing == 0 and frames[13].x == 50 and frames[11] == nil)
 assert(next(settings["hyprspoon.workspaces"].parked) == nil)
+assert(queries == before, "on-screen saved IDs need no all-window query")
+
+-- An authoritative empty all-window result really does forget closed IDs,
+-- even when the on-screen list is empty too.
+settings["hyprspoon.workspaces"].parked["15"] = { x = 50, y = 60, w = 300, h = 200 }
+onScreen, alive, reachable = {}, {}, {}
+back, missing = Spaces.rescue()
+assert(back == 0 and missing == 0 and next(settings["hyprspoon.workspaces"].parked) == nil,
+    "a confirmed closed window is forgotten")
 
 -- A saved state from another boot: its IDs could be anyone's now.
 settings["hyprspoon.workspaces"] = { boot = 1, parked = { ["11"] = { x = 0, y = 0, w = 10, h = 10 } } }

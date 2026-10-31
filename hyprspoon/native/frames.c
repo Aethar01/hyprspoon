@@ -23,6 +23,7 @@
 #include <os/lock.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -457,6 +458,24 @@ void framesWait(pid_t pid) {
 // Lua API
 // ---------------------------------------------------------------------------
 
+// Includes windows on other Spaces and of hidden apps. An on-screen list
+// cannot tell whether a missing window has closed.
+static int l_liveIDs(lua_State *L) {
+    CFArrayRef list = CGWindowListCreate(kCGWindowListOptionAll, kCGNullWindowID);
+    if (!list) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_newtable(L);
+    for (CFIndex i = 0; i < CFArrayGetCount(list); i++) {
+        CGWindowID wid = (CGWindowID)(uintptr_t)CFArrayGetValueAtIndex(list, i);
+        lua_pushboolean(L, true);
+        lua_rawseti(L, -2, (lua_Integer)wid);
+    }
+    CFRelease(list);
+    return 1;
+}
+
 // set(pid, wid, x, y, w, h, duration)
 static int l_set(lua_State *L) {
     pid_t pid = (pid_t)luaL_checkinteger(L, 1);
@@ -485,6 +504,7 @@ int luaopen_hyprspoon_native_frames(lua_State *L) {
     requestCount = 0;
 
     static const luaL_Reg funcs[] = {
+        { "liveIDs", l_liveIDs },
         { "set", l_set },
         { NULL, NULL },
     };

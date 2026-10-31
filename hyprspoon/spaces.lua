@@ -439,13 +439,22 @@ local function unpark(win)
     Util.setFrame(win, frame, 0)
 end
 
--- The IDs of every window WindowServer has, on any Space. One CGWindowList
--- query, not hs.window.get per ID: that walks every app's windows over
--- accessibility each time and stalls the slide animations.
-local function liveIDs()
+-- Check saved IDs against the on-screen list first. A missing ID needs
+-- one all-window query: other Spaces and hidden apps aren't on screen.
+-- Without the native query (or if it fails), nil means keep uncertain IDs.
+-- Neither query uses accessibility, which stalls the slide animations.
+local function liveIDs(ids, others)
     local live = {}
     for _, w in ipairs(hs.window.list(true) or {}) do
         if w.kCGWindowNumber then live[w.kCGWindowNumber] = true end
+    end
+    for _, tracked in ipairs({ ids, others }) do
+        for id in pairs(tracked) do
+            if not live[id] then
+                local frames = Util.native("frames")
+                return frames and frames.liveIDs and frames.liveIDs()
+            end
+        end
     end
     return live
 end
@@ -456,8 +465,8 @@ local function sync(force)
     -- A missed window-filter event can leave a dead window ID in `of` or
     -- `parked`, keeping its workspace alive. Reconcile those IDs against
     -- WindowServer whenever workspace state is synced.
-    local live, stale = liveIDs(), {}
-    if next(live) then
+    local live, stale = liveIDs(of, parked), {}
+    if live then
         for id in pairs(of) do
             if not live[id] then stale[id] = true end
         end
@@ -1177,8 +1186,8 @@ function M.rescue()
         for id, f in pairs(saved.parked) do frames[tonumber(id)] = f end
     end
     for id, f in pairs(parked) do frames[id] = f end
-    local live = liveIDs()
-    if next(live) then
+    local live = liveIDs(frames)
+    if live then
         for id in pairs(frames) do
             if not live[id] then frames[id] = nil end
         end
