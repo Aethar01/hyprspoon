@@ -293,11 +293,11 @@ static int listCid = 0;
 // WindowServer sends every connection events; one left unread fills up
 // until WindowServer times out on it, stalling the screen. listCid's are
 // read and dropped here.
-static dispatch_queue_t drainQueue = NULL;
-static dispatch_source_t drain = NULL;
-static mach_port_t drainPort = MACH_PORT_NULL;
+static dispatch_queue_t listDrainQueue = NULL;
+static dispatch_source_t listDrain = NULL;
+static mach_port_t listDrainPort = MACH_PORT_NULL;
 
-static void drainEvents(void *unused) {
+static void drainListEvents(void *unused) {
     (void)unused;
     struct {
         mach_msg_header_t header;
@@ -305,7 +305,7 @@ static void drainEvents(void *unused) {
     } message;
     for (;;) {
         mach_msg_return_t r = mach_msg(&message.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(message),
-            drainPort, 0, MACH_PORT_NULL);
+            listDrainPort, 0, MACH_PORT_NULL);
         if (r == MACH_MSG_SUCCESS) mach_msg_destroy(&message.header);
         else if (r != MACH_RCV_TOO_LARGE) break;
     }
@@ -337,26 +337,26 @@ static void openListConnection(void) {
         listCid = 0;
         return;
     }
-    drainQueue = dispatch_queue_create("hyprspoon.tabs.drain", DISPATCH_QUEUE_SERIAL);
-    drainPort = MACH_PORT_NULL;
-    if (eventPort(listCid, &drainPort) == kCGErrorSuccess && drainPort != MACH_PORT_NULL) {
-        drain = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, drainPort, 0, drainQueue);
-        dispatch_source_set_event_handler_f(drain, drainEvents);
-        dispatch_resume(drain);
-        dispatch_async_f(drainQueue, NULL, drainEvents);
+    listDrainQueue = dispatch_queue_create("hyprspoon.tabs.listDrain", DISPATCH_QUEUE_SERIAL);
+    listDrainPort = MACH_PORT_NULL;
+    if (eventPort(listCid, &listDrainPort) == kCGErrorSuccess && listDrainPort != MACH_PORT_NULL) {
+        listDrain = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, listDrainPort, 0, listDrainQueue);
+        dispatch_source_set_event_handler_f(listDrain, drainListEvents);
+        dispatch_resume(listDrain);
+        dispatch_async_f(listDrainQueue, NULL, drainListEvents);
     }
 }
 
 static void closeListConnection(void) {
-    if (drain) {
-        dispatch_source_cancel(drain);
-        dispatch_release(drain);
-        drain = NULL;
+    if (listDrain) {
+        dispatch_source_cancel(listDrain);
+        dispatch_release(listDrain);
+        listDrain = NULL;
     }
-    if (drainQueue) {
-        dispatch_sync(drainQueue, ^{}); // nothing of it left running
-        dispatch_release(drainQueue);
-        drainQueue = NULL;
+    if (listDrainQueue) {
+        dispatch_sync(listDrainQueue, ^{}); // nothing of it left running
+        dispatch_release(listDrainQueue);
+        listDrainQueue = NULL;
     }
     if (listCid) releaseConnection(listCid);
     listCid = 0;
