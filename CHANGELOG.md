@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 (2026-11-02)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:
 `border.so` and `frames.so` take the fix below.
