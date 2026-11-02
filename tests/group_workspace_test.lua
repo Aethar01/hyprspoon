@@ -69,7 +69,7 @@ package.loaded["hyprspoon.util"] = Util
 package.loaded["hyprspoon.discover"] = { layoutChecks = {}, cancelLayoutCheck = noop }
 local ring = {}
 package.loaded["hyprspoon.border"] = {
-    sync = noop,
+    sync = noop, syncNow = noop,
     handOver = function(from, to) ring[#ring + 1] = { from, to } end,
 }
 local focused = {}

@@ -152,9 +152,15 @@ function M.update(onlyLeaf)
                     bars[leaf] = bar
                     bar.canvas:level(hs.canvas.windowLevels.normal)
                     bar.canvas:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
-                    bar.canvas:canvasMouseEvents(true, false, false, false)
+                    -- On mouse up, as a button does: switching on mouse down
+                    -- left the mouse up to land after the new window took
+                    -- focus, and it lost it.
+                    bar.canvas:canvasMouseEvents(false, true, false, false)
+                    -- A click mustn't make Hammerspoon the active app: focus
+                    -- would leave the group and its colours fade out and in.
+                    bar.canvas:clickActivating(false)
                     bar.canvas:mouseCallback(function(_, event, _, x, y)
-                        if event == "mouseDown" then
+                        if event == "mouseUp" then
                             local member = M.memberAt(bar.cells, x, y)
                             if member then Group.selectMember(member) end
                         end
@@ -176,6 +182,11 @@ function M.update(onlyLeaf)
                 local hitH = cfg.under and height or barH
                 for _, cell in ipairs(bar.cells) do cell.h = hitH end
                 local drawn = spec(cfg, bar.cells, height)
+                bar.spec = drawn
+                local out = drawn.outset
+                local hit = { x = rect.x - out, y = rect.y, w = rect.w + 2 * out, h = hitH }
+                -- The canvas's frame, so the border's masks know it covers nothing.
+                drawn.hit = { hit.x, hit.y, hit.w, hit.h }
                 -- Everything but the titles: a change there lays the bar out
                 -- again; titles alone are only retitled.
                 local signature = table.concat({ tostring(id), tostring(rect.x), tostring(rect.y),
@@ -192,6 +203,10 @@ function M.update(onlyLeaf)
                     local old = bar.id
                     bar.id = id
                     if old ~= id then release(old, bar) end
+                    -- The window handOver took the bar from, once the new
+                    -- one has it (its ring and that bar are gone by now).
+                    if bar.leaving and bar.leaving ~= id then release(bar.leaving, bar) end
+                    bar.leaving = nil
                     if not Border.bar(id, drawn) and not warned then
                         warned = true
                         print("hyprspoon: group bars need the native border module (make -C hyprspoon/native)")
@@ -204,8 +219,7 @@ function M.update(onlyLeaf)
                             fillColor = { white = 0, alpha = 0.01 },
                             frame = { x = cell.x, y = 0, w = cell.w, h = hitH } }
                     end
-                    local out = drawn.outset
-                    bar.canvas:frame({ x = rect.x - out, y = rect.y, w = rect.w + 2 * out, h = hitH })
+                    bar.canvas:frame(hit)
                     bar.canvas:replaceElements(table.unpack(elements))
                     bar.canvas:show()
                 end
@@ -234,6 +248,25 @@ function M.titleChanged(win)
                 bar.titles[i] = label
                 Border.title(bar.id, i, label)
             end
+            return
+        end
+    end
+end
+
+-- A group shows `to` instead of `from` (Layout.showMember): the bar goes
+-- to `to` first, with `to` shown, before the windows swap; the next update
+-- redraws it fully and lets `from` go.
+function M.handOver(from, to)
+    if not running then return end
+    for _, bar in pairs(bars) do
+        if bar.id == from and bar.spec then
+            local moved = {}
+            for k, v in pairs(bar.spec) do moved[k] = v end
+            for i, cell in ipairs(bar.cells or {}) do
+                if cell.id == to then moved.shown = i end
+            end
+            bar.id, bar.leaving, bar.spec, bar.signature = to, from, moved, nil
+            Border.bar(to, moved)
             return
         end
     end

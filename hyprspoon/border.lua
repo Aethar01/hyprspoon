@@ -65,6 +65,12 @@ function M.sync()
     if native then syncTimer:start() end
 end
 
+-- The same, straight away (a group showing another member).
+function M.syncNow()
+    syncTimer:stop()
+    if native then native.set(onShow()) end
+end
+
 -- The windows WindowServer should tell us about (see Util.watchWindows).
 function M.watch(ids)
     if native then native.watch(ids) end

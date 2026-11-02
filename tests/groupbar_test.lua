@@ -13,7 +13,7 @@ hs = {
         end
         function c:mouseCallback(fn) self.click = fn end
         function c:delete() self.deleted = true end
-        c.level, c.behavior, c.canvasMouseEvents, c.show = noop, noop, noop, noop
+        c.level, c.behavior, c.canvasMouseEvents, c.show, c.clickActivating = noop, noop, noop, noop, noop
         canvases[#canvases + 1] = c
         return c
     end },
@@ -71,7 +71,7 @@ assert(leaf.groupInset == 24 and #canvases == 1)
 local canvas = canvases[1]
 assert(canvas.frame_.x == -100 and #canvas.elements == 2)
 assert(drawn[3].titles[2] == "Window 3" and drawn[3].shown == 2 and drawn[3].above == 24)
-canvas.click(canvas, "mouseDown", nil, 80, 10)
+canvas.click(canvas, "mouseUp", nil, 80, 10)
 assert(selected == 3)
 Bar.update()
 assert(#canvases == 1 and canvas.draws == 1 and drawCalls == 1, "unchanged refresh keeps the bar")
@@ -83,7 +83,7 @@ info.selected = { 1, 3 }
 Bar.update()
 assert(drawn[3] == nil and drawn[1].shown == 1, "the bar moves to the window on show")
 assert(drawn[1].titles[2] == "Window 3", "hidden units use their remembered tab's title")
-canvas.click(canvas, "mouseDown", nil, 180, 10)
+canvas.click(canvas, "mouseUp", nil, 180, 10)
 assert(selected == 3, "bar selects the remembered native tab instead of members[1]")
 local function disappears(set, reset)
     local last = canvases[#canvases]
@@ -113,6 +113,16 @@ assert(drawn[1] and canvases[#canvases - 1].deleted, "moving a group keeps its b
 leaf = before
 Bar.update()
 assert(drawn[1], "and moving it back too")
+-- Showing another member: the bar is on the new window before the swap,
+-- and the old one's goes on the next update.
+Bar.handOver(1, 3)
+assert(drawn[3] and drawn[3].shown == 2 and drawn[1], "the new window has the bar before the swap")
+info.shown, leaf.windowID = 3, 3
+Bar.update()
+assert(drawn[3] and drawn[1] == nil, "the old window's bar goes once the new one has it")
+info.shown, leaf.windowID = 1, 1
+Bar.update()
+assert(drawn[1] and drawn[3] == nil)
 -- Membership and title changes redraw without keeping stale click targets.
 info.members = { { 1 } }
 Bar.update()
@@ -135,7 +145,7 @@ assert(drawn[1].titles[1] == "Changed title")
 wins[1].title = function() return "Again" end
 Bar.update()
 assert(drawCalls == draws and titleCalls == 2 and drawn[1].titles[1] == "Again")
-last.click(last, "mouseDown", nil, 180, 10)
+last.click(last, "mouseUp", nil, 180, 10)
 assert(selected == 1)
 -- Separate reasons cannot accidentally bring a strip back during the overview.
 Bar.suspend("slide", true)

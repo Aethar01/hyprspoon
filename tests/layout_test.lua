@@ -67,6 +67,7 @@ local Util = {
     native = noop,
     rulesFor = function() return {} end,
     focusedWindow = noop,
+    setFrame = function(win, rect, duration) win:setFrame(rect, duration) end,
     pointInFrame = function(p, f)
         return p.x >= f.x and p.x < f.x + f.w and p.y >= f.y and p.y < f.y + f.h
     end,
@@ -98,7 +99,7 @@ package.loaded["hyprspoon.discover"] = {
 }
 local ring = {}
 package.loaded["hyprspoon.border"] = {
-    sync = noop,
+    sync = noop, syncNow = noop,
     handOver = function(from, to) ring[#ring + 1] = { from, to } end,
 }
 local focused = {}
