@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating:
+`border.so` and `frames.so` take the fix below.
+
+- Switching workspaces or toggling scratchpads quickly no longer freezes
+  Hammerspoon for half a second every few switches, firing the queued
+  hotkeys all at once. The border masks, the Mission Control check and
+  the native tab snapshot listed windows on Hammerspoon's main
+  WindowServer connection from background queues, and on a busy
+  WindowServer each list held that connection for up to 500ms while the
+  main thread waited to draw. They now list windows over connections of
+  their own.
+- Scratchpads slide in with their windows in place after toggling them
+  quickly: their tiles go straight into place under the slide, as
+  workspaces' already did.
+
 ## 0.4.2 (2026-11-02)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:
