@@ -118,7 +118,18 @@ S.defaults = {
         font = false, -- false uses the system menu-bar font, or a font name
         size = 12, -- title font size in points
         padding = 8, -- horizontal padding inside each equal-width segment
+        radius = 0, -- segment corner radius in points
+        gap = 0, -- space between segments, in points
+        inset = 0, -- keep the strip this far from each side, e.g. the window's corner radius
+        overlap = 0, -- with tabs, how far they extend down over the window's top edge, in points
+        outset = 0, -- points past each side of the window; "border" matches the border width
+        under = false, -- with overlap, the tabs look to sit behind the window: its corners and ring show over them
+        tabs = false, -- tab look: flush with the window, rounded on top, inactive ones lowered
+        drop = 0, -- with tabs, how far inactive tabs sit below the active one, in points
+        offset = 0, -- extra space between the segments and the border ring, in points
         text = { white = 1 }, -- title colour: "#rrggbb" or hs.drawing.color table
+        active = false, -- shown tab when focused; false uses border.active
+        inactive = false, -- other tabs, and the shown one unfocused; false uses border.inactive
     } },
 
     -- App names whose windows are never managed or tiled (palettes, overlays,

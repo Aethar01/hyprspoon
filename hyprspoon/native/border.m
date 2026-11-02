@@ -2,7 +2,7 @@
 //
 // Loaded by hyprspoon/border.lua as hyprspoon.native.border (build: make -C hyprspoon/native).
 //
-// Lua functions: set(ids, opacityByID), focus(id, duration), active(),
+// Lua functions: set(ids, opacityByID), focus(id, duration), active(), bar(id, spec), title(id, n, text),
 // overview(on), watch(ids), previewer(), style(options), stop(),
 // mask(optionsOrFalse), remask(). mask returns whether masking is enabled
 // (macOS 13+); remask waits for a fresh snapshot and full mask recomputation
@@ -35,6 +35,11 @@
 // Notifications only note which windows changed; a burst of them becomes
 // one update at the latest bounds.
 //
+// Group bars (bar()) are drawn in the ring's window too, above its target:
+// tabs whose shown one takes the ring's colour, fading with it in the same
+// animation, and following the window as the ring does. Lua keeps an
+// invisible hs.canvas under each for clicks (see groupbar.lua).
+//
 // Experimental (experimental.borderMask in hyprspoon/state.lua): each
 // ring's layer gets a mask cutting out the windows above its own (see
 // Masks), from one snapshot of the windows on screen per update.
@@ -45,6 +50,7 @@
 
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
+#import <CoreText/CoreText.h>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <mach/mach.h>
@@ -143,7 +149,15 @@ typedef struct {
     uint32_t wid;    // our window
     CAContext *context;
     CALayer *root;   // the window's content, its origin top-left
+    CALayer *content; // everything drawn, masked as one (see Masks)
     CALayer *layer;  // the ring: a border around the target's outline
+    CALayer *bar;    // the group bar's tabs, clipped to the bar (see Bars)
+    NSMutableArray *tabLayers, *labels; // the bar's tab and title layers
+    CALayer *shownFill; // the tab in the ring's colour, fading with it
+    CAShapeLayer *barMask; // with `under`, cuts the target and ring out of the bar
+    CGPoint margin;  // where the target's top-left sits in the window
+    CGPoint origin;  // the window's top-left on screen
+    bool dirty;      // the bar changed: lay out again
     uint32_t target; // the window it surrounds; 0 when free
     CGRect bounds;   // the target's bounds it was last placed for
     bool drawn;      // laid out for bounds.size
@@ -224,10 +238,15 @@ static CGFloat padding(void) {
     return style.width + 1;
 }
 
-// The ring's colour `mix` of the way from inactive to active (retained).
+// The ring's colour `mix` of the way from inactive to active, as sRGBA.
+static void mixColor(float mix, CGFloat c[4]) {
+    for (int i = 0; i < 4; i++) c[i] = style.inactive[i] + (style.active[i] - style.inactive[i]) * mix;
+}
+
+// The same, as a CGColor (retained).
 static CGColorRef colorAt(float mix) {
     CGFloat c[4];
-    for (int i = 0; i < 4; i++) c[i] = style.inactive[i] + (style.active[i] - style.inactive[i]) * mix;
+    mixColor(mix, c);
     return CGColorCreateSRGB(c[0], c[1], c[2], c[3]);
 }
 
@@ -243,7 +262,7 @@ static float mixAt(Ring *ring, double t) {
 // while CoreAnimation still holds finished fades, and releasing one then
 // read its key path from the unloaded image's constant strings (the crash
 // that came with reloads). So they're made at load, on the heap.
-static NSString *borderColorKey = nil, *fadeKey = nil;
+static NSString *borderColorKey = nil, *backgroundColorKey = nil, *fadeKey = nil;
 
 static void beginChanges(void) {
     [CATransaction begin];
@@ -255,21 +274,180 @@ static void commitChanges(void) {
     [CATransaction flush];
 }
 
+// ---------------------------------------------------------------------------
+// Bars
+// ---------------------------------------------------------------------------
+//
+// A group's bar, keyed by the window on show, which may have no ring yet:
+// the ring picks it up when it's made. Lengths are points; `above` is how
+// far the bar reaches above the target, `overlap` how far over it.
+
+typedef struct {
+    uint32_t target; // 0 when free
+    CGFloat above, overlap, outset, inset, gap, radius, drop, padding, offset;
+    bool tabs;
+    bool under;      // the overlap looks to sit behind the target and its ring
+    CGFloat text[4];
+    // Tab colours, each the ring's unless given (hasActive, hasInactive).
+    CGFloat active[4], inactive[4];
+    bool hasActive, hasInactive;
+    CTFontRef font;  // retained
+    NSMutableArray *titles; // retained
+    int shown;       // the tab on show, from 0
+} Bar;
+
+#define MAX_BARS MAX_RINGS
+static Bar bars[MAX_BARS];
+
+static Bar *barFor(uint32_t target) {
+    if (!target) return NULL;
+    for (int i = 0; i < MAX_BARS; i++) {
+        if (bars[i].target == target) return &bars[i];
+    }
+    return NULL;
+}
+
+static void freeBar(Bar *bar) {
+    if (bar->font) CFRelease(bar->font);
+    [bar->titles release];
+    memset(bar, 0, sizeof(*bar));
+}
+
+// The bar's rectangle in the target's coordinates (its top-left at 0, 0).
+static CGRect barRect(const Bar *bar, CGSize target) {
+    CGFloat h = bar->tabs ? bar->above + bar->overlap : fmax(1, bar->above - style.width - bar->offset);
+    return CGRectMake(-bar->outset, -bar->above, target.width + 2 * bar->outset, h);
+}
+
+// A tab's colour `mix` of the way from inactive to active (retained): the
+// bar's own colours where given, else the ring's.
+static CGColorRef tabColorAt(const Bar *bar, float mix) {
+    const CGFloat *a = bar && bar->hasActive ? bar->active : style.active;
+    const CGFloat *b = bar && bar->hasInactive ? bar->inactive : style.inactive;
+    CGFloat c[4];
+    for (int i = 0; i < 4; i++) c[i] = b[i] + (a[i] - b[i]) * mix;
+    return CGColorCreateSRGB(c[0], c[1], c[2], c[3]);
+}
+
+// Room around the target: the ring's, and the bar's above and to the sides.
+static CGPoint marginFor(Ring *ring) {
+    CGFloat pad = padding();
+    Bar *bar = barFor(ring->target);
+    if (!bar) return CGPointMake(pad, pad);
+    return CGPointMake(fmax(pad, bar->outset), fmax(pad, bar->above));
+}
+
+// The bar's tabs and titles for the target's current size (inside a
+// transaction). The shown tab is in the ring's colour; any fade under way
+// carries on, as only its model value is set here.
+static void layoutBar(Ring *ring) {
+    Bar *bar = barFor(ring->target);
+    int count = bar ? (int)bar->titles.count : 0;
+    ring->bar.hidden = count == 0;
+    if (!count) {
+        ring->shownFill = nil;
+        return;
+    }
+    while ((int)ring->tabLayers.count < count) {
+        CALayer *fill = [CALayer layer];
+        fill.cornerCurve = kCACornerCurveCircular;
+        CATextLayer *label = [CATextLayer layer];
+        label.alignmentMode = kCAAlignmentCenter;
+        label.truncationMode = kCATruncationEnd;
+        [ring->tabLayers addObject:fill];
+        [ring->labels addObject:label];
+        [ring->bar addSublayer:fill];
+        [ring->bar addSublayer:label];
+    }
+    for (int i = 0; i < (int)ring->tabLayers.count; i++) {
+        ((CALayer *)ring->tabLayers[i]).hidden = i >= count;
+        ((CALayer *)ring->labels[i]).hidden = i >= count;
+    }
+    CGRect area = barRect(bar, ring->bounds.size);
+    ring->bar.frame = CGRectOffset(area, ring->margin.x, ring->margin.y);
+    CGFloat barH = area.size.height, total = area.size.width;
+    CGFloat inset = fmin(bar->inset, total / 4), span = total - 2 * inset;
+    CGFloat lineH = CTFontGetAscent(bar->font) + CTFontGetDescent(bar->font) + CTFontGetLeading(bar->font);
+    CGColorRef inactive = tabColorAt(bar, 0), text = CGColorCreateSRGB(bar->text[0], bar->text[1], bar->text[2], bar->text[3]);
+    CGColorRef current = tabColorAt(bar, ring->to);
+    ring->shownFill = nil;
+    for (int i = 0; i < count; i++) {
+        CGFloat x = inset + span * i / count, w = inset + span * (i + 1) / count - x;
+        bool shown = i == bar->shown;
+        CGFloat gap = fmin(bar->gap, fmin(w / 4, barH / 4));
+        CGFloat radius = fmin(bar->radius, barH / 2);
+        CGFloat top = bar->tabs ? (shown ? 0 : fmin(bar->drop, barH / 2)) : gap / 2;
+        // Tabs reach past the bar's bottom by their radius, clipped there:
+        // rounded on top only.
+        CGFloat h = bar->tabs ? barH - top + radius : barH - gap;
+        CGFloat left = i == 0 ? 0 : gap / 2, right = i == count - 1 ? 0 : gap / 2;
+        CALayer *fill = ring->tabLayers[i];
+        fill.frame = CGRectMake(x + left, top, w - left - right, h);
+        fill.cornerRadius = radius;
+        if (shown) {
+            fill.backgroundColor = current;
+            ring->shownFill = fill;
+        } else {
+            [fill removeAllAnimations];
+            fill.backgroundColor = inactive;
+        }
+        CGFloat visible = bar->tabs ? bar->above - top : barH;
+        CGFloat pad = fmin(bar->padding, w / 2);
+        CATextLayer *label = ring->labels[i];
+        label.frame = CGRectMake(x + pad, fmax(0, top + (visible - lineH) / 2), fmax(0, w - 2 * pad), lineH);
+        // Each of these redraws the text when set, so only when changed.
+        if (![label.string isEqual:bar->titles[i]]) label.string = bar->titles[i];
+        if (label.font != (CFTypeRef)bar->font) {
+            label.font = bar->font;
+            label.fontSize = CTFontGetSize(bar->font);
+        }
+        if (!label.foregroundColor || !CGColorEqualToColor(label.foregroundColor, text)) label.foregroundColor = text;
+        if (label.contentsScale != style.resolution) label.contentsScale = style.resolution;
+    }
+    CGColorRelease(inactive);
+    CGColorRelease(text);
+    CGColorRelease(current);
+    // Everything here draws above the target, so `under` cuts the target's
+    // outline grown by the ring out of the bar: its corners and ring then
+    // show over the tabs, which fill in only around them.
+    if (bar->under) {
+        if (!ring->barMask) ring->barMask = [[CAShapeLayer alloc] init];
+        CGFloat w = style.width;
+        CGSize size = ring->bounds.size;
+        CGRect hole = CGRectMake(bar->outset - w, bar->above - w, size.width + 2 * w, size.height + 2 * w);
+        CGFloat r = fmin(ring->radius + w, fmin(hole.size.width, hole.size.height) / 2);
+        CGMutablePathRef path = CGPathCreateMutable();
+        CGPathAddRect(path, NULL, ring->bar.bounds);
+        CGPathAddRoundedRect(path, NULL, hole, r, r);
+        ring->barMask.frame = ring->bar.bounds;
+        ring->barMask.path = path;
+        ring->barMask.fillRule = kCAFillRuleEvenOdd;
+        ring->barMask.fillColor = CGColorGetConstantColor(kCGColorBlack);
+        CGPathRelease(path);
+        ring->bar.mask = ring->barMask;
+    } else {
+        ring->bar.mask = nil;
+    }
+}
+
 // See Masks.
 static bool snapshotTaken;
 static void maskRing(Ring *ring);
 static bool seenLevel(uint32_t wid, int64_t *level);
 
 // The ring around the target's outline: inside, the target's corner
-// radius; outside, that grown by the width. The target sits `padding` in
-// from the window's top-left corner.
+// radius; outside, that grown by the width, and the bar above. The target
+// sits `margin` in from the window's top-left corner.
 static void layout(Ring *ring) {
-    CGFloat pad = padding(), w = style.width;
+    CGFloat w = style.width;
+    CGPoint m = ring->margin;
     beginChanges();
     ring->root.frame = (CGRect){ CGPointZero, ring->canvas };
-    ring->layer.frame = CGRectMake(pad - w, pad - w, ring->bounds.size.width + 2 * w, ring->bounds.size.height + 2 * w);
+    ring->content.frame = ring->root.bounds;
+    ring->layer.frame = CGRectMake(m.x - w, m.y - w, ring->bounds.size.width + 2 * w, ring->bounds.size.height + 2 * w);
     ring->layer.borderWidth = w;
     ring->layer.cornerRadius = ring->radius + w;
+    layoutBar(ring);
     // Its mask changes with it, in the same transaction.
     if (snapshotTaken) maskRing(ring);
     commitChanges();
@@ -333,12 +511,18 @@ static bool makeWindow(Ring *ring) {
     CAContext *context = [[CAContext contextWithCGSConnection:(uint32_t)drawCid options:@{}] retain];
     CALayer *root = [[CALayer alloc] init];
     root.geometryFlipped = YES;
+    CALayer *content = [[CALayer alloc] init];
+    [root addSublayer:content];
     CALayer *layer = [[CALayer alloc] init];
     layer.cornerCurve = kCACornerCurveCircular;
     CGColorRef color = colorAt(0);
     layer.borderColor = color;
     CGColorRelease(color);
-    [root addSublayer:layer];
+    [content addSublayer:layer];
+    CALayer *bar = [[CALayer alloc] init];
+    bar.masksToBounds = YES;
+    bar.hidden = YES;
+    [content addSublayer:bar];
     context.layer = root;
     commitChanges();
     uint64_t tags = (1ULL << 1) | (1ULL << 9);
@@ -350,7 +534,9 @@ static bool makeWindow(Ring *ring) {
     if (region) CFRelease(region);
     if (opaque) CFRelease(opaque);
     if (!wid) {
+        [bar release];
         [layer release];
+        [content release];
         [root release];
         [context release];
         return false;
@@ -372,7 +558,11 @@ static bool makeWindow(Ring *ring) {
     ring->wid = wid;
     ring->context = context;
     ring->root = root;
+    ring->content = content;
     ring->layer = layer;
+    ring->bar = bar;
+    ring->tabLayers = [[NSMutableArray alloc] init];
+    ring->labels = [[NSMutableArray alloc] init];
     return true;
 }
 
@@ -418,9 +608,15 @@ static CGFloat stepUp(CGFloat length) {
 static bool place(Ring *ring, bool restack) {
     CGRect bounds = ring->preview;
     if (!ring->previewing && SLSGetWindowBounds(drawCid, ring->target, &bounds) != kCGErrorSuccess) return false;
+    CGPoint margin = marginFor(ring);
     CGFloat pad = padding();
-    CGRect frame = CGRectInset(bounds, -pad, -pad);
-    bool resize = !ring->drawn || !CGSizeEqualToSize(bounds.size, ring->bounds.size);
+    CGRect frame = CGRectMake(bounds.origin.x - margin.x, bounds.origin.y - margin.y,
+        bounds.size.width + 2 * margin.x, bounds.size.height + margin.y + pad);
+    bool resize = !ring->drawn || ring->dirty || !CGSizeEqualToSize(bounds.size, ring->bounds.size)
+        || !CGPointEqualToPoint(margin, ring->margin);
+    ring->dirty = false;
+    ring->margin = margin;
+    ring->origin = frame.origin;
     // A new size for the window when the ring outgrows it, or it has grown
     // far bigger than the ring.
     CGSize need = frame.size, have = ring->canvas;
@@ -529,7 +725,7 @@ static Ring *newRing(uint32_t target) {
     [ring->layer removeAllAnimations];
     ring->layer.borderColor = color;
     CGColorRelease(color);
-    ring->layer.mask = nil;
+    ring->content.mask = nil;
     ring->maskKey = 0;
     commitChanges();
     ring->radius = cornerRadius(target);
@@ -616,6 +812,18 @@ static bool isRingWindow(uint32_t wid) {
     return false;
 }
 
+// One of Hammerspoon's windows lying within a ring's group bar: the
+// invisible hs.canvas taking the bar's clicks (see groupbar.lua).
+static bool isBarCanvas(CGRect bounds) {
+    for (int i = 0; i < ringCount; i++) {
+        Bar *bar = rings[i].target ? barFor(rings[i].target) : NULL;
+        if (!bar) continue;
+        CGRect area = CGRectOffset(barRect(bar, rings[i].bounds.size), rings[i].bounds.origin.x, rings[i].bounds.origin.y);
+        if (CGRectContainsRect(CGRectInset(area, -2, -2), bounds)) return true;
+    }
+    return false;
+}
+
 static int number(CFDictionaryRef info, CFStringRef key, CFNumberType type, void *out) {
     CFNumberRef n = CFDictionaryGetValue(info, key);
     return n && CFNumberGetValue(n, type, out);
@@ -650,7 +858,7 @@ static void takeSnapshot(void) {
         number(info, kCGWindowLayer, kCFNumberSInt32Type, &level);
         number(info, kCGWindowAlpha, kCFNumberDoubleType, &alpha);
         if (alpha <= 0 || level >= kCGScreenSaverWindowLevel) continue;
-        if (pid == self && (level > 0 || isRingWindow((uint32_t)wid))) continue;
+        if (pid == self && (level > 0 || isRingWindow((uint32_t)wid) || isBarCanvas(bounds))) continue;
         bool coversDisplay = false;
         for (uint32_t d = 0; d < displayCount && level > 0 && !coversDisplay; d++) {
             coversDisplay = CGRectContainsRect(bounds, CGDisplayBounds(displays[d]));
@@ -700,8 +908,7 @@ typedef struct {
 
 // The windows above the ring's target that overlap the ring.
 static int coversOf(Ring *ring, Cover *covers) {
-    CGFloat w = style.width;
-    CGRect area = CGRectInset(ring->bounds, -w, -w);
+    CGRect area = { ring->origin, ring->canvas };
     int target = -1;
     for (int i = 0; i < seenCount; i++) {
         if (seen[i].wid == ring->target) {
@@ -734,7 +941,10 @@ static int coversOf(Ring *ring, Cover *covers) {
 // same one again (most rings, most updates). Never 0.
 static uint64_t maskKey(Ring *ring, const Cover *covers, int count) {
     uint64_t h = 1469598103934665603ULL;
-    const unsigned char *p = (const unsigned char *)&ring->bounds.size;
+    CGRect frame = { ring->margin, ring->bounds.size };
+    const unsigned char *p = (const unsigned char *)&frame;
+    for (size_t i = 0; i < sizeof(CGRect); i++) h = (h ^ p[i]) * 1099511628211ULL;
+    p = (const unsigned char *)&ring->canvas;
     for (size_t i = 0; i < sizeof(CGSize); i++) h = (h ^ p[i]) * 1099511628211ULL;
     p = (const unsigned char *)covers;
     for (size_t i = 0; i < sizeof(Cover) * count; i++) h = (h ^ p[i]) * 1099511628211ULL;
@@ -806,12 +1016,12 @@ static void maskRing(Ring *ring) {
     if (key == ring->maskKey) return;
     ring->maskKey = key;
     if (!count) {
-        ring->layer.mask = nil;
+        ring->content.mask = nil;
         return;
     }
     if (@available(macOS 13.0, *)) {
         Piece parts[MAX_PIECES];
-        CGSize size = ring->layer.bounds.size;
+        CGSize size = ring->canvas;
         int n = pieces(size, covers, count, parts);
         if (!ring->mask) ring->mask = [[CALayer alloc] init];
         ring->mask.frame = (CGRect){ CGPointZero, size };
@@ -830,7 +1040,7 @@ static void maskRing(Ring *ring) {
         }
         // None at all: the ring is covered whole.
         ring->mask.sublayers = shapes;
-        ring->layer.mask = ring->mask;
+        ring->content.mask = ring->mask;
     }
 }
 
@@ -858,7 +1068,7 @@ static void maskAll(void) {
 static void dropMasks(void) {
     beginChanges();
     for (int i = 0; i < ringCount; i++) {
-        rings[i].layer.mask = nil;
+        rings[i].content.mask = nil;
         rings[i].maskKey = 0;
     }
     commitChanges();
@@ -1116,6 +1326,16 @@ static void blend(Ring *ring, float to, double duration) {
     [ring->layer removeAllAnimations];
     CGColorRef end = colorAt(to);
     ring->layer.borderColor = end;
+    // The group bar's shown tab fades with the ring, in the same
+    // transaction and steps, between its own colours.
+    CALayer *tab = ring->shownFill;
+    Bar *bar = tab ? barFor(ring->target) : NULL;
+    if (tab) {
+        [tab removeAllAnimations];
+        CGColorRef tabEnd = tabColorAt(bar, to);
+        tab.backgroundColor = tabEnd;
+        CGColorRelease(tabEnd);
+    }
     int steps = (int)ceil(duration * FADE_RATE);
     if (steps > 1) {
         NSMutableArray *values = [NSMutableArray arrayWithCapacity:steps];
@@ -1129,6 +1349,19 @@ static void blend(Ring *ring, float to, double duration) {
         fade.calculationMode = kCAAnimationDiscrete;
         fade.duration = duration;
         [ring->layer addAnimation:fade forKey:fadeKey];
+        if (tab) {
+            NSMutableArray *tabValues = [NSMutableArray arrayWithCapacity:steps];
+            for (int i = 1; i <= steps; i++) {
+                CGColorRef c = tabColorAt(bar, i == steps ? to : from + (to - from) * (float)i / steps);
+                [tabValues addObject:(id)c];
+                CGColorRelease(c);
+            }
+            CAKeyframeAnimation *tabFade = [CAKeyframeAnimation animationWithKeyPath:backgroundColorKey];
+            tabFade.values = tabValues;
+            tabFade.calculationMode = kCAAnimationDiscrete;
+            tabFade.duration = duration;
+            [tab addAnimation:tabFade forKey:fadeKey];
+        }
     }
     CGColorRelease(end);
     commitChanges();
@@ -1451,6 +1684,133 @@ static int l_active(lua_State *L) {
     return 1;
 }
 
+// bar(wid, spec or nil): the group bar above window `wid`, or none. spec =
+// { titles = {...}, shown = n (from 1), above =, overlap =, outset =,
+// inset =, gap =, radius =, drop =, padding =, offset =, tabs = bool,
+// under = bool (the overlap shows only around the target's corners),
+// font = name or nil (the menu-bar font), size =, text = {r, g, b, a},
+// active = {r, g, b, a} or nil, inactive = ... (nil: the ring's) }.
+static CGFloat field(lua_State *L, const char *key, CGFloat fallback) {
+    lua_getfield(L, 2, key);
+    CGFloat v = luaL_optnumber(L, -1, fallback);
+    lua_pop(L, 1);
+    return v;
+}
+
+// spec[key] as {r, g, b, a} into `out`; false if it isn't given.
+static bool readRGBA(lua_State *L, const char *key, CGFloat *out) {
+    bool given = lua_getfield(L, 2, key) == LUA_TTABLE;
+    for (int i = 0; given && i < 4; i++) {
+        lua_rawgeti(L, -1, i + 1);
+        out[i] = luaL_optnumber(L, -1, i == 3 ? 1 : 0);
+        lua_pop(L, 1);
+    }
+    lua_pop(L, 1);
+    return given;
+}
+
+static int l_bar(lua_State *L) {
+    uint32_t wid = (uint32_t)luaL_checkinteger(L, 1);
+    __block Bar next;
+    memset(&next, 0, sizeof(next));
+    bool on = lua_istable(L, 2);
+    if (on) {
+        next.target = wid;
+        next.above = fmax(0, field(L, "above", 0));
+        next.overlap = fmax(0, field(L, "overlap", 0));
+        next.outset = fmax(0, field(L, "outset", 0));
+        next.inset = fmax(0, field(L, "inset", 0));
+        next.gap = fmax(0, field(L, "gap", 0));
+        next.radius = fmax(0, field(L, "radius", 0));
+        next.drop = fmax(0, field(L, "drop", 0));
+        next.padding = fmax(0, field(L, "padding", 0));
+        next.offset = fmax(0, field(L, "offset", 0));
+        next.shown = (int)field(L, "shown", 1) - 1;
+        lua_getfield(L, 2, "tabs");
+        next.tabs = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "under");
+        next.under = lua_toboolean(L, -1);
+        lua_pop(L, 1);
+        CGFloat size = field(L, "size", 12);
+        lua_getfield(L, 2, "font");
+        const char *name = lua_tostring(L, -1);
+        if (name) {
+            CFStringRef font = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
+            next.font = CTFontCreateWithName(font, size, NULL);
+            CFRelease(font);
+        } else {
+            next.font = CTFontCreateUIFontForLanguage(kCTFontUIFontMenuItem, size, NULL);
+        }
+        lua_pop(L, 1);
+        next.text[0] = next.text[1] = next.text[2] = next.text[3] = 1;
+        if (lua_getfield(L, 2, "text") == LUA_TTABLE) {
+            for (int i = 0; i < 4; i++) {
+                lua_rawgeti(L, -1, i + 1);
+                next.text[i] = luaL_optnumber(L, -1, 1);
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        next.hasActive = readRGBA(L, "active", next.active);
+        next.hasInactive = readRGBA(L, "inactive", next.inactive);
+        NSMutableArray *titles = [[NSMutableArray alloc] init];
+        if (lua_getfield(L, 2, "titles") == LUA_TTABLE) {
+            int n = (int)luaL_len(L, -1);
+            for (int i = 1; i <= n; i++) {
+                lua_rawgeti(L, -1, i);
+                const char *title = lua_tostring(L, -1);
+                [titles addObject:[NSString stringWithUTF8String:title ? title : ""] ?: @""];
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        next.titles = titles;
+    }
+    dispatch_async(queue, ^{
+        Bar *bar = barFor(wid);
+        if (bar) freeBar(bar);
+        if (on) {
+            for (int i = 0; i < MAX_BARS && !bar; i++) {
+                if (!bars[i].target) bar = &bars[i];
+            }
+            if (bar) *bar = next;
+            else freeBar(&next);
+        }
+        Ring *ring = ringFor(wid);
+        if (ring) {
+            ring->dirty = true;
+            beginMasking();
+            place(ring, false);
+            finishMasking();
+        }
+    });
+    return 0;
+}
+
+// title(wid, n, text): tab n's title (from 1) in window `wid`'s bar. Only
+// that title is redrawn: no layout, no window changes, no mask snapshot.
+static int l_title(lua_State *L) {
+    uint32_t wid = (uint32_t)luaL_checkinteger(L, 1);
+    int index = (int)luaL_checkinteger(L, 2) - 1;
+    NSString *text = [[NSString alloc] initWithUTF8String:luaL_checkstring(L, 3)];
+    if (!text) text = [@"" retain];
+    dispatch_async(queue, ^{
+        Bar *bar = barFor(wid);
+        if (bar && index >= 0 && index < (int)bar->titles.count) {
+            bar->titles[index] = text;
+            Ring *ring = ringFor(wid);
+            if (ring && index < (int)ring->labels.count) {
+                beginChanges();
+                ((CATextLayer *)ring->labels[index]).string = text;
+                commitChanges();
+            }
+        }
+        [text release];
+    });
+    return 0;
+}
+
 // The layers are taken apart in a transaction of their own, flushed,
 // before anything is released: released mid-fade, outside a transaction,
 // CoreAnimation kept their animations listed, and the next commit (the
@@ -1460,8 +1820,9 @@ static void releaseAll(void) {
     beginChanges();
     for (int i = 0; i < ringCount; i++) {
         [rings[i].layer removeAllAnimations];
-        rings[i].layer.mask = nil;
-        [rings[i].layer removeFromSuperlayer];
+        for (CALayer *fill in rings[i].tabLayers) [fill removeAllAnimations];
+        rings[i].content.mask = nil;
+        [rings[i].content removeFromSuperlayer];
         rings[i].context.layer = nil;
     }
     commitChanges();
@@ -1472,7 +1833,12 @@ static void releaseAll(void) {
             [rings[i].context performSelector:@selector(invalidate)];
         }
         [rings[i].mask release];
+        [rings[i].tabLayers release];
+        [rings[i].barMask release];
+        [rings[i].labels release];
+        [rings[i].bar release];
         [rings[i].layer release];
+        [rings[i].content release];
         [rings[i].root release];
         [rings[i].context release];
     }
@@ -1516,6 +1882,7 @@ static int l_stop(lua_State *L) {
     activeAsked = 0;
     dispatch_sync(queue, ^{
         releaseAll();
+        for (int i = 0; i < MAX_BARS; i++) freeBar(&bars[i]);
         active = 0;
     });
     return 0;
@@ -1544,6 +1911,7 @@ static int l_gc(lua_State *L) {
             releaseCheckRunning = false;
         }
         releaseAll();
+        for (int i = 0; i < MAX_BARS; i++) freeBar(&bars[i]);
         if (drain) {
             dispatch_source_cancel(drain);
             dispatch_release(drain);
@@ -1563,6 +1931,7 @@ int luaopen_hyprspoon_native_border(lua_State *L) {
 
     if (!borderColorKey) {
         borderColorKey = [[NSString alloc] initWithUTF8String:"borderColor"];
+        backgroundColorKey = [[NSString alloc] initWithUTF8String:"backgroundColor"];
         fadeKey = [[NSString alloc] initWithUTF8String:"fade"];
     }
     mainCid = SLSMainConnectionID();
@@ -1591,6 +1960,8 @@ int luaopen_hyprspoon_native_border(lua_State *L) {
         { "set", l_set },
         { "focus", l_focus },
         { "active", l_active },
+        { "bar", l_bar },
+        { "title", l_title },
         { "overview", l_overview },
         { "watch", l_watch },
         { "previewer", l_previewer },

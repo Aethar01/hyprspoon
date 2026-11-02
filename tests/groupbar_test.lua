@@ -17,8 +17,13 @@ hs = {
         canvases[#canvases + 1] = c
         return c
     end },
-    drawing = { getTextDrawingSize = function() return { h = 14 } end },
-    styledtext = { defaultFonts = { menuBar = { name = "System" } } },
+    drawing = { color = { asRGB = function(c) return { red = 1, green = 1, blue = 1, alpha = 1, from = c } end } },
+}
+-- Border.bar's calls: the spec drawn above each window, nil once removed.
+local drawn, drawCalls = {}, 0
+package.loaded["hyprspoon.border"] = {
+    bar = function(id, spec) drawn[id] = spec drawCalls = drawCalls + 1 return true end,
+    title = function(id, n, text) drawn[id].titles[n] = text titleCalls = (titleCalls or 0) + 1 end,
 }
 local S = require("hyprspoon.state")
 S.cfg = { group = { bar = S.defaults.group.bar }, border = S.defaults.border }
@@ -49,44 +54,42 @@ package.loaded["hyprspoon.group"] = {
 }
 S.trees = { ws1 = leaf }
 local Bar = require("hyprspoon.groupbar")
-local cells = Bar.segments(info, S.cfg.group.bar, { [1] = "", [3] = "Selected tab" }, 3)
+local cells = Bar.segments(info, S.cfg.group.bar, { [1] = "", [3] = "Selected tab" })
 assert(#cells == 2 and cells[1].label == "Untitled" and cells[2].label == "Selected tab")
 assert(cells[1].x == 0 and cells[1].w == 50.5 and cells[2].x == 50.5)
 assert(cells[1].w + cells[2].w == rect.w and cells[2].id == 3)
-assert(not cells[1].active and cells[2].active)
+assert(not cells[1].shown and cells[2].shown)
 assert(Bar.memberAt(cells, 0, 0) == 1 and Bar.memberAt(cells, 50.5, 23) == 3)
 assert(Bar.memberAt(cells, -1, 0) == nil and Bar.memberAt(cells, 101, 0) == nil)
 assert(Bar.memberAt(cells, 20, 24) == nil and Bar.memberAt(cells, 0, -1) == nil)
 assert(Bar.height({ h = 10 }, { height = 24 }) == 9)
 assert(Bar.height(rect, { height = -1 }) == 0)
-assert(#Bar.segments({ rect = rect, members = {} }, { height = 24 }, {}, nil) == 0)
+assert(#Bar.segments({ rect = rect, members = {} }, { height = 24 }, {}) == 0)
 Bar.start()
 Bar.prepare(leaf, rect)
 assert(leaf.groupInset == 24 and #canvases == 1)
 local canvas = canvases[1]
-assert(canvas.frame_.x == -100 and #canvas.elements == 4)
-assert(canvas.elements[4].text == "Window 3")
+assert(canvas.frame_.x == -100 and #canvas.elements == 2)
+assert(drawn[3].titles[2] == "Window 3" and drawn[3].shown == 2 and drawn[3].above == 24)
 canvas.click(canvas, "mouseDown", nil, 80, 10)
 assert(selected == 3)
 Bar.update()
-assert(#canvases == 1 and canvas.draws == 1, "unchanged refresh keeps the canvas contents")
+assert(#canvases == 1 and canvas.draws == 1 and drawCalls == 1, "unchanged refresh keeps the bar")
 rect.w = 200
 Bar.update()
-assert(canvas.frame_.w == 200 and canvas.elements[3].frame.x == 100)
+assert(canvas.frame_.w == 200 and canvas.elements[2].frame.x == 100)
 info.shown, leaf.windowID = 1, 1
 info.selected = { 1, 3 }
-Bar.focus(1)
-assert(canvas.elements[4].text == "Window 3", "hidden units use their remembered tab's title")
+Bar.update()
+assert(drawn[3] == nil and drawn[1].shown == 1, "the bar moves to the window on show")
+assert(drawn[1].titles[2] == "Window 3", "hidden units use their remembered tab's title")
 canvas.click(canvas, "mouseDown", nil, 180, 10)
 assert(selected == 3, "bar selects the remembered native tab instead of members[1]")
-assert(canvas.elements[1].fillColor.hex == S.cfg.border.active)
-Bar.unfocused(wins[1])
-assert(canvas.elements[1].fillColor == S.cfg.border.inactive)
 local function disappears(set, reset)
     local last = canvases[#canvases]
     set()
     Bar.update()
-    assert(last.deleted)
+    assert(last.deleted and drawn[1] == nil)
     local count = #canvases
     reset()
     Bar.update()
@@ -101,23 +104,37 @@ disappears(function() S.untiled.ws1 = true end, function() S.untiled.ws1 = nil e
 disappears(function() S.tilingEnabled = false end, function() S.tilingEnabled = true end)
 disappears(function() info.key = nil end, function() info.key = "ws1" end)
 disappears(function() S.cfg.group.bar = false end, function() S.cfg.group.bar = S.defaults.group.bar end)
+-- A group moved in the tree comes back as a new leaf: its bar stays.
+local moved = { kind = "group", windowID = 1 }
+local before = leaf
+leaf = moved
+Bar.update()
+assert(drawn[1] and canvases[#canvases - 1].deleted, "moving a group keeps its bar")
+leaf = before
+Bar.update()
+assert(drawn[1], "and moving it back too")
 -- Membership and title changes redraw without keeping stale click targets.
 info.members = { { 1 } }
 Bar.update()
 local last = canvases[#canvases]
-assert(#last.elements == 2)
+assert(#last.elements == 1)
 local managed = package.loaded["hyprspoon.util"].managedWindows
 package.loaded["hyprspoon.util"].managedWindows = function()
     error("title notifications must not enumerate other groups")
 end
-local draws = last.draws
+local draws, canvasDraws = drawCalls, last.draws
 Bar.titleChanged(wins[1])
-assert(last.draws == draws, "unchanged labels do not redraw")
+assert(drawCalls == draws and not titleCalls, "unchanged labels do not redraw")
 wins[1].title = function() return "Changed title" end
 Bar.titleChanged(wins[1])
-assert(last.draws == draws + 1, "only the changed title redraws")
+assert(drawCalls == draws and titleCalls == 1, "a title change only retitles")
+assert(last.draws == canvasDraws, "a title change leaves the click canvas alone")
 package.loaded["hyprspoon.util"].managedWindows = managed
-assert(last.elements[2].text == "Changed title")
+assert(drawn[1].titles[1] == "Changed title")
+-- A title seen by a full update is only retitled too.
+wins[1].title = function() return "Again" end
+Bar.update()
+assert(drawCalls == draws and titleCalls == 2 and drawn[1].titles[1] == "Again")
 last.click(last, "mouseDown", nil, 180, 10)
 assert(selected == 1)
 -- Separate reasons cannot accidentally bring a strip back during the overview.
@@ -137,7 +154,7 @@ info = original
 Bar.update()
 leaf.rect, leaf.groupInset = rect, 24
 Bar.stop()
-assert(canvases[#canvases].deleted and leaf.groupInset == nil)
+assert(canvases[#canvases].deleted and drawn[1] == nil and leaf.groupInset == nil)
 assert(restored == rect, "stop restores the window synchronously without a timer")
 count = #canvases
 Bar.update()

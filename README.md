@@ -266,14 +266,29 @@ Empty or unavailable titles read “Untitled”; long titles are truncated.
 | `group.bar.size` | `12` | Title font size in points |
 | `group.bar.padding` | `8` | Horizontal padding in each segment, in points |
 | `group.bar.text` | `{ white = 1 }` | Title colour, a `"#rrggbb"` string or `hs.drawing.color` table |
+| `group.bar.active` | `false` | Shown segment's colour when focused; `false` uses `border.active` |
+| `group.bar.inactive` | `false` | Other segments, and the shown one unfocused; `false` uses `border.inactive` |
+| `group.bar.radius` | `0` | Segment corner radius in points |
+| `group.bar.gap` | `0` | Space between segments in points (none at the strip's ends) |
+| `group.bar.inset` | `0` | Keep the segments this far in from each side, in points |
+| `group.bar.outset` | `0` | Extend the strip past each side of the window, in points; `"border"` uses `border.width` |
+| `group.bar.offset` | `0` | Without `tabs`, extra space between the segments and the ring, in points |
+| `group.bar.tabs` | `false` | Tab look: segments rise flush from the window's top edge, rounded on top only |
+| `group.bar.drop` | `0` | With `tabs`, how far segments other than the shown one sit lower, in points |
+| `group.bar.overlap` | `0` | With `tabs`, how far the strip reaches down over the window, in points |
+| `group.bar.under` | `false` | With `overlap`, the window's corners and ring show over the strip, as if it sat behind |
 
-Segment backgrounds reuse `border.active` for the focused member and
-`border.inactive` for all others (`false` is transparent). With `border = false`,
-they use the default border colours. The strip reserves space above the window
-on the same layout pass, including maximized and pseudotiled groups. It follows
-layout and focus events and title changes when the window filter supports them;
-there is no polling. Hidden workspaces, full screen, slides and the overview hide
-it. Floating or dissolved groups have no strip. Stopping removes canvases and
+The strip is drawn by the native border module (`border.m`) in the shown
+window's ring, so it needs that module, and follows the window as its ring
+does. With `border = false` the rings are made invisible but still carry the
+strips. The shown segment fades between `active` and `inactive` in the same
+animation as the ring. A transparent `hs.canvas` under the strip takes the
+clicks; with `under`, the overlap is left to the window. A title change
+redraws only that title. The strip reserves space above the window on the
+same layout pass, including maximized and pseudotiled groups. It follows layout
+and focus events and title changes when the window filter supports them; there
+is no polling. Hidden workspaces, full screen, slides and the overview hide it.
+Floating or dissolved groups have no strip. Stopping removes the strips and
 insets. Rebuild the native slide module for slide visibility notifications.
 
 ### Indicators (`indicators`)
@@ -544,7 +559,9 @@ one member, survive reloads and restarts, and show the next open member when
 the shown window closes. Floating groups survive reloads; restoring floating
 groups after a restart is not supported yet. Creation, dissolution, joining
 and splitting act on tiles; cycling also works for floating groups.
-Group creation is explicit; there is no group rule. Tiled groups show a clickable
+Group creation is explicit; there is no group rule. A window that opens while
+a tiled group has focus joins that group and is shown (a torn-off native tab
+still gets its own tile). Tiled groups show a clickable
 title strip (see [Group bars](#group-bars-groupbar)).
 
 `groupNext()`, `groupPrev()` and `moveOutOfGroup()` take no arguments. They

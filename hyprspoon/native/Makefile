@@ -17,7 +17,7 @@ all: $(MODULES)
 
 # Objective-C for CoreAnimation, its objects retained by hand (no ARC).
 border.so: border.m skylight.h preview.h luacall.h
-	clang $(CFLAGS) $(LDFLAGS) -framework Foundation -framework QuartzCore border.m -o $@
+	clang $(CFLAGS) $(LDFLAGS) -framework Foundation -framework QuartzCore -framework CoreText border.m -o $@
 slide.so: slide.m skylight.h luacall.h
 	clang $(CFLAGS) $(LDFLAGS) -framework Foundation -framework QuartzCore slide.m -o $@
 events.so: events.c skylight.h luacall.h

@@ -133,7 +133,7 @@ end
 function M.fire(event)
     local bar = package.loaded["hyprspoon.groupbar"]
     if event ~= "layout" and bar and bar.update then
-        if event == "focus" then bar.focus(S.ffmFocusedID) else bar.update() end
+        bar.update()
     end
     local cfg = S.cfg
     if not (cfg and ((cfg.on and cfg.on[event]) or (cfg.exec and cfg.exec[event]))) then return end
