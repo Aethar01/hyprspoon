@@ -147,6 +147,71 @@ Bar.update()
 assert(drawCalls == draws and titleCalls == 2 and drawn[1].titles[1] == "Again")
 last.click(last, "mouseUp", nil, 180, 10)
 assert(selected == 1)
+-- Gaps between segments, for reordering and for drops into the group.
+info.members, info.selected = { { 1 }, { 2, 3 } }, { 1, 3 }
+Bar.update()
+local slot, mark = Bar.slotAt(1, { x = -90, y = 25 })
+assert(slot == 1 and mark.x == -103 and mark.y == 20 and mark.w == 6)
+slot, mark = Bar.slotAt(1, { x = -40, y = 25 })
+assert(slot == 2 and mark.x == -3)
+assert(Bar.slotAt(1, { x = 95, y = 25 }) == 3, "past the last segment's middle: after it")
+assert(Bar.slotAt(1, { x = 0, y = 60 }) == nil and Bar.slotAt(1, { x = 101, y = 25 }) == nil)
+assert(Bar.slotAt(1, { x = 0, y = 10 }, 12) == 2, "slack reaches above the bar")
+-- Dragging a segment: along the bar it moves; off it, Drop takes over.
+local taps, previews, drops, moves = {}, {}, {}, {}
+hs.eventtap = { event = { types = { leftMouseDragged = 1, leftMouseUp = 2 } },
+    new = function(_, fn)
+        local tap = { fn = fn, stop = function(self) self.stopped = true end }
+        function tap:start() return self end
+        taps[#taps + 1] = tap
+        return tap
+    end }
+hs.timer = { doAfter = function(_, fn) fn() end }
+local pointer = { x = 50, y = 25 }
+hs.mouse = { absolutePosition = function() return pointer end }
+package.loaded["hyprspoon.drop"] = {
+    preview = function(r) previews[#previews + 1] = r or false end,
+    cancelDrag = function() drops[#drops + 1] = "cancel" end,
+    beginDrag = function(w, member) drops[#drops + 1] = { "begin", w:id(), member } end,
+    updateDrag = function() drops[#drops + 1] = "update" end,
+    finishDrag = function(w) drops[#drops + 1] = { "finish", w:id() } end,
+}
+package.loaded["hyprspoon.group"].moveTo = function(id, s) moves[#moves + 1] = { id, s } end
+local function event(kind, x, y)
+    return { getType = function() return kind end, location = function() return { x = x, y = y } end }
+end
+local refocused = {}
+package.loaded["hyprspoon.focus"] = { focus = function(w) refocused[#refocused + 1] = w:id() end }
+local bar = canvases[#canvases]
+selected = nil
+bar.click(bar, "mouseDown", nil, 150, 5)
+taps[#taps].fn(event(1, 52, 25))
+assert(#previews == 0, "a few points' travel is still a click")
+taps[#taps].fn(event(1, 0, 25))
+assert(#previews == 1 and previews[1] == false, "the gaps beside it leave it where it is")
+taps[#taps].fn(event(1, -90, 25))
+assert(previews[2] and previews[2].x == -103, "the gap is marked")
+taps[#taps].fn(event(2, -90, 25))
+bar.click(bar, "mouseUp", nil, 10, 5)
+assert(moves[1][1] == 3 and moves[1][2] == 1 and previews[3] == false)
+assert(selected == nil and taps[#taps].stopped, "a drag doesn't select, and its tap stops")
+-- Once by the fallback (timers run at once here), once on the canvas's mouse up.
+assert(#refocused == 2 and refocused[1] == 1 and refocused[2] == 1, "the group keeps focus")
+pointer = { x = -90, y = 25 }
+bar.click(bar, "mouseDown", nil, 10, 5)
+taps[#taps].fn(event(1, -90, 300))
+assert(drops[1][1] == "begin" and drops[1][2] == 1 and drops[1][3] == true and drops[2] == "update")
+taps[#taps].fn(event(1, -90, 25))
+assert(drops[3] == "cancel", "back over the bar, the drop is called off")
+taps[#taps].fn(event(1, -90, 300))
+taps[#taps].fn(event(2, -90, 300))
+assert(drops[6][1] == "finish" and drops[6][2] == 1 and #moves == 1)
+assert(refocused[3] == S.ffmFocusedID, "after a drop, the window it focused")
+-- A plain click still selects on mouse up.
+bar.click(bar, "mouseDown", nil, 150, 5)
+taps[#taps].fn(event(2, -90, 25))
+bar.click(bar, "mouseUp", nil, 150, 5)
+assert(selected == 3)
 -- Separate reasons cannot accidentally bring a strip back during the overview.
 Bar.suspend("slide", true)
 local count = #canvases

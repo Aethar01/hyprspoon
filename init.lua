@@ -117,6 +117,9 @@ local M = {
     groupNext = Actions.groupNext,
     groupPrev = Actions.groupPrev,
     moveOutOfGroup = Actions.moveOutOfGroup,
+    -- moveGroupMember("left" | "right"): move the focused group member one
+    -- place along its group's bar, stopping at the ends.
+    moveGroupMember = Actions.moveGroupMember,
     mirror = Actions.mirror,
     preselect = Actions.preselect,
     rotate = Actions.rotate,
@@ -184,6 +187,8 @@ local function hotkeyActions()
         local step = RESIZE_STEPS[suffix]
         actions["resize" .. suffix] = function() M.resize(step[1], step[2]) end
     end
+    actions.moveGroupMemberLeft = function() M.moveGroupMember("left") end
+    actions.moveGroupMemberRight = function() M.moveGroupMember("right") end
     actions.previousWorkspace = function() M.gotoWorkspaceRelative(-1) end
     actions.nextWorkspace = function() M.gotoWorkspaceRelative(1) end
     local workspaces = {}

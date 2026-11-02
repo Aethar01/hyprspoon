@@ -77,6 +77,8 @@ S.setsAway = {}
 -- registerKind(kind, handler). Every field is optional:
 --   cycle(win, leaf, key, delta)  groupNext (delta 1) / groupPrev (-1)
 --   moveOut(win, leaf, key)       moveOutOfGroup
+--   move(win, leaf, key, delta)   moveGroupMember: the shown member moves
+--                                 `delta` places in the set's order
 --   show(leaf, key, from, to)     Layout.showMember made `to` the shown
 --                                 member in place of `from` (which may have
 --                                 closed): make it so on screen

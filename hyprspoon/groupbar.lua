@@ -127,6 +127,135 @@ end
 
 local warned = false
 
+-- The gap in window `id`'s group bar nearest screen point `point`, as a
+-- slot for Group.moveTo (k: before segment k; one past the last: after
+-- it), and a thin rect marking it. nil unless `point` is over the bar, or
+-- within `slack` points above or below it.
+function M.slotAt(id, point, slack)
+    local leaf = Tree.setOf(id)
+    local bar = leaf and bars[leaf]
+    local hit, cells = bar and bar.hit, bar and bar.cells
+    if not hit or not cells or #cells == 0 then return nil end
+    slack = slack or 0
+    if point.x < hit.x or point.x >= hit.x + hit.w
+       or point.y < hit.y - slack or point.y >= hit.y + hit.h + slack then
+        return nil
+    end
+    local x, slot = point.x - hit.x, #cells + 1
+    for i, cell in ipairs(cells) do
+        if x < cell.x + cell.w / 2 then slot = i break end
+    end
+    local last = cells[#cells]
+    local edge = slot <= #cells and cells[slot].x or last.x + last.w
+    return slot, { x = hit.x + edge - 3, y = hit.y, w = 6, h = hit.h }
+end
+
+-- ---------------------------------------------------------------------------
+-- Dragging a segment
+-- ---------------------------------------------------------------------------
+--
+-- Along its bar, a member moves to the gap under the pointer, marked as it
+-- goes. Off the bar, it drops like a modifier-drag (hyprspoon/drop.lua),
+-- except that only it leaves the group: beside a tile (its own group's
+-- too), or into another group. A press that hardly moves is a click, and
+-- selects on mouse up as before.
+
+local DRAG_START = 4  -- points of travel before a press is a drag
+local BAR_SLACK = 12  -- points above and below its bar still count as on it
+
+-- The press on a segment: its group (`leaf`), member `id`, `start` point,
+-- and once it's a drag, `dragging`, and `tearing` while it's off the bar.
+local press = nil
+local dragTap = nil
+
+local function stopDrag()
+    if dragTap then dragTap:stop() dragTap = nil end
+end
+
+local function dragMoved(p, point)
+    if not p.dragging then
+        if math.abs(point.x - p.start.x) < DRAG_START
+           and math.abs(point.y - p.start.y) < DRAG_START then return end
+        p.dragging = true
+    end
+    local Drop = require("hyprspoon.drop")
+    local slot, marker = M.slotAt(p.id, point, BAR_SLACK)
+    if slot then
+        if p.tearing then Drop.cancelDrag() p.tearing = false end
+        -- The gaps either side of it would leave it where it is.
+        local still = false
+        for i, cell in ipairs((bars[p.leaf] or {}).cells or {}) do
+            if cell.id == p.id then still = slot == i or slot == i + 1 end
+        end
+        Drop.preview(not still and marker or nil)
+        return
+    end
+    if not p.tearing then
+        local win = Util.windowFor(p.id)
+        if not win then return end
+        Drop.preview(nil)
+        Drop.beginDrag(win, true)
+        p.tearing = true
+    end
+    Drop.updateDrag(point)
+end
+
+local function dragEnded(p, point)
+    local Drop = require("hyprspoon.drop")
+    local slot = M.slotAt(p.id, point, BAR_SLACK)
+    if slot then
+        if p.tearing then Drop.cancelDrag() end
+        Drop.preview(nil)
+        Group.moveTo(p.id, slot)
+    elseif p.tearing then
+        local win = Util.windowFor(p.id)
+        if win then Drop.finishDrag(win, point) else Drop.cancelDrag() end
+    end
+    -- To focus once the mouse up has landed: the window a drop focused,
+    -- else the group's, as a click would.
+    p.focus = (p.tearing and not slot and S.ffmFocusedID) or p.leaf.windowID
+end
+
+-- The press on the bar's canvas, and its mouse up, take focus from the
+-- window, so it's given back after the mouse up, as Group.selectMember
+-- does for a click. Focusing before then would be undone.
+local function refocus(p)
+    local Focus = package.loaded["hyprspoon.focus"]
+    local win = p.focus and Util.windowFor(p.focus)
+    if Focus and win then Focus.focus(win) end
+end
+
+-- Follows the pointer from a press on a segment until the button's up.
+local function startDrag()
+    stopDrag()
+    local types = hs.eventtap.event.types
+    local tap
+    tap = hs.eventtap.new({ types.leftMouseDragged, types.leftMouseUp }, function(event)
+        local p = press
+        if not p or p.done then return false end
+        local point = event:location()
+        if event:getType() == types.leftMouseUp then
+            -- The canvas may still get this mouse up; `done` tells it the
+            -- drag has been dealt with. Its bar may be gone by then (a
+            -- group emptied by the drop), so the tap stops itself.
+            p.done = true
+            if p.dragging then
+                dragEnded(p, point)
+                -- In case the canvas never gets it (its bar went with the drop).
+                hs.timer.doAfter(0.2, function() if press == p then refocus(p) end end)
+            end
+            hs.timer.doAfter(0, function()
+                tap:stop()
+                if dragTap == tap then dragTap = nil end
+            end)
+        else
+            dragMoved(p, point)
+        end
+        return false
+    end)
+    dragTap = tap:start()
+end
+
 function M.update(onlyLeaf)
     if not running then return end
     local cfg, seen = config(), {}
@@ -152,15 +281,24 @@ function M.update(onlyLeaf)
                     bars[leaf] = bar
                     bar.canvas:level(hs.canvas.windowLevels.normal)
                     bar.canvas:behavior({ "canJoinAllSpaces", "fullScreenAuxiliary" })
-                    -- On mouse up, as a button does: switching on mouse down
-                    -- left the mouse up to land after the new window took
-                    -- focus, and it lost it.
-                    bar.canvas:canvasMouseEvents(false, true, false, false)
+                    -- Selects on mouse up, as a button does: switching on mouse
+                    -- down left the mouse up to land after the new window took
+                    -- focus, and it lost it. Mouse down starts a drag.
+                    bar.canvas:canvasMouseEvents(true, true, false, false)
                     -- A click mustn't make Hammerspoon the active app: focus
                     -- would leave the group and its colours fade out and in.
                     bar.canvas:clickActivating(false)
                     bar.canvas:mouseCallback(function(_, event, _, x, y)
-                        if event == "mouseUp" then
+                        if event == "mouseDown" then
+                            local member = M.memberAt(bar.cells, x, y)
+                            press = member and { leaf = leaf, id = member,
+                                start = hs.mouse.absolutePosition() } or nil
+                            if press then startDrag() else stopDrag() end
+                        elseif event == "mouseUp" then
+                            local p = press
+                            press = nil
+                            if p and p.dragging then refocus(p) return end
+                            stopDrag()
                             local member = M.memberAt(bar.cells, x, y)
                             if member then Group.selectMember(member) end
                         end
@@ -185,6 +323,7 @@ function M.update(onlyLeaf)
                 bar.spec = drawn
                 local out = drawn.outset
                 local hit = { x = rect.x - out, y = rect.y, w = rect.w + 2 * out, h = hitH }
+                bar.hit = hit
                 -- The canvas's frame, so the border's masks know it covers nothing.
                 drawn.hit = { hit.x, hit.y, hit.w, hit.h }
                 -- Everything but the titles: a change there lays the bar out
@@ -284,6 +423,12 @@ end
 
 function M.stop()
     running = false
+    stopDrag()
+    if press and press.dragging then
+        local Drop = package.loaded["hyprspoon.drop"]
+        if Drop and Drop.cancelDrag then Drop.cancelDrag() end
+    end
+    press = nil
     for leaf, bar in pairs(bars) do remove(leaf, bar) end
     for key, tree in pairs(S.trees) do
         for _, leaf in ipairs(Tree.leaves(tree)) do

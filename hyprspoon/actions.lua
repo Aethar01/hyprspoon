@@ -481,6 +481,13 @@ function M.groupPrev()
     onSet("cycle", -1)
 end
 
+-- Move the focused member one place along its group's bar, "left" or
+-- "right" (or a signed number of places); it stops at the ends.
+function M.moveGroupMember(direction)
+    local delta = direction == "left" and -1 or direction == "right" and 1 or tonumber(direction)
+    if delta and delta ~= 0 then onSet("move", delta) end
+end
+
 -- Take the focused window out of its set, into a tile of its own.
 function M.moveOutOfGroup()
     onSet("moveOut")

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Modifier-drag a tile onto a group's bar to join the group at the marked
+  gap, or onto the middle of its tile to join after the shown member,
+  including a group on another display. Near the group's edges the drop
+  still splits beside it.
+- Drag a group bar's segment along the bar to reorder the group, or off it
+  to take that member out beside any tile or into another group.
+- New `moveGroupMember("left" | "right")`, with unbound hotkeys
+  `moveGroupMemberLeft` and `moveGroupMemberRight`.
+- `moveIntoGroup` can join a group on another workspace.
+
 ## 0.4.1 (2026-11-02)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:

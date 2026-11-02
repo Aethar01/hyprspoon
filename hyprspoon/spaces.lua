@@ -1467,6 +1467,21 @@ function M.workspaceOf(id)
     return of[id]
 end
 
+-- Windows `ids` joined a set on tree `key`'s workspace (a drop into a group
+-- on another display): they belong to that workspace from now on. The set
+-- puts them on its display; the pin keeps a discovery pass that still sees
+-- them on the old one from claiming them (and the set) back.
+function M.adopt(ids, key)
+    local n = key and tonumber(key:match("^ws(%-?%d+)$"))
+    if not n then return end
+    local now = hs.timer.secondsSinceEpoch()
+    for _, id in ipairs(ids) do
+        of[id], pins[id] = n, now + 1
+        S.windowInfo[id] = nil
+    end
+    save()
+end
+
 function M.hasWindows(n)
     for _, m in pairs(of) do
         if m == n then return true end

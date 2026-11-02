@@ -254,7 +254,10 @@ pointer. Distances are fractions of the trackpad's width. Set
 ### Group bars (`group.bar`)
 
 Grouped tiles have an equal-width segment per member. Click its title to show
-and focus it. A native tab set counts as one member and uses its shown tab's
+and focus it. Drag a segment along the bar to reorder the group; a marker
+shows where it will go. Drag it off the bar to take that member out: drop it
+beside any tile (its own group's included) or into another group, with the
+same highlights as a modifier-drag. A native tab set counts as one member and uses its shown tab's
 title when selected; native sets outside groups keep their app's own tab bar.
 Empty or unavailable titles read “Untitled”; long titles are truncated.
 
@@ -476,6 +479,7 @@ check the chords you choose.
 | (unbound) | Join the existing group in a direction | `moveIntoGroupLeft`, `moveIntoGroupRight`, `moveIntoGroupUp`, `moveIntoGroupDown` |
 | (unbound) | Show the next / previous window sharing the focused tile | `groupNext`, `groupPrev` |
 | (unbound) | Take the focused window out of the tile it shares, into its own | `moveOutOfGroup` |
+| (unbound) | Move the focused group member one place along the group's bar | `moveGroupMemberLeft`, `moveGroupMemberRight` |
 | Option+G | Cycle through floating windows | `focusFloat` |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
 | Option+Y | Flip the split | `toggleSplit` |
@@ -551,6 +555,17 @@ screen. `moveIntoGroup("left" | "right" | "up" | "down")` joins the group in
 that direction; an ordinary neighbour is left alone. The hotkey names are
 `moveIntoGroupLeft`, `moveIntoGroupRight`, `moveIntoGroupUp`, and
 `moveIntoGroupDown`. These actions are unbound in every supplied keymap.
+With `mouse.move`, dragging a tile onto a group's bar joins the group at the
+marked gap between segments; onto the middle of its tile, after the shown
+member, with the whole tile highlighted. Either works on any display.
+Dropped nearer the group's edges, it splits beside the group as with any
+tile.
+
+`moveGroupMember("left" | "right")` moves the focused member one place along
+its group's bar, stopping at the ends; the hotkey names are
+`moveGroupMemberLeft` and `moveGroupMemberRight`. Dragging a bar's segment
+reorders too (see [Group bars](#group-bars-groupbar)). The order survives
+reloads and restarts.
 
 `groupNext()` and `groupPrev()` cycle the focused tile's members.
 `moveOutOfGroup()` splits the selected member into a tile beside the group.

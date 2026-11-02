@@ -91,6 +91,54 @@ Group.cycle(wins[2], leaf(2), "ws1", -1)
 assert(leaf(2).windowID == 3, "cycle remembers the unit when its windows are parked")
 Group.selectMember(2)
 
+-- A tile on another workspace (a drop onto another display) can join; it
+-- takes the group's workspace. A group with tiling off can't be joined.
+local adopted = {}
+package.loaded["hyprspoon.spaces"].adopt = function(ids, key) adopted[ids[1]] = key end
+S.trees.ws2 = Tree.leaf(5)
+S.trees.ws3 = Tree.leaf(6)
+assert(Group.join(wins[5], wins[2]) == true and adopted[5] == "ws1")
+assert(leaf(5) == leaf(2) and leaf(2).windowID == 5 and S.trees.ws2 == nil and focus == 5)
+Group.toggle(wins[6])
+S.untiled.ws3 = true
+assert(Group.join(wins[2], wins[6]) == false and leaf(2) == leaf(5), "untiled groups are left alone")
+S.untiled.ws3 = nil
+-- Back as it was for the reload test below.
+Group.moveOut(wins[5], leaf(5), "ws1")
+S.trees.ws1 = Tree.removeID(S.trees.ws1, 5)
+S.trees.ws3, S.setsAway[5] = nil, nil
+Group.selectMember(2)
+
+-- The bar's order is the members' order; native tabs move together.
+S.trees.ws4 = Tree.insertBeside(Tree.insertBeside(Tree.leaf(5), 5, 6, "right"), 6, 7, "right")
+Group.toggle(wins[5])
+Group.join(wins[6], wins[5])
+Group.join(wins[7], wins[5])
+local g = leaf(5)
+local function order() return table.concat(g.members, ",") end
+assert(order() == "5,6,7" and g.windowID == 7)
+Group.moveBy(wins[7], g, "ws4", -1)
+assert(order() == "5,7,6" and g.windowID == 7, "moving keeps it on show")
+Group.moveBy(wins[7], g, "ws4", 1)
+Group.moveBy(wins[7], g, "ws4", 1)
+assert(order() == "5,6,7", "it stops at the end")
+assert(Group.moveTo(5, 4) and order() == "6,7,5", "a gap past the end puts it last")
+assert(not Group.moveTo(5, 3), "the gaps beside it leave it be")
+assert(Group.moveTo(5, 1) and order() == "5,6,7")
+Tree.addTab(g, 8, 6)
+assert(order() == "5,6,8,7")
+assert(Group.moveTo(8, 1) and order() == "6,8,5,7", "native tabs move as one member")
+-- Splitting a member out beside a tile, even its own group's.
+assert(Group.split(wins[5], wins[7], "left") and leaf(5) ~= g and not leaf(5).kind)
+assert(select(3, Tree.findByID(5)) == "ws4" and not parked[5] and focus == 5)
+assert(Group.split(wins[7], wins[7], "right") and leaf(7) ~= g, "the shown member can leave too")
+assert(g.windowID == 6 and not parked[6] and not parked[7])
+-- Joining at a gap of the bar.
+assert(Group.join(wins[7], wins[6], 1) and order() == "7,6,8" and g.windowID == 7)
+assert(not Group.split(wins[5], wins[6], "left"), "only group members split out")
+S.trees.ws4 = nil
+for id = 5, 8 do S.setsAway[id] = nil end
+
 -- Save/reload retains member order, native units and selected window.
 S.openIDs = { [1] = true, [2] = true, [3] = true }
 Tree.saveTreesNow()

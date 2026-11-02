@@ -111,10 +111,67 @@ local function detach(leaf, list)
     return out
 end
 
-local function insert(key, beside, leaf)
-    S.trees[key] = select(1, Tree.insertBeside(S.trees[key], beside, leaf.windowID, "right"))
+local function insert(key, beside, leaf, side)
+    S.trees[key] = select(1, Tree.insertBeside(S.trees[key], beside, leaf.windowID, side or "right"))
     local _, target = Tree.ancestors(S.trees[key], leaf.windowID)
     target.members, target.kind, target.tabs = leaf.members, leaf.kind, leaf.tabs
+end
+
+-- The bar's order is the members' order, a member's native tabs together.
+-- Puts the member holding `id` at place `index` in it. True if it moved.
+local function reorder(leaf, id, index)
+    local lists, from = units(leaf), nil
+    for i, list in ipairs(lists) do
+        for _, m in ipairs(list) do if m == id then from = i end end
+    end
+    index = math.max(1, math.min(#lists, index))
+    if not from or from == index then return false end
+    table.insert(lists, index, table.remove(lists, from))
+    local n = 0
+    for _, list in ipairs(lists) do
+        for _, m in ipairs(list) do n = n + 1 leaf.members[n] = m end
+    end
+    return true
+end
+
+-- Redraws the group's bar and saves its new order; nothing else changes.
+local function reordered(leaf)
+    local bar = package.loaded["hyprspoon.groupbar"]
+    if bar and bar.update then bar.update(leaf) end
+    Tree.saveTrees()
+end
+
+-- The member holding window `id` moves to gap `slot` of its group's bar:
+-- before the member now at `slot`, or last for one past the end. True if
+-- it moved.
+function M.moveTo(id, slot)
+    local leaf = Tree.setOf(id)
+    if not leaf or leaf.kind ~= "group" then return false end
+    for i, list in ipairs(units(leaf)) do
+        for _, m in ipairs(list) do
+            if m == id then
+                if not reorder(leaf, id, slot > i and slot - 1 or slot) then return false end
+                reordered(leaf)
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- The shown member moves `delta` places along the bar (back for a negative
+-- `delta`), stopping at its ends.
+function M.moveBy(win, leaf, key, delta)
+    local lists = units(leaf)
+    for i, list in ipairs(lists) do
+        for _, m in ipairs(list) do
+            if m == leaf.windowID then
+                local to = i + delta
+                if to >= 1 and to <= #lists and reorder(leaf, m, to) then reordered(leaf) end
+                return
+            end
+        end
+    end
 end
 
 function M.moveOut(win, leaf, key)
@@ -132,6 +189,34 @@ function M.moveOut(win, leaf, key)
     S.keyIndex = {}
     Layout.tileNow(false)
     Focus.focus(win)
+end
+
+-- Group member `win` (with its native tabs) leaves its group for a tile of
+-- its own on `side` of the tile `other` is shown in, on any tiled
+-- workspace; `other` may be in the same group, even `win` itself. False
+-- if it's no group member or the group's only one (move the tile instead).
+function M.split(win, other, side)
+    if not win or not other then return false end
+    local leaf, key = Tree.setOf(win:id())
+    local _, _, toKey = Tree.findByID(other:id())
+    if not leaf or leaf.kind ~= "group" or not key or S.untiled[key]
+       or not toKey or S.untiled[toKey] then return false end
+    local list = Tree.tabsOf(leaf, win:id()) or { win:id() }
+    if #list == #leaf.members then return false end
+    local copy, leaving = {}, {}
+    for _, id in ipairs(list) do copy[#copy + 1], leaving[id] = id, true end
+    local old = leaf.windowID
+    local out = detach(leaf, copy)
+    M.show(leaf, key, old, leaf.windowID)
+    -- Beside its own group: the group's tile is now shown by another member.
+    local beside = leaving[other:id()] and leaf.windowID or other:id()
+    insert(toKey, beside, out, side)
+    if key ~= toKey then Spaces.adopt(copy, toKey) end
+    Spaces.unpark(win)
+    S.keyIndex = {}
+    Layout.tileNow(false)
+    Focus.focus(win)
+    return true
 end
 
 function M.toggle(win)
@@ -170,11 +255,15 @@ function M.toggle(win)
     Layout.tileNow(false)
 end
 
-function M.join(win, other)
-    if not win or not other then return end
+-- Window `win` joins the tiled group holding `other`, which may be on another
+-- workspace (a drag onto another display): at gap `slot` of its bar (see
+-- moveTo), else after the shown member. True if it joined.
+function M.join(win, other, slot)
+    if not win or not other then return false end
     local target, toKey = Tree.setOf(other:id())
     local _, source, key = Tree.findByID(win:id())
-    if not source or not target or target.kind ~= "group" or source == target or key ~= toKey then return end
+    if not source or not target or target.kind ~= "group" or source == target
+       or not toKey or S.untiled[toKey] then return false end
     -- Groups move one selected unit; native sets move as a unit.
     local list = Tree.tabsOf(source, win:id()) or { win:id() }
     local copy = {}
@@ -189,11 +278,16 @@ function M.join(win, other)
     end
     Tree.addMember(target, copy[1], "group")
     for i = 2, #copy do Tree.addTab(target, copy[i], copy[i - 1]) end
+    -- The gap was counted without it, so it ends up at place `slot`.
+    if slot then reorder(target, win:id(), slot) end
+    -- From another workspace, it now belongs to the group's.
+    if key ~= toKey then Spaces.adopt(copy, toKey) end
     Layout.showMember(target, win:id(), toKey)
     hide(target)
     S.keyIndex = {}
     Layout.tileNow(false)
     Focus.focus(win)
+    return true
 end
 
 -- #14: one entry per logical member (native tabs together), selected id and
@@ -225,5 +319,6 @@ function M.inset(id, height)
     Layout.scheduleRetile()
 end
 
-Tree.registerKind("group", { cycle = M.cycle, moveOut = M.moveOut, show = M.show, strays = hide })
+Tree.registerKind("group", { cycle = M.cycle, moveOut = M.moveOut, move = M.moveBy,
+    show = M.show, strays = hide })
 return M

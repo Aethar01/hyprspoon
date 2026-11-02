@@ -372,7 +372,7 @@ test("a new native tab in a set joins it beside the tab it covers", function()
     wins[5].pid = function() return 5 end
 end)
 
-test("groupNext, groupPrev and moveOutOfGroup go to the focused set's kind", function()
+test("groupNext, groupPrev, moveOutOfGroup and moveGroupMember go to the focused set's kind", function()
     package.loaded["hyprspoon.resize"] = {}
     local Focus = package.loaded["hyprspoon.focus"]
     local Actions = require("hyprspoon.actions")
@@ -388,6 +388,12 @@ test("groupNext, groupPrev and moveOutOfGroup go to the focused set's kind", fun
     Actions.groupPrev()
     Actions.moveOutOfGroup()
     assert(#calls == 3)
+    local moves = {}
+    Tree.kinds.group.move = function(_, _, _, delta) moves[#moves + 1] = delta end
+    Actions.moveGroupMember("left")
+    Actions.moveGroupMember("right")
+    Actions.moveGroupMember("up") -- not along the bar: nothing
+    assert(#moves == 2 and moves[1] == -1 and moves[2] == 1)
     assert(calls[1][1] == "cycle" and calls[1][2] == wins[2] and calls[1][3] == S.trees.ws1.b)
     assert(calls[1][4] == "ws1" and calls[1][5] == 1 and calls[2][5] == -1)
     assert(calls[3][1] == "moveOut" and calls[3][3] == S.trees.ws1.b)
