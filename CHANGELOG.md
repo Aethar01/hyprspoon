@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 (2026-11-02)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:
 `border.so` now draws group bars and links CoreText.
