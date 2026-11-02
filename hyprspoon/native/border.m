@@ -287,6 +287,7 @@ typedef struct {
     CGFloat above, overlap, outset, inset, gap, radius, drop, padding, offset;
     bool tabs;
     bool under;      // the overlap looks to sit behind the target and its ring
+    CGRect hit;      // the click canvas's screen frame (see isBarCanvas)
     CGFloat text[4];
     // Tab colours, each the ring's unless given (hasActive, hasInactive).
     CGFloat active[4], inactive[4];
@@ -812,14 +813,15 @@ static bool isRingWindow(uint32_t wid) {
     return false;
 }
 
-// One of Hammerspoon's windows lying within a ring's group bar: the
-// invisible hs.canvas taking the bar's clicks (see groupbar.lua).
+// One of Hammerspoon's windows at a bar's click canvas frame, as Lua gave
+// it: the invisible hs.canvas taking the bar's clicks (see groupbar.lua),
+// which covers nothing. Matched by that frame, not the bar's position from
+// its ring: while a group switches, the ring still has the window's parked
+// bounds, and the canvas would mask the bar out.
 static bool isBarCanvas(CGRect bounds) {
-    for (int i = 0; i < ringCount; i++) {
-        Bar *bar = rings[i].target ? barFor(rings[i].target) : NULL;
-        if (!bar) continue;
-        CGRect area = CGRectOffset(barRect(bar, rings[i].bounds.size), rings[i].bounds.origin.x, rings[i].bounds.origin.y);
-        if (CGRectContainsRect(CGRectInset(area, -2, -2), bounds)) return true;
+    for (int i = 0; i < MAX_BARS; i++) {
+        if (!bars[i].target || CGRectIsEmpty(bars[i].hit)) continue;
+        if (CGRectContainsRect(CGRectInset(bars[i].hit, -2, -2), bounds)) return true;
     }
     return false;
 }
@@ -1689,7 +1691,8 @@ static int l_active(lua_State *L) {
 // inset =, gap =, radius =, drop =, padding =, offset =, tabs = bool,
 // under = bool (the overlap shows only around the target's corners),
 // font = name or nil (the menu-bar font), size =, text = {r, g, b, a},
-// active = {r, g, b, a} or nil, inactive = ... (nil: the ring's) }.
+// active = {r, g, b, a} or nil, inactive = ... (nil: the ring's),
+// hit = {x, y, w, h}: the click canvas's screen frame }.
 static CGFloat field(lua_State *L, const char *key, CGFloat fallback) {
     lua_getfield(L, 2, key);
     CGFloat v = luaL_optnumber(L, -1, fallback);
@@ -1750,6 +1753,16 @@ static int l_bar(lua_State *L) {
                 next.text[i] = luaL_optnumber(L, -1, 1);
                 lua_pop(L, 1);
             }
+        }
+        lua_pop(L, 1);
+        if (lua_getfield(L, 2, "hit") == LUA_TTABLE) {
+            CGFloat r[4] = { 0 };
+            for (int i = 0; i < 4; i++) {
+                lua_rawgeti(L, -1, i + 1);
+                r[i] = luaL_optnumber(L, -1, 0);
+                lua_pop(L, 1);
+            }
+            next.hit = CGRectMake(r[0], r[1], r[2], r[3]);
         }
         lua_pop(L, 1);
         next.hasActive = readRGBA(L, "active", next.active);

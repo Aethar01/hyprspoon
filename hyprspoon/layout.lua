@@ -190,9 +190,13 @@ local function showMember(leaf, id, key)
     S.applied[id] = nil
     if key then signatures[key] = nil end
     Border.handOver(from, id)
-    Border.sync()
+    -- The group bar goes to the new window before the windows swap, and
+    -- its ring is made at once rather than on the next sync, so the old
+    -- ring and bar go as the new ones come: no frame without a bar.
+    Groupbar.handOver(from, id)
     local handler = Tree.kinds[leaf.kind]
     if handler and handler.show then handler.show(leaf, key, from, id) end
+    Border.syncNow()
 end
 
 local function reconcileTree(key, windows)

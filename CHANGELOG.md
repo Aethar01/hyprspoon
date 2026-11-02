@@ -16,6 +16,13 @@ Rebuild the native modules (`make -C hyprspoon/native`) after updating:
   snapshot (about 0.18ms, from 0.59ms).
 - A window that opens while a tiled group has focus joins the group.
 - Fixed: a group moved in the tree lost its bar.
+- Fixed: after switching a group's member, its bar could stay hidden (with
+  `experimental.borderMask`, the bar's click canvas was taken for a window
+  covering it).
+- Switching a group's member no longer flashes: the new member goes
+  straight into the tile, with its ring and bar made before it arrives.
+- Clicking a bar's segment switches on mouse up and no longer activates
+  Hammerspoon, so the shown window keeps focus.
 
 ## 0.4.0 (2026-10-31)
 

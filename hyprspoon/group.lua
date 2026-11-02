@@ -71,7 +71,16 @@ function M.show(leaf, key, from, to)
     remember(leaf, to)
     if sameUnit(leaf, from, to) then return end
     local win = Util.windowFor(to)
-    if win then Spaces.unpark(win) end
+    if win then
+        Spaces.unpark(win)
+        -- Its ring (with the group bar, see Groupbar.handOver) is made while
+        -- it's still off screen, so it's drawn by the time it arrives.
+        local Border = package.loaded["hyprspoon.border"]
+        if Border and Border.syncNow then Border.syncNow() end
+        -- Straight into the tile before the old member leaves: the retile
+        -- would animate it in from off screen, leaving the tile empty.
+        if leaf.windowRect then Util.setFrame(win, leaf.windowRect, 0) end
+    end
     local old = Util.windowFor(from)
     if old then Spaces.park(old, Spaces.workspaceOf(from)) end
     Focus.invalidateWindowCache()

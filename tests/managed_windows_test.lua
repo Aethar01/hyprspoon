@@ -18,7 +18,7 @@ local S = { defaults = {}, running = { windowFilter = { getWindows = function() 
 package.loaded["hyprspoon.state"] = S
 package.loaded["hyprspoon.tree"] = {}
 local synced = 0
-package.loaded["hyprspoon.border"] = { sync = function() synced = synced + 1 end }
+package.loaded["hyprspoon.border"] = { sync = function() synced = synced + 1 end, syncNow = function() end }
 
 local Util = require("hyprspoon.util")
 

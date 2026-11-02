@@ -102,7 +102,7 @@ package.loaded["hyprspoon.discover"] = { cancelLayoutCheck = noop }
 package.loaded["hyprspoon.layout"] = { tileNow = noop, scheduleRetile = noop, BSP_SETTLE = 0 }
 package.loaded["hyprspoon.bar"] = { update = noop }
 package.loaded["hyprspoon.hud"] = { update = noop, switched = noop }
-package.loaded["hyprspoon.border"] = { forget = noop, sync = noop }
+package.loaded["hyprspoon.border"] = { forget = noop, sync = noop, syncNow = noop }
 package.loaded["hyprspoon.restore"] = {
     savedActive = function() return {} end,
     match = noop,

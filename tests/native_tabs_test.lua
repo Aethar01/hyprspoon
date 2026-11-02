@@ -77,7 +77,7 @@ package.loaded["hyprspoon.spaces"] = {
     isHidden = function() return false end, claim = function() return "display" end,
     nativeMember = function(id, shown) remembered[id] = shown end,
 }
-package.loaded["hyprspoon.border"] = { sync = function() end }
+package.loaded["hyprspoon.border"] = { sync = function() end, syncNow = function() end }
 hs = { application = { applicationForPID = function() return app end },
     timer = { secondsSinceEpoch = function() return clock end,
         doAfter = function() return { stop = function() end } end } }
