@@ -155,7 +155,11 @@ void tabsCancel(void) {
     atomic_store(&cancelling, true);
 }
 
+static void closeListConnection(void);
+
+// After the workers have drained (frames.c's l_gc).
 void tabsStop(void) {
+    closeListConnection();
     if (cachedWindows) CFRelease(cachedWindows);
     cachedWindows = NULL;
     while (queries) {
@@ -261,13 +265,180 @@ static int l_tabWindows(lua_State *L) {
     return 0;
 }
 
+// Every window, listed over a connection of tabs' own (listCid) that draws
+// nothing. A window-list call first waits for its connection's last
+// CoreAnimation transaction to reach WindowServer, holding that
+// connection's lock meanwhile: CGWindowListCopyWindowInfo, on Hammerspoon's
+// main connection, waited up to half a second while switching quickly,
+// and held up the main thread's drawing (and every hotkey) with it.
+// SLSGetWindowList doesn't wait; the query for the windows' details waits
+// only on listCid, which has nothing to wait for. Without these calls,
+// CGWindowList.
+static CGError (*newConnection)(int, int *);
+static CGError (*releaseConnection)(int);
+static CGError (*eventPort)(int, mach_port_t *);
+static CGEventRef (*nextEvent)(int);
+static CGError (*windowCount)(int, int, int *);
+static CGError (*windowList)(int, int, int, uint32_t *, int *);
+static CFTypeRef (*queryWindows)(int, CFArrayRef, uint32_t);
+static CFTypeRef (*queryResultWindows)(CFTypeRef);
+static bool (*iteratorAdvance)(CFTypeRef);
+static uint32_t (*iteratorWindowID)(CFTypeRef);
+static int (*iteratorPID)(CFTypeRef);
+static int (*iteratorLevel)(CFTypeRef);
+static uint32_t (*iteratorAttributes)(CFTypeRef);
+#define LISTED_ON_SCREEN 0x2 // in iteratorAttributes, as kCGWindowIsOnscreen
+
+static int listCid = 0;
+// WindowServer sends every connection events; one left unread fills up
+// until WindowServer times out on it, stalling the screen. listCid's are
+// read and dropped here.
+static dispatch_queue_t drainQueue = NULL;
+static dispatch_source_t drain = NULL;
+static mach_port_t drainPort = MACH_PORT_NULL;
+
+static void drainEvents(void *unused) {
+    (void)unused;
+    struct {
+        mach_msg_header_t header;
+        char body[4096];
+    } message;
+    for (;;) {
+        mach_msg_return_t r = mach_msg(&message.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(message),
+            drainPort, 0, MACH_PORT_NULL);
+        if (r == MACH_MSG_SUCCESS) mach_msg_destroy(&message.header);
+        else if (r != MACH_RCV_TOO_LARGE) break;
+    }
+    CGEventRef event;
+    while ((event = nextEvent(listCid))) CFRelease(event);
+}
+
+static void openListConnection(void) {
+    newConnection = dlsym(RTLD_DEFAULT, "SLSNewConnection");
+    releaseConnection = dlsym(RTLD_DEFAULT, "SLSReleaseConnection");
+    eventPort = dlsym(RTLD_DEFAULT, "SLSGetEventPort");
+    nextEvent = dlsym(RTLD_DEFAULT, "SLEventCreateNextEvent");
+    windowCount = dlsym(RTLD_DEFAULT, "SLSGetWindowCount");
+    windowList = dlsym(RTLD_DEFAULT, "SLSGetWindowList");
+    queryWindows = dlsym(RTLD_DEFAULT, "SLSWindowQueryWindows");
+    queryResultWindows = dlsym(RTLD_DEFAULT, "SLSWindowQueryResultCopyWindows");
+    iteratorAdvance = dlsym(RTLD_DEFAULT, "SLSWindowIteratorAdvance");
+    iteratorWindowID = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetWindowID");
+    iteratorPID = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetPID");
+    iteratorLevel = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetLevel");
+    iteratorAttributes = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetAttributes");
+    listCid = 0;
+    if (!(newConnection && releaseConnection && eventPort && nextEvent && windowCount && windowList && queryWindows
+            && queryResultWindows && iteratorAdvance && iteratorWindowID && iteratorPID && iteratorLevel
+            && iteratorAttributes)) {
+        return;
+    }
+    if (newConnection(0, &listCid) != kCGErrorSuccess) {
+        listCid = 0;
+        return;
+    }
+    drainQueue = dispatch_queue_create("hyprspoon.tabs.drain", DISPATCH_QUEUE_SERIAL);
+    drainPort = MACH_PORT_NULL;
+    if (eventPort(listCid, &drainPort) == kCGErrorSuccess && drainPort != MACH_PORT_NULL) {
+        drain = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, drainPort, 0, drainQueue);
+        dispatch_source_set_event_handler_f(drain, drainEvents);
+        dispatch_resume(drain);
+        dispatch_async_f(drainQueue, NULL, drainEvents);
+    }
+}
+
+static void closeListConnection(void) {
+    if (drain) {
+        dispatch_source_cancel(drain);
+        dispatch_release(drain);
+        drain = NULL;
+    }
+    if (drainQueue) {
+        dispatch_sync(drainQueue, ^{}); // nothing of it left running
+        dispatch_release(drainQueue);
+        drainQueue = NULL;
+    }
+    if (listCid) releaseConnection(listCid);
+    listCid = 0;
+}
+
+// Window `wid` of app `owner`, at `layer`, goes into `result` as shown, a
+// background tab, on another Space (other) or unknown.
+static void classify(CFMutableDictionaryRef result, int owner, uint32_t wid, int layer, bool on) {
+    CFStringRef state = CFSTR("other");
+    if (layer == 0 && on) state = CFSTR("shown");
+    else if (layer == 0) {
+        CFArrayRef ids = slWindowList(wid);
+        CFArrayRef spaces = windowSpaces(mainConnection(), 7, ids);
+        CFRelease(ids);
+        // A destroyed or unqueryable window is uncertain, not closed.
+        state = CFSTR("unknown");
+        if (spaces) {
+            state = CFArrayGetCount(spaces) == 0 ? CFSTR("tab") : CFSTR("other");
+            CFRelease(spaces);
+        }
+    }
+    int64_t pid = owner;
+    CFNumberRef key = CFNumberCreate(NULL, kCFNumberSInt64Type, &pid);
+    CFMutableDictionaryRef states = (CFMutableDictionaryRef)CFDictionaryGetValue(result, key);
+    if (!states) {
+        states = dictionary();
+        CFDictionarySetValue(result, key, states);
+        CFRelease(states);
+    }
+    put(states, wid, state);
+    CFRelease(key);
+}
+
+// From listCid: false if it couldn't list.
+static bool snapshotListed(CFMutableDictionaryRef result) {
+    int count = 0;
+    if (windowCount(listCid, 0, &count) != kCGErrorSuccess || count <= 0) return false;
+    count += 64; // windows made between the two calls
+    uint32_t *wids = malloc(sizeof(uint32_t) * (size_t)count);
+    if (!wids) return false;
+    int got = 0;
+    if (windowList(listCid, 0, count, wids, &got) != kCGErrorSuccess || got <= 0) {
+        free(wids);
+        return false;
+    }
+    CFMutableArrayRef list = CFArrayCreateMutable(NULL, got, &kCFTypeArrayCallBacks);
+    for (int i = 0; i < got; i++) {
+        CFNumberRef n = CFNumberCreate(NULL, kCFNumberSInt32Type, &wids[i]);
+        CFArrayAppendValue(list, n);
+        CFRelease(n);
+    }
+    free(wids);
+    CFTypeRef query = queryWindows(listCid, list, 0);
+    CFRelease(list);
+    CFTypeRef iterator = query ? queryResultWindows(query) : NULL;
+    if (!iterator) {
+        if (query) CFRelease(query);
+        return false;
+    }
+    while (iteratorAdvance(iterator)) {
+        int owner = iteratorPID(iterator);
+        // WindowServer's own windows (CGWindowList gives its process).
+        if (owner <= 0) continue;
+        classify(result, owner, iteratorWindowID(iterator), iteratorLevel(iterator),
+            (iteratorAttributes(iterator) & LISTED_ON_SCREEN) != 0);
+    }
+    CFRelease(iterator);
+    CFRelease(query);
+    return true;
+}
+
 // One snapshot for all apps. It runs on a worker; the main thread only
 // consumes the completed dictionary. Off-screen Space lookups happen once.
 static CFMutableDictionaryRef snapshot(void) {
     if (!windowSpaces || !mainConnection) return NULL;
-    CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
-    if (!list) return NULL;
     CFMutableDictionaryRef result = dictionary();
+    if (listCid && snapshotListed(result)) return result;
+    CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionAll, kCGNullWindowID);
+    if (!list) {
+        CFRelease(result);
+        return NULL;
+    }
     for (CFIndex i = 0; i < CFArrayGetCount(list); i++) {
         CFDictionaryRef row = CFArrayGetValueAtIndex(list, i);
         int owner = 0, layer = -1;
@@ -279,29 +450,7 @@ static CFMutableDictionaryRef snapshot(void) {
         n = CFDictionaryGetValue(row, kCGWindowNumber);
         if (n) CFNumberGetValue(n, kCFNumberSInt32Type, &wid);
         CFBooleanRef on = CFDictionaryGetValue(row, kCGWindowIsOnscreen);
-        CFStringRef state = CFSTR("other");
-        if (layer == 0 && on && CFBooleanGetValue(on)) state = CFSTR("shown");
-        else if (layer == 0) {
-            CFArrayRef ids = slWindowList(wid);
-            CFArrayRef spaces = windowSpaces(mainConnection(), 7, ids);
-            CFRelease(ids);
-            // A destroyed or unqueryable window is uncertain, not closed.
-            state = CFSTR("unknown");
-            if (spaces) {
-                state = CFArrayGetCount(spaces) == 0 ? CFSTR("tab") : CFSTR("other");
-                CFRelease(spaces);
-            }
-        }
-        int64_t pid = owner;
-        CFNumberRef key = CFNumberCreate(NULL, kCFNumberSInt64Type, &pid);
-        CFMutableDictionaryRef states = (CFMutableDictionaryRef)CFDictionaryGetValue(result, key);
-        if (!states) {
-            states = dictionary();
-            CFDictionarySetValue(result, key, states);
-            CFRelease(states);
-        }
-        put(states, wid, state);
-        CFRelease(key);
+        classify(result, owner, wid, layer, on && CFBooleanGetValue(on));
     }
     CFRelease(list);
     return result;
@@ -465,6 +614,7 @@ void tabsRegister(lua_State *L) {
     mainConnection = dlsym(RTLD_DEFAULT, "SLSMainConnectionID");
     windowSpaces = dlsym(RTLD_DEFAULT, "SLSCopySpacesForWindows");
     remoteElement = dlsym(RTLD_DEFAULT, "_AXUIElementCreateWithRemoteToken");
+    openListConnection();
     lua_pushcfunction(L, l_tabShow); lua_setfield(L, -2, "tabShow");
     lua_pushcfunction(L, l_tabSnapshot); lua_setfield(L, -2, "tabSnapshot");
     lua_pushcfunction(L, l_tabState); lua_setfield(L, -2, "tabState");
