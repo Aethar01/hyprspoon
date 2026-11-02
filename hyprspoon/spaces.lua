@@ -729,18 +729,29 @@ local function windowsOf(n)
     return ids
 end
 
+-- Lays out with tiles going straight into place when `slid`: easing them
+-- out of the corner under a slide only shows beneath the picture, or gets
+-- captured mid-way if the workspace (or scratchpad) is left again straight
+-- after, so it slides back in later with windows out of place.
+local function tileUnder(slid)
+    S.instantLayout = slid or nil
+    Layout.tileNow()
+    S.instantLayout = nil
+end
+
 -- Puts away the scratchpad showing on display `uuid`, back to the
 -- workspace beneath it (its windows are already in place); with `slide`,
--- sliding it down.
+-- sliding it down. True if it slid.
 local function hideScratchpad(uuid, slide)
     local base = under[uuid]
-    if not base then return end
-    if slide then Slide.hideScratchpad(connected[uuid], active[uuid], windowsOf(active[uuid])) end
+    if not base then return false end
+    local slid = slide and Slide.hideScratchpad(connected[uuid], active[uuid], windowsOf(active[uuid])) or false
     under[uuid] = nil
     active[uuid] = base
     refresh()
     lastSwitch = hs.timer.secondsSinceEpoch()
     sync(false)
+    return slid
 end
 
 -- Shows scratchpad `n` over the workspace showing on display `uuid` (or
@@ -750,6 +761,7 @@ local function showScratchpad(n, uuid)
     for other, m in pairs(active) do
         if m == n and other ~= uuid then hideScratchpad(other) end
     end
+    local slid = false
     if active[uuid] ~= n then
         -- From another display's corner: its windows keep the scratchpad
         -- while they're laid out here (unpark centres the floats).
@@ -763,7 +775,7 @@ local function showScratchpad(n, uuid)
             end
         end
         local base = under[uuid] or (active[uuid] and active[uuid] <= NAMED_BASE and active[uuid]) or nil
-        if base then Slide.showScratchpad(connected[uuid], n, windowsOf(n), windowsOf(base)) end
+        if base then slid = Slide.showScratchpad(connected[uuid], n, windowsOf(n), windowsOf(base)) end
         under[uuid] = base
         active[uuid] = n
         home[n] = uuid
@@ -771,7 +783,7 @@ local function showScratchpad(n, uuid)
         lastSwitch = hs.timer.secondsSinceEpoch()
         sync(false)
     end
-    Layout.tileNow()
+    tileUnder(slid)
     -- A maximized (or full-screen) window covers the rest: it alone is
     -- raised, and focused. Otherwise least recently used first, so the one
     -- used last ends on top. After focusing: a raise only goes above the
@@ -814,12 +826,7 @@ local function switchTo(n, uuid)
     end
     -- Not just changed screens: a workspace coming back has the same
     -- windows as when it was last laid out, but they're all parked.
-    -- Under a slide they go straight to their tiles: easing them out of
-    -- the corner only shows (beneath a picture sliding off) or gets
-    -- captured mid-way if the workspace is left again straight after.
-    S.instantLayout = slid
-    Layout.tileNow()
-    S.instantLayout = nil
+    tileUnder(slid)
     focusWorkspace(n, uuid ~= pointer)
     Hud.switched(uuid)
 end
@@ -945,8 +952,7 @@ function M.toggleWorkspace(n)
     refresh()
     local at = shown[n]
     if n > NAMED_BASE and at == pointerUUID() and active[at] == n and under[at] then
-        hideScratchpad(at, true)
-        Layout.tileNow()
+        tileUnder(hideScratchpad(at, true))
         focusWorkspace(active[at], at ~= pointerUUID())
         Hud.switched(at)
         return
@@ -1195,8 +1201,7 @@ function M.focusedParked(win)
     -- Beneath a scratchpad: that goes.
     for uuid, base in pairs(under) do
         if base == n and behind[n] then
-            hideScratchpad(uuid, true)
-            Layout.tileNow()
+            tileUnder(hideScratchpad(uuid, true))
             focusWorkspace(n, false)
             Hud.switched(uuid)
             return
