@@ -495,7 +495,6 @@ function M:start(opts)
     end)
 
     filter:subscribe(hs.window.filter.windowUnfocused, function(win)
-        Groupbar.unfocused(win)
         Border.unfocused(win)
     end)
     if hs.window.filter.windowTitleChanged then

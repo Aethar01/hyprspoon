@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating:
+`border.so` now draws group bars and links CoreText.
+
+- Group bars are drawn by the native border module, in the shown window's
+  ring: the shown segment fades with the ring in the same animation, and
+  the strip follows the window as the ring does. An invisible `hs.canvas`
+  keeps the clicks. Without the native module there are no group bars.
+- New `group.bar` options: `active` and `inactive` colours (default: the
+  border's), `radius`, `gap`, `inset`, `outset`, `offset`, and a tab look
+  with `tabs`, `drop`, `overlap` and `under`.
+- A title change redraws only that title, with no relayout or mask
+  snapshot (about 0.18ms, from 0.59ms).
+- A window that opens while a tiled group has focus joins the group.
+- Fixed: a group moved in the tree lost its bar.
+
 ## 0.4.0 (2026-10-31)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:

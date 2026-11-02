@@ -366,10 +366,12 @@ local function reconcileTree(key, windows)
 
     -- Members other than the shown one found on show: the kind decides
     -- (see Tree.registerKind). Ones it lets go are tiled as new windows.
+    -- Strays (torn-off tabs) are let go: they don't join a focused group.
+    local letGo = {}
     for _, leaf in ipairs(sets) do
         local strays = {}
         for _, id in ipairs(leaf.members or {}) do
-            if id ~= leaf.windowID and valid[id] then strays[#strays + 1] = id end
+            if id ~= leaf.windowID and valid[id] then strays[#strays + 1] = id letGo[id] = true end
         end
         local handler = #strays > 0 and Tree.kinds[leaf.kind]
         if handler and handler.strays then handler.strays(leaf, key, strays) end
@@ -496,6 +498,12 @@ local function reconcileTree(key, windows)
                     tree, inserted = Tree.insertBeside(tree, p.id, id, p.side)
                 end
                 local _, targetLeaf = Tree.ancestors(tree, target)
+                -- A window opened while a group was focused joins that group.
+                if not inserted and not letGo[id] and targetLeaf and targetLeaf.kind == "group" then
+                    Tree.addMember(targetLeaf, id, "group")
+                    showMember(targetLeaf, id, key)
+                    inserted = true
+                end
                 if not inserted and targetLeaf and targetLeaf.rect then
                     tree, inserted = Tree.insertBeside(tree, target, id,
                         splitSide(targetLeaf.rect, hs.mouse.absolutePosition()))

@@ -252,7 +252,7 @@ local ringRules = { {}, { noborder = true }, { noborder = false } }
 local ringWins = {}
 for id = 1, 3 do ringWins[id] = { id = function() return id end } end
 local ringEnv = setmetatable({
-    S = { fullscreen = {} },
+    S = { fullscreen = {}, cfg = { border = {} } },
     Util = { managedWindows = function() return ringWins end,
         rulesFor = function(w, uncached)
             assert(uncached == true, "borders must not cache rules before the title settles")

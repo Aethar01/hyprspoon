@@ -24,6 +24,16 @@ local Tree = require("hyprspoon.tree")
 local native = false
 local suspended = false -- no rings at all (the overview is open)
 local masking = false -- experimental.borderMask is on
+local barred = {} -- windows with a group bar (M.bar), drawn here too
+
+-- With `border = false` the rings are still made, unseen, for group bars.
+local function style()
+    return S.cfg.border or S.defaults.border
+end
+
+local function fade()
+    return S.cfg.border and S.cfg.border.fade or 0
+end
 
 -- The windows to ring, and with masks on, the managed windows' `opacity`
 -- rules (a see-through window shows the ring under it, dimmed).
@@ -37,7 +47,8 @@ local function onShow()
         -- rings, for windows whose events haven't come yet), and windows
         -- with a `noborder` rule.
         if id and not S.fullscreen[id] and not Spaces.isHidden(id) and not Tree.behindMaximized(id)
-           and not Tree.filling(id) and not Util.rulesFor(win, true).noborder then
+           and not Tree.filling(id)
+           and (barred[id] or (S.cfg.border and not Util.rulesFor(win, true).noborder)) then
             ids[#ids + 1] = id
         end
     end
@@ -68,7 +79,24 @@ end
 
 -- No window has focus: every ring goes inactive.
 function M.hide()
-    if native then native.focus(nil, S.cfg.border.fade) end
+    if native then native.focus(nil, fade()) end
+end
+
+-- Draws the group bar `spec` above window `id` in its ring's window (nil
+-- removes it), so the shown tab fades with the ring; see native/border.m
+-- for `spec`. False without the native module.
+function M.bar(id, spec)
+    if not native then return false end
+    local had = barred[id]
+    barred[id] = spec and true or nil
+    native.bar(id, spec)
+    if not S.cfg.border and had ~= barred[id] then M.sync() end
+    return true
+end
+
+-- Retitles tab `n` of window `id`'s bar; nothing else is redrawn.
+function M.title(id, n, text)
+    if native and barred[id] then native.title(id, n, text) end
 end
 
 -- For hyprspoon.native.frames' drags: shows each frame in the window's ring as the
@@ -97,7 +125,7 @@ function M.focused(win)
         M.hide()
         return
     end
-    native.focus(id, S.cfg.border.fade)
+    native.focus(id, fade())
 end
 
 -- Focus leaving for something we don't manage (an ignored app, a helper
@@ -129,8 +157,10 @@ end
 
 -- Loads the native module with the configured style and rings the windows.
 function M.start()
-    local cfg = S.cfg.border
-    if not cfg then return end
+    local group = S.cfg.group
+    local bars = type(group) == "table" and type(group.bar) == "table"
+    if not S.cfg.border and not bars then return end
+    local cfg = style()
     native = Util.native("border") or false
     if not native then return end
     -- Drawn at the finest resolution of any display.
@@ -142,7 +172,7 @@ function M.start()
     native.style({
         active = rgba(cfg.active),
         inactive = cfg.inactive and rgba(cfg.inactive) or { 0, 0, 0, 0 },
-        width = cfg.width,
+        width = S.cfg.border and cfg.width or 0,
         radius = cfg.radius,
         resolution = resolution,
     })
@@ -165,6 +195,7 @@ function M.stop()
         if S.running.events then S.running.events.filter(false) end
     end
     masking = false
+    barred = {}
     if native then native.stop() end
 end
 
