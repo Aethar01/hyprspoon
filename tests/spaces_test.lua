@@ -380,6 +380,34 @@ S.nativeBackground = {}
 Focus.currentWindow, Focus.focus = noop, noop
 Util.managedWindows = function() return {} end
 
+-- A scratchpad sliding up or down lays out with no easing, like a
+-- workspace sliding: otherwise toggling it again straight away captures
+-- its windows mid-way, and it later slides in with them out of place.
+do
+    local Slide = package.loaded["hyprspoon.slide"]
+    local Layout = package.loaded["hyprspoon.layout"]
+    local instant = {}
+    Layout.tileNow = function() instant[#instant + 1] = S.instantLayout == true end
+    Slide.showScratchpad = function() return true end
+    Slide.hideScratchpad = function() return true end
+    S.cfg.namedWorkspaces = { "A" }
+    Spaces.gotoWorkspace(1)
+    instant = {}
+    Spaces.toggleWorkspace("A")
+    assert(showing("LAPTOP") == 101, "the scratchpad shows")
+    assert(instant[#instant] == true, "it lays out instantly under its slide")
+    Spaces.toggleWorkspace("A")
+    assert(showing("LAPTOP") == 1, "and goes back")
+    assert(instant[#instant] == true, "going, it lays out instantly under its slide too")
+    Slide.showScratchpad = function() return false end
+    Spaces.toggleWorkspace("A")
+    assert(instant[#instant] == false, "without a slide, tiles ease as usual")
+    assert(S.instantLayout == nil, "and the flag doesn't outlive the layout")
+    Spaces.toggleWorkspace("A")
+    Layout.tileNow, Slide.showScratchpad, Slide.hideScratchpad = noop, nil, nil
+    S.cfg.namedWorkspaces = {}
+end
+
 -- Pins are saved with the rest, and come back on reload.
 Spaces.stop()
 package.loaded["hyprspoon.spaces"] = nil

@@ -118,22 +118,25 @@ function M.switch(screen, from, to, outIds, inIds, dir)
 end
 
 -- Scratchpad `n` (with `ids`) comes up over the workspace showing on
--- `screen` (with `baseIds`). Call before its windows move.
+-- `screen` (with `baseIds`). Call before its windows move. True if a
+-- slide covers it.
 function M.showScratchpad(screen, n, ids, baseIds)
-    if not native or not screen or not current(n, ids, screen) then return end
+    if not native or not screen or not current(n, ids, screen) then return false end
     local dx, dy = toward(S.cfg.slide.scratchpads, 1)
-    if not dx then return end
+    if not dx then return false end
     local still = take(nil, baseIds, screen, STILL)
     native.run(slide(screen, { into = n, still = still and STILL or nil, dx = dx, dy = dy, backdrop = true }))
+    return true
 end
 
 -- Scratchpad `n` (with `ids`) goes back off `screen`, over the workspace
--- beneath. Call before its windows move.
+-- beneath. Call before its windows move. True if a slide covers it.
 function M.hideScratchpad(screen, n, ids)
-    if not native or not screen then return end
+    if not native or not screen then return false end
     local dx, dy = toward(S.cfg.slide.scratchpads, -1)
-    if not dx then return end
-    if take(n, ids, screen) then native.run(slide(screen, { out = n, dx = dx, dy = dy })) end
+    if not dx or not take(n, ids, screen) then return false end
+    native.run(slide(screen, { out = n, dx = dx, dy = dy }))
+    return true
 end
 
 -- Whether swipes can drag a slide.
