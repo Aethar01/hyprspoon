@@ -59,6 +59,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <libproc.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -124,6 +125,14 @@ static CFTypeRef (*SLSWindowQueryResultCopyWindows)(CFTypeRef);
 static bool (*SLSWindowIteratorAdvance)(CFTypeRef);
 static CFArrayRef (*SLSWindowIteratorGetCornerRadii)(CFTypeRef);
 
+// Optional: each window's details, for listing the windows on screen
+// without the main connection (see listCid). Without them, CGWindowList.
+static uint32_t (*SLSWindowIteratorGetWindowID)(CFTypeRef);
+static int (*SLSWindowIteratorGetPID)(CFTypeRef);
+static int (*SLSWindowIteratorGetLevel)(CFTypeRef);
+static float (*SLSWindowIteratorGetAlpha)(CFTypeRef);
+static CGRect (*SLSWindowIteratorGetBounds)(CFTypeRef);
+
 // Optional: a Space's type (4 is full screen, Split View too). Without it
 // only fillsDisplay() tells full-screen windows.
 static int (*SLSSpaceGetType)(int, uint64_t);
@@ -135,8 +144,19 @@ static const char *loadSymbols(void) {
     SLSWindowQueryResultCopyWindows = dlsym(RTLD_DEFAULT, "SLSWindowQueryResultCopyWindows");
     SLSWindowIteratorAdvance = dlsym(RTLD_DEFAULT, "SLSWindowIteratorAdvance");
     SLSWindowIteratorGetCornerRadii = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetCornerRadii");
+    SLSWindowIteratorGetWindowID = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetWindowID");
+    SLSWindowIteratorGetPID = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetPID");
+    SLSWindowIteratorGetLevel = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetLevel");
+    SLSWindowIteratorGetAlpha = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetAlpha");
+    SLSWindowIteratorGetBounds = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetBounds");
     SLSSpaceGetType = dlsym(RTLD_DEFAULT, "SLSSpaceGetType");
     return NULL;
+}
+
+static bool canListWindows(void) {
+    return SLSWindowQueryWindows && SLSWindowQueryResultCopyWindows && SLSWindowIteratorAdvance
+        && SLSWindowIteratorGetWindowID && SLSWindowIteratorGetPID && SLSWindowIteratorGetLevel
+        && SLSWindowIteratorGetAlpha && SLSWindowIteratorGetBounds;
 }
 
 enum { ORDER_OUT = 0, ORDER_ABOVE = 1 };
@@ -191,17 +211,31 @@ static bool overview = false; // Mission Control or Exposé is up: no rings
 // Everything above, and the ring windows, belong to `queue` (and its own
 // connection, drawCid). Hammerspoon's main connection (mainCid) is only for
 // asking WindowServer for notifications, from the main thread.
+//
+// Window lists come from a third connection, listCid, that draws nothing.
+// Every window-list call (CGWindowList* too) first waits for its
+// connection's last CoreAnimation transaction to reach WindowServer,
+// holding that connection's lock meanwhile: up to half a second when
+// WindowServer is busy, as when switching workspaces quickly. On the main
+// connection, CGWindowListCopyWindowInfo's, that held up the main thread's
+// own drawing (and with it every hotkey) for that long; on drawCid it
+// would hold up the rings. listCid has no transactions to wait for.
 static dispatch_queue_t queue = NULL;
-static int drawCid = 0, mainCid = 0;
+static int drawCid = 0, mainCid = 0, listCid = 0;
 
 // WindowServer sends every connection events, and one that leaves them
 // unread fills up until WindowServer times out on it, which stalls the
-// screen. Nothing else reads drawCid's, so they're read and dropped here.
-static dispatch_source_t drain = NULL;
-static mach_port_t drainPort = MACH_PORT_NULL;
+// screen. Nothing else reads drawCid's or listCid's, so they're read and
+// dropped here.
+typedef struct {
+    int *cid;
+    mach_port_t port;
+    dispatch_source_t source;
+} Drain;
+static Drain drains[2] = { { &drawCid, MACH_PORT_NULL, NULL }, { &listCid, MACH_PORT_NULL, NULL } };
 
-static void drainEvents(void *unused) {
-    (void)unused;
+static void drainEvents(void *context) {
+    Drain *d = context;
     // The port's messages only say events are waiting; one left on the
     // port fires the source again at once, so take them off first.
     struct {
@@ -210,12 +244,88 @@ static void drainEvents(void *unused) {
     } message;
     for (;;) {
         mach_msg_return_t r = mach_msg(&message.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(message),
-            drainPort, 0, MACH_PORT_NULL);
+            d->port, 0, MACH_PORT_NULL);
         if (r == MACH_MSG_SUCCESS) mach_msg_destroy(&message.header);
         else if (r != MACH_RCV_TOO_LARGE) break;
     }
     CGEventRef event;
-    while ((event = SLEventCreateNextEvent(drawCid))) CFRelease(event);
+    while ((event = SLEventCreateNextEvent(*d->cid))) CFRelease(event);
+}
+
+static void startDrain(Drain *d) {
+    d->port = MACH_PORT_NULL;
+    if (SLSGetEventPort(*d->cid, &d->port) != kCGErrorSuccess || d->port == MACH_PORT_NULL) return;
+    d->source = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, d->port, 0, queue);
+    dispatch_set_context(d->source, d);
+    dispatch_source_set_event_handler_f(d->source, drainEvents);
+    dispatch_resume(d->source);
+    dispatch_async_f(queue, d, drainEvents);
+}
+
+static void stopDrain(Drain *d) {
+    if (!d->source) return;
+    dispatch_source_cancel(d->source);
+    dispatch_release(d->source);
+    d->source = NULL;
+}
+
+// A window on screen, as the window lists give it.
+typedef struct {
+    uint32_t wid;
+    int32_t pid, level;
+    double alpha;
+    CGRect bounds;
+} Listed;
+
+static bool listedNumber(CFDictionaryRef info, CFStringRef key, CFNumberType type, void *out) {
+    CFNumberRef n = CFDictionaryGetValue(info, key);
+    return n && CFNumberGetValue(n, type, out);
+}
+
+// Calls `each` with the windows on screen, front to back, leaving out the
+// desktop's (as kCGWindowListExcludeDesktopElements), until it returns
+// false. False if there was no list. From listCid when it's there.
+static bool listWindows(bool (*each)(const Listed *, void *), void *context) {
+    if (listCid) {
+        CFTypeRef query = SLSWindowQueryWindows(listCid, NULL, 0);
+        CFTypeRef iterator = query ? SLSWindowQueryResultCopyWindows(query) : NULL;
+        if (!iterator) {
+            if (query) CFRelease(query);
+            return false;
+        }
+        while (SLSWindowIteratorAdvance(iterator)) {
+            Listed w = { SLSWindowIteratorGetWindowID(iterator), SLSWindowIteratorGetPID(iterator),
+                SLSWindowIteratorGetLevel(iterator), SLSWindowIteratorGetAlpha(iterator),
+                SLSWindowIteratorGetBounds(iterator) };
+            // The desktop's windows sit at the bottom, just above the
+            // lowest level; what's listed after them is behind it.
+            if (w.level < kCGBackstopMenuLevel) break;
+            if (!each(&w, context)) break;
+        }
+        CFRelease(iterator);
+        CFRelease(query);
+        return true;
+    }
+    CFArrayRef list = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
+    if (!list) return false;
+    for (CFIndex i = 0; i < CFArrayGetCount(list); i++) {
+        CFDictionaryRef info = CFArrayGetValueAtIndex(list, i);
+        Listed w = { 0, 0, 0, 1, CGRectZero };
+        int32_t wid = 0;
+        CFDictionaryRef b = CFDictionaryGetValue(info, kCGWindowBounds);
+        if (!listedNumber(info, kCGWindowNumber, kCFNumberSInt32Type, &wid) || !b
+            || !CGRectMakeWithDictionaryRepresentation(b, &w.bounds)) {
+            continue;
+        }
+        w.wid = (uint32_t)wid;
+        listedNumber(info, kCGWindowOwnerPID, kCFNumberSInt32Type, &w.pid);
+        listedNumber(info, kCGWindowLayer, kCFNumberSInt32Type, &w.level);
+        listedNumber(info, kCGWindowAlpha, kCFNumberDoubleType, &w.alpha);
+        if (!each(&w, context)) break;
+    }
+    CFRelease(list);
+    return true;
 }
 
 typedef struct {
@@ -836,9 +946,25 @@ static bool isBarCanvas(CGRect bounds) {
     return false;
 }
 
-static int number(CFDictionaryRef info, CFStringRef key, CFNumberType type, void *out) {
-    CFNumberRef n = CFDictionaryGetValue(info, key);
-    return n && CFNumberGetValue(n, type, out);
+typedef struct {
+    CGDirectDisplayID displays[16];
+    uint32_t displayCount;
+    pid_t self;
+} SnapshotScan;
+
+static bool snapshotWindow(const Listed *w, void *context) {
+    SnapshotScan *scan = context;
+    if (w->alpha <= 0 || w->level >= kCGScreenSaverWindowLevel) return true;
+    if (w->pid == scan->self && (w->level > 0 || isRingWindow(w->wid) || isBarCanvas(w->bounds))) return true;
+    for (uint32_t d = 0; d < scan->displayCount && w->level > 0; d++) {
+        if (CGRectContainsRect(w->bounds, CGDisplayBounds(scan->displays[d]))) return true;
+    }
+    if (seenCount == MAX_SEEN) {
+        snapshotTruncated = true;
+        return false;
+    }
+    seen[seenCount++] = (Seen){ w->wid, w->bounds, w->level, w->alpha };
+    return true;
 }
 
 // The windows on screen, front to back, leaving out what covers nothing:
@@ -849,40 +975,9 @@ static void takeSnapshot(void) {
     snapshotTaken = true;
     snapshotTruncated = false;
     seenCount = 0;
-    CFArrayRef list = CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
-    if (!list) return;
-    CGDirectDisplayID displays[16];
-    uint32_t displayCount = 0;
-    if (CGGetActiveDisplayList(16, displays, &displayCount) != kCGErrorSuccess) displayCount = 0;
-    pid_t self = getpid();
-    for (CFIndex i = 0; i < CFArrayGetCount(list); i++) {
-        CFDictionaryRef info = CFArrayGetValueAtIndex(list, i);
-        int32_t pid = 0, level = 0, wid = 0;
-        double alpha = 1;
-        CGRect bounds;
-        CFDictionaryRef b = CFDictionaryGetValue(info, kCGWindowBounds);
-        if (!number(info, kCGWindowNumber, kCFNumberSInt32Type, &wid) || !b
-            || !CGRectMakeWithDictionaryRepresentation(b, &bounds)) {
-            continue;
-        }
-        number(info, kCGWindowOwnerPID, kCFNumberSInt32Type, &pid);
-        number(info, kCGWindowLayer, kCFNumberSInt32Type, &level);
-        number(info, kCGWindowAlpha, kCFNumberDoubleType, &alpha);
-        if (alpha <= 0 || level >= kCGScreenSaverWindowLevel) continue;
-        if (pid == self && (level > 0 || isRingWindow((uint32_t)wid) || isBarCanvas(bounds))) continue;
-        bool coversDisplay = false;
-        for (uint32_t d = 0; d < displayCount && level > 0 && !coversDisplay; d++) {
-            coversDisplay = CGRectContainsRect(bounds, CGDisplayBounds(displays[d]));
-        }
-        if (coversDisplay) continue;
-        if (seenCount == MAX_SEEN) {
-            snapshotTruncated = true;
-            break;
-        }
-        seen[seenCount++] = (Seen){ (uint32_t)wid, bounds, level, alpha };
-    }
-    CFRelease(list);
+    SnapshotScan scan = { .self = getpid() };
+    if (CGGetActiveDisplayList(16, scan.displays, &scan.displayCount) != kCGErrorSuccess) scan.displayCount = 0;
+    listWindows(snapshotWindow, &scan);
 }
 
 // The window's level from this update's snapshot, saving a call per ring.
@@ -1247,26 +1342,19 @@ static bool overviewCheckRunning = false;
 static atomic_bool overviewCheckQueued = false;
 static int overviewFollowUps = 0; // checks left after the last cue
 
+static bool findOverview(const Listed *w, void *context) {
+    // 19 for Exposé and Mission Control, 17 for Mission Control's
+    // thumbnails; its 14 backdrop lingers a second or two after it.
+    if (w->level <= 14 || w->alpha <= 0) return true;
+    char name[32];
+    if (proc_name(w->pid, name, sizeof(name)) <= 0 || strcmp(name, "WindowManager") != 0) return true;
+    *(bool *)context = true;
+    return false;
+}
+
 static bool overviewShowing(void) {
-    CFArrayRef list = CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID);
-    if (!list) return false;
     bool found = false;
-    for (CFIndex i = 0; i < CFArrayGetCount(list) && !found; i++) {
-        CFDictionaryRef info = CFArrayGetValueAtIndex(list, i);
-        CFStringRef owner = CFDictionaryGetValue(info, kCGWindowOwnerName);
-        if (!owner || CFStringCompare(owner, CFSTR("WindowManager"), 0) != kCFCompareEqualTo) continue;
-        int32_t layer = 0;
-        double alpha = 1;
-        CFNumberRef n = CFDictionaryGetValue(info, kCGWindowLayer);
-        if (n) CFNumberGetValue(n, kCFNumberSInt32Type, &layer);
-        n = CFDictionaryGetValue(info, kCGWindowAlpha);
-        if (n) CFNumberGetValue(n, kCFNumberDoubleType, &alpha);
-        // 19 for Exposé and Mission Control, 17 for Mission Control's
-        // thumbnails; its 14 backdrop lingers a second or two after it.
-        found = layer > 14 && alpha > 0;
-    }
-    CFRelease(list);
+    listWindows(findOverview, &found);
     return found;
 }
 
@@ -1941,16 +2029,15 @@ static int l_gc(lua_State *L) {
         }
         releaseAll();
         for (int i = 0; i < MAX_BARS; i++) freeBar(&bars[i]);
-        if (drain) {
-            dispatch_source_cancel(drain);
-            dispatch_release(drain);
-            drain = NULL;
-        }
+        stopDrain(&drains[0]);
+        stopDrain(&drains[1]);
     });
     stopWatchAsk(); // after masks.on went false on the queue
     dispatch_release(queue);
     queue = NULL;
     SLSReleaseConnection(drawCid);
+    if (listCid) SLSReleaseConnection(listCid);
+    listCid = 0;
     return 0;
 }
 
@@ -1968,13 +2055,11 @@ int luaopen_hyprspoon_native_border(lua_State *L) {
     // Each block drains its own autorelease pool (CoreAnimation's objects).
     queue = dispatch_queue_create("hyprspoon.border",
         dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
-    drainPort = MACH_PORT_NULL;
-    if (SLSGetEventPort(drawCid, &drainPort) == kCGErrorSuccess && drainPort != MACH_PORT_NULL) {
-        drain = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, drainPort, 0, queue);
-        dispatch_source_set_event_handler_f(drain, drainEvents);
-        dispatch_resume(drain);
-        dispatch_async_f(queue, NULL, drainEvents);
-    }
+    startDrain(&drains[0]);
+    // Without its query calls, window lists fall back to CGWindowList on
+    // the main connection (see listCid).
+    if (canListWindows() && SLSNewConnection(0, &listCid) == kCGErrorSuccess) startDrain(&drains[1]);
+    else listCid = 0;
     ringCount = 0;
     active = activeAsked = 0;
     noted.movedCount = noted.otherCount = 0;
