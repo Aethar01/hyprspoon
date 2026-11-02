@@ -130,6 +130,7 @@ S.defaults = {
         text = { white = 1 }, -- title colour: "#rrggbb" or hs.drawing.color table
         active = false, -- shown tab when focused; false uses border.active
         inactive = false, -- other tabs, and the shown one unfocused; false uses border.inactive
+        fade = false, -- seconds for the shown tab to blend as focus moves; false uses border.fade, 0 snaps
     } },
 
     -- App names whose windows are never managed or tiled (palettes, overlays,

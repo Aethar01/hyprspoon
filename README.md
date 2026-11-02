@@ -271,6 +271,7 @@ Empty or unavailable titles read “Untitled”; long titles are truncated.
 | `group.bar.text` | `{ white = 1 }` | Title colour, a `"#rrggbb"` string or `hs.drawing.color` table |
 | `group.bar.active` | `false` | Shown segment's colour when focused; `false` uses `border.active` |
 | `group.bar.inactive` | `false` | Other segments, and the shown one unfocused; `false` uses `border.inactive` |
+| `group.bar.fade` | `false` | Seconds for the shown segment to blend between `active` and `inactive` as focus moves; `false` uses `border.fade`, `0` snaps |
 | `group.bar.radius` | `0` | Segment corner radius in points |
 | `group.bar.gap` | `0` | Space between segments in points (none at the strip's ends) |
 | `group.bar.inset` | `0` | Keep the segments this far in from each side, in points |
@@ -284,8 +285,9 @@ Empty or unavailable titles read “Untitled”; long titles are truncated.
 The strip is drawn by the native border module (`border.m`) in the shown
 window's ring, so it needs that module, and follows the window as its ring
 does. With `border = false` the rings are made invisible but still carry the
-strips. The shown segment fades between `active` and `inactive` in the same
-animation as the ring. A transparent `hs.canvas` under the strip takes the
+strips. The shown segment fades between `active` and `inactive` with the ring,
+over `fade` seconds (by default the ring's own `border.fade`). A transparent
+`hs.canvas` under the strip takes the
 clicks; with `under`, the overlap is left to the window. A title change
 redraws only that title. The strip reserves space above the window on the
 same layout pass, including maximized and pseudotiled groups. It follows layout

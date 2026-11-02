@@ -35,6 +35,14 @@ local function fade()
     return S.cfg.border and S.cfg.border.fade or 0
 end
 
+-- The group bar's shown tab: group.bar.fade, else the ring's fade.
+local function barFade()
+    local group = S.cfg.group
+    local bar = type(group) == "table" and type(group.bar) == "table" and group.bar or nil
+    local v = bar and tonumber(bar.fade)
+    return v and math.max(0, v) or fade()
+end
+
 -- The windows to ring, and with masks on, the managed windows' `opacity`
 -- rules (a see-through window shows the ring under it, dimmed).
 local function onShow()
@@ -85,7 +93,7 @@ end
 
 -- No window has focus: every ring goes inactive.
 function M.hide()
-    if native then native.focus(nil, fade()) end
+    if native then native.focus(nil, fade(), barFade()) end
 end
 
 -- Draws the group bar `spec` above window `id` in its ring's window (nil
@@ -131,7 +139,7 @@ function M.focused(win)
         M.hide()
         return
     end
-    native.focus(id, fade())
+    native.focus(id, fade(), barFade())
 end
 
 -- Focus leaving for something we don't manage (an ignored app, a helper

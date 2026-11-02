@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Rebuild the native modules (`make -C hyprspoon/native`) after updating:
+`border.so` takes the group bar's fade.
+
+- New `group.bar.fade`: seconds for the shown segment to blend between its
+  colours as focus moves, separate from the ring's `border.fade` (its
+  default). Without the rebuild it keeps following `border.fade`.
 - Modifier-drag a tile onto a group's bar to join the group at the marked
   gap, or onto the middle of its tile to join after the shown member,
   including a group on another display. Near the group's edges the drop

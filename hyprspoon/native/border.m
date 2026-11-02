@@ -176,6 +176,10 @@ typedef struct {
     // `duration` from `start` (see mixAt).
     float from, to;
     double start, duration;
+    // The same for the group bar's shown tab, which has a fade of its own
+    // (group.bar.fade); it always heads where the ring does.
+    float tabFrom;
+    double tabStart, tabDuration;
 } Ring;
 
 #define MAX_RINGS 128
@@ -254,6 +258,12 @@ static CGColorRef colorAt(float mix) {
 static float mixAt(Ring *ring, double t) {
     double p = ring->duration > 0 ? (t - ring->start) / ring->duration : 1;
     return p >= 1 ? ring->to : ring->from + (ring->to - ring->from) * (float)p;
+}
+
+// How active the group bar's shown tab looks at time `t`.
+static float tabMixAt(Ring *ring, double t) {
+    double p = ring->tabDuration > 0 ? (t - ring->tabStart) / ring->tabDuration : 1;
+    return p >= 1 ? ring->to : ring->tabFrom + (ring->to - ring->tabFrom) * (float)p;
 }
 
 // Changes to layers outside a transaction would wait for a run loop this
@@ -719,8 +729,8 @@ static Ring *newRing(uint32_t target) {
     ring->target = target;
     ring->hidden = ring->fills = ring->fullSpace = ring->shown = ring->previewing = ring->resizing = false;
     ring->drawn = false;
-    ring->from = ring->to = target == active ? 1 : 0;
-    ring->duration = 0;
+    ring->from = ring->to = ring->tabFrom = target == active ? 1 : 0;
+    ring->duration = ring->tabDuration = 0;
     beginChanges();
     CGColorRef color = colorAt(ring->to);
     [ring->layer removeAllAnimations];
@@ -1314,22 +1324,49 @@ static void onWindowCreatedOrDestroyed(uint32_t event, void *data, size_t length
 // 120Hz cost it about twice the CPU (measured).
 #define FADE_RATE 60
 
-// Fades the ring from how it looks now to `to` over `duration` seconds.
-static void blend(Ring *ring, float to, double duration) {
+// `steps` colours from `from` to `to` for a stepped fade: `color(mix)`
+// gives each (retained).
+static NSArray *fadeSteps(float from, float to, int steps, CGColorRef (^color)(float)) {
+    NSMutableArray *values = [NSMutableArray arrayWithCapacity:steps];
+    for (int i = 1; i <= steps; i++) {
+        CGColorRef c = color(i == steps ? to : from + (to - from) * (float)i / steps);
+        [values addObject:(id)c];
+        CGColorRelease(c);
+    }
+    return values;
+}
+
+static void addFade(CALayer *layer, NSString *keyPath, NSArray *values, double duration) {
+    CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:keyPath];
+    fade.values = values;
+    fade.calculationMode = kCAAnimationDiscrete;
+    fade.duration = duration;
+    [layer addAnimation:fade forKey:fadeKey];
+}
+
+// Fades the ring from how it looks now to `to` over `duration` seconds,
+// and the group bar's shown tab, between its own colours, over
+// `tabDuration`, in the same transaction.
+static void blend(Ring *ring, float to, double duration, double tabDuration) {
     if (!ring) return;
     double t = now();
-    float from = mixAt(ring, t);
-    if (from == to && ring->to == to) return;
+    float from = mixAt(ring, t), tabFrom = tabMixAt(ring, t);
+    if (from == to && tabFrom == to && ring->to == to) return;
     ring->from = from;
+    ring->tabFrom = tabFrom;
     ring->to = to;
-    ring->start = t;
+    ring->start = ring->tabStart = t;
     ring->duration = duration;
+    ring->tabDuration = tabDuration;
     beginChanges();
     [ring->layer removeAllAnimations];
     CGColorRef end = colorAt(to);
     ring->layer.borderColor = end;
-    // The group bar's shown tab fades with the ring, in the same
-    // transaction and steps, between its own colours.
+    CGColorRelease(end);
+    int steps = (int)ceil(duration * FADE_RATE);
+    if (steps > 1) addFade(ring->layer, borderColorKey, fadeSteps(from, to, steps, ^(float mix) {
+        return colorAt(mix);
+    }), duration);
     CALayer *tab = ring->shownFill;
     Bar *bar = tab ? barFor(ring->target) : NULL;
     if (tab) {
@@ -1337,35 +1374,11 @@ static void blend(Ring *ring, float to, double duration) {
         CGColorRef tabEnd = tabColorAt(bar, to);
         tab.backgroundColor = tabEnd;
         CGColorRelease(tabEnd);
+        int tabSteps = (int)ceil(tabDuration * FADE_RATE);
+        if (tabSteps > 1) addFade(tab, backgroundColorKey, fadeSteps(tabFrom, to, tabSteps, ^(float mix) {
+            return tabColorAt(bar, mix);
+        }), tabDuration);
     }
-    int steps = (int)ceil(duration * FADE_RATE);
-    if (steps > 1) {
-        NSMutableArray *values = [NSMutableArray arrayWithCapacity:steps];
-        for (int i = 1; i <= steps; i++) {
-            CGColorRef c = i == steps ? CGColorRetain(end) : colorAt(from + (to - from) * (float)i / steps);
-            [values addObject:(id)c];
-            CGColorRelease(c);
-        }
-        CAKeyframeAnimation *fade = [CAKeyframeAnimation animationWithKeyPath:borderColorKey];
-        fade.values = values;
-        fade.calculationMode = kCAAnimationDiscrete;
-        fade.duration = duration;
-        [ring->layer addAnimation:fade forKey:fadeKey];
-        if (tab) {
-            NSMutableArray *tabValues = [NSMutableArray arrayWithCapacity:steps];
-            for (int i = 1; i <= steps; i++) {
-                CGColorRef c = tabColorAt(bar, i == steps ? to : from + (to - from) * (float)i / steps);
-                [tabValues addObject:(id)c];
-                CGColorRelease(c);
-            }
-            CAKeyframeAnimation *tabFade = [CAKeyframeAnimation animationWithKeyPath:backgroundColorKey];
-            tabFade.values = tabValues;
-            tabFade.calculationMode = kCAAnimationDiscrete;
-            tabFade.duration = duration;
-            [tab addAnimation:tabFade forKey:fadeKey];
-        }
-    }
-    CGColorRelease(end);
     commitChanges();
 }
 
@@ -1582,22 +1595,25 @@ static int l_set(lua_State *L) {
     return 0;
 }
 
-// focus(wid or nil, duration): blend the focused window's ring to the
-// active colour and the previous one's back, over `duration` seconds.
+// focus(wid or nil, duration, tabDuration): blend the focused window's ring
+// to the active colour and the previous one's back, over `duration`
+// seconds; their group bars' shown tabs over `tabDuration` (by default
+// `duration`).
 static int l_focus(lua_State *L) {
     uint32_t wid = (uint32_t)luaL_optinteger(L, 1, 0);
     double requested = luaL_optnumber(L, 2, 0);
+    double requestedTab = luaL_optnumber(L, 3, requested);
     activeAsked = wid;
     dispatch_async(queue, ^{
         if (wid == active) return;
-        double duration = requested;
+        double duration = requested, tabDuration = requestedTab;
         Ring *previous = ringFor(active);
         Ring *next = ringFor(wid);
         // A native tab taking over its window's place: no blend.
-        if (previous && next && CGRectEqualToRect(previous->bounds, next->bounds)) duration = 0;
+        if (previous && next && CGRectEqualToRect(previous->bounds, next->bounds)) duration = tabDuration = 0;
         active = wid;
-        blend(previous, 0, duration);
-        blend(next, 1, duration);
+        blend(previous, 0, duration, tabDuration);
+        blend(next, 1, duration, tabDuration);
     });
     return 0;
 }
