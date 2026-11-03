@@ -238,6 +238,21 @@ S.defaults = {
         -- Needs hyprspoon.native.border and macOS 13. Rebuild native modules
         -- after updating. Off means no snapshot or extra window watching.
         borderMask = false,
+
+        -- Prototype for issue #18: tiled windows in columns side by side,
+        -- scrolled sideways so the focused one is in view (niri's
+        -- layout). Columns are the BSP tree's tiles in order, one window
+        -- or group each; directional focus, swaps and Cmd-Tab scroll.
+        -- Columns out of sight are parked in the display's corner. false,
+        -- true (the defaults below), or a table:
+        --   workspaces = true   all workspaces, or a list, e.g. { 3, "A" }
+        --                       (scratchpads never scroll)
+        --   width = 0.5         a column's share of the tiling area
+        --   duration = 0.2      seconds a scroll takes; 0 snaps
+        --   center = false      keep the focused column centred
+        -- cycleColumnWidth() cycles the focused column's width. Measure
+        -- with tests/scroll_bench.lua. Throwaway: expect it to change.
+        scrolling = false,
     },
 }
 

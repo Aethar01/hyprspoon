@@ -45,6 +45,7 @@
 --   hooks     callbacks and shell commands on changes, and query() for status bars
 --   group     window groups and the group-bar API
 --   groupbar  clickable title strips for grouped tiles
+--   scroll    EXPERIMENTAL: columns that scroll sideways, niri-style (#18)
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
@@ -94,6 +95,7 @@ local Overview = require("hyprspoon.overview")
 local Hooks = require("hyprspoon.hooks")
 local Group = require("hyprspoon.group")
 local Groupbar = require("hyprspoon.groupbar")
+local Scroll = require("hyprspoon.scroll")
 
 -- The public API. Actions are plain functions (no `self`), so they can be
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
@@ -137,6 +139,9 @@ local M = {
     swap = Actions.swap,
     move = Actions.move,
     toggleFloat = Actions.toggleFloat,
+    -- EXPERIMENTAL, with experimental.scrolling: cycle the focused column's
+    -- width. Unbound by default.
+    cycleColumnWidth = Actions.cycleColumnWidth,
     toggleFullScreen = Actions.toggleFullScreen,
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
@@ -407,6 +412,7 @@ function M:start(opts)
         hs.shutdownCallback = function()
             Spaces.rememberTitles()
             Spaces.unparkAll()
+            Scroll.bringBack()
             M.stop()
             if previous then previous() end
         end

@@ -11,6 +11,13 @@ local function read(name)
     return sources[name]
 end
 
+-- Scrolling columns (hyprspoon/scroll.lua) are off: nothing is scrolled away.
+Scroll = {
+    enabled = function() return false end,
+    isAway = function() return false end,
+    awayUUID = function() return nil end,
+}
+
 -- Snippet of hyprspoon/<name>.lua from the line starting `first` up to `last`.
 local function extract(name, first, last)
     local source = read(name)

@@ -10,6 +10,7 @@ local Tabs = require("hyprspoon.tabs")
 local Float = require("hyprspoon.float")
 local Spaces = require("hyprspoon.spaces")
 local Border = require("hyprspoon.border")
+local Scroll = require("hyprspoon.scroll")
 
 -- Each window's screen and fullscreen state, cached per window id: both are
 -- accessibility calls and change only when the window moves or goes
@@ -418,8 +419,10 @@ local function windowsByScreen(onlyUUID)
         end
         S.openIDs[win:id()] = true
         local info = windowInfoFor(win)
-        -- The filter only passes visible, manageable windows.
-        local uuid = info.uuid and not info.full and Spaces.claim(win, info.uuid)
+        -- The filter only passes visible, manageable windows. One scrolled
+        -- out of sight is in a corner, but stays on its own display.
+        local on = Scroll.awayUUID(win:id()) or info.uuid
+        local uuid = on and not info.full and Spaces.claim(win, on)
         if uuid and (not onlyUUID or uuid == onlyUUID) and not Float.shouldFloat(win) then
             byScreen[uuid] = byScreen[uuid] or {}
             table.insert(byScreen[uuid], win)

@@ -11,6 +11,7 @@ local Focus = require("hyprspoon.focus")
 local Layout = require("hyprspoon.layout")
 local Resize = require("hyprspoon.resize")
 local Spaces = require("hyprspoon.spaces")
+local Scroll = require("hyprspoon.scroll")
 
 -- ---------------------------------------------------------------------------
 -- Actions (bind these to hotkeys)
@@ -164,7 +165,9 @@ local function neighbourInDirection(win, direction, preferHistory)
     local id = win:id()
     local path, leaf, key = Tree.findByID(S.tilingEnabled and id or nil)
     if leaf and leaf.rect then
-        if preferHistory then
+        -- Columns go by their order, not by which section of the tree was
+        -- used last.
+        if preferHistory and not Scroll.enabled(key) then
             local split = (direction == "left" or direction == "right") and "vertical" or "horizontal"
             local from = (direction == "right" or direction == "down") and "a" or "b"
             -- Walk outward to the first split with a sibling in this
@@ -391,6 +394,12 @@ local function setFloat(win, float)
 
     Focus.invalidateWindowCache()
     Layout.tileNow()
+end
+
+-- EXPERIMENTAL (experimental.scrolling): the focused column's width to the
+-- next of a third, half, two thirds and the whole area.
+function M.cycleColumnWidth()
+    Scroll.cycleWidth(Focus.currentWindow())
 end
 
 -- Toggle floating for the focused window (overrides the automatic choice).

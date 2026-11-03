@@ -1513,6 +1513,11 @@ M.unpark = function(win)
     if not isHidden(win:id()) then unpark(win) end
 end
 M.isHidden = isHidden
+-- Where a window `size` big is parked on display `uuid` (hyprspoon/scroll.lua
+-- parks columns scrolled out of sight there too), or nil if it's not connected.
+M.parkPoint = function(uuid, size)
+    return connected[uuid] and parkPoint(uuid, size) or nil
+end
 M.claim = claim
 M.displayOf = displayOf
 

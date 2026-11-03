@@ -13,6 +13,7 @@ local Util = require("hyprspoon.util")
 local Spaces = require("hyprspoon.spaces")
 local Group = require("hyprspoon.group")
 local Border = require("hyprspoon.border")
+local Scroll = require("hyprspoon.scroll")
 
 local running = false
 local bars, suspended = {}, {}
@@ -268,7 +269,7 @@ function M.update(onlyLeaf)
         if cfg and not blocked and S.tilingEnabled and info and info.shown == id and info.key
            and info.rect and not S.untiled[info.key] and not S.autoFloat[id]
            and not S.fullscreen[id] and not S.offSpace[id] and not Spaces.isHidden(id)
-           and not Tree.behindMaximized(id) then
+           and not Scroll.isAway(id) and not Tree.behindMaximized(id) then
             -- Maximized and pseudotiled content reserve space in their own
             -- frame; keep the strip attached to that same frame.
             local rect = leaf.fullRect or leaf.pseudoRect or info.rect

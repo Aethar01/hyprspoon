@@ -11,6 +11,7 @@ local Border = require("hyprspoon.border")
 local Ffm = require("hyprspoon.ffm")
 local Layout = require("hyprspoon.layout")
 local Hooks = require("hyprspoon.hooks")
+local Scroll = require("hyprspoon.scroll")
 
 -- ---------------------------------------------------------------------------
 -- Internal focus
@@ -207,7 +208,7 @@ local function windowSnapshot(fresh)
             local disjointTiles = true
             for _, win in ipairs(Util.managedWindows()) do
                 local id = win:id()
-                if id and not Spaces.isHidden(id) then
+                if id and not Spaces.isHidden(id) and not Scroll.isAway(id) then
                     byID[id] = win
                     local tile = Tree.rectFor(id)
                     if tile and not S.autoFloat[id] then
