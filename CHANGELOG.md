@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1 (2026-11-05)
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating:
+`frames.so` takes the fix below.
+
+- Hammerspoon no longer crashes when hyprspoon moves one of its own
+  windows (the Console, while it's tiled), as on a reload. The frames
+  module moved them from a background queue, where AppKit can't be used;
+  they now move on the main thread.
+
 ## 0.5.0 (2026-11-05)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:
