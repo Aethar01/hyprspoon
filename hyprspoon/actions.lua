@@ -401,7 +401,7 @@ local function setFloat(win, float)
     Layout.tileNow()
 end
 
--- EXPERIMENTAL (experimental.scrolling), niri's column actions. The
+-- Scrolling columns (`scrolling`), niri's column actions. The
 -- focused column's width to the next of the presets (a third, half, two
 -- thirds), or with `back` the one before.
 function M.cycleColumnWidth(back)

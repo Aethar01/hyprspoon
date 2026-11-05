@@ -1,5 +1,5 @@
 -- Run with: lua tests/scroll_test.lua
--- Unit tests for hyprspoon/scroll.lua (the experimental scrolling columns):
+-- Unit tests for hyprspoon/scroll.lua (the scrolling columns):
 -- columns in the tree, the strip and viewport maths (niri's), where columns
 -- go on a display, arrange's slides and parks, and the column actions, with
 -- stand-ins for Hammerspoon and the modules around it.
@@ -30,7 +30,7 @@ hs.screen = { allScreens = function() return screens end }
 -- Stand-ins. Workspace "ws1"'s tree is S.trees.ws1.
 local S = {
     cfg = { tiling = { innerGap = 10 }, minWidth = 240, minHeight = 140,
-        experimental = { scrolling = { duration = 0.2 } } },
+        scrolling = { duration = 0.2 } },
     tilingEnabled = true, settleUntil = 0, applied = {}, trees = {},
 }
 package.loaded["hyprspoon.state"] = S
@@ -262,22 +262,22 @@ arrange()
 assert(Scroll.signature("ws1") == "|scroll 495", "and the view stays")
 
 -- A column partly in view hangs over the edge.
-S.cfg.experimental.scrolling.center = "always"
+S.cfg.scrolling.center = "always"
 focus(3)
 assert(appliedIDs() == "2,3,4", "centred, 2 and 4 hang over the edges, got " .. appliedIDs())
-S.cfg.experimental.scrolling.center = nil
+S.cfg.scrolling.center = nil
 focus(4)
 focus(1)
 assert(Scroll.signature("ws1") == "|scroll 0", "back to the first")
 -- Focus follows mouse doesn't centre: 2 is on show, so nothing moves.
-S.cfg.experimental.scrolling.center = "always"
+S.cfg.scrolling.center = "always"
 S.ffmFocus = { id = 2, time = clock }
 focus(2)
 assert(Scroll.signature("ws1") == "|scroll 0", "the pointer's focus isn't centred")
 S.ffmFocus = nil
 focus(1)
 assert(Scroll.signature("ws1") ~= "|scroll 0", "the keyboard's is")
-S.cfg.experimental.scrolling.center = nil
+S.cfg.scrolling.center = nil
 focus(4)
 focus(1)
 assert(Scroll.signature("ws1") == "|scroll 0", "back to the first")
@@ -368,7 +368,7 @@ assert(shape(S.trees.ws1) == "2,3,4,5,1", "move-column-to-last")
 Scroll.moveToEnd(byID[1], false)
 assert(shape(S.trees.ws1) == "1,2,3,4,5", "move-column-to-first")
 -- moveConsumes: move goes into the column beside, then out the far side.
-S.cfg.experimental.scrolling.moveConsumes = true
+S.cfg.scrolling.moveConsumes = true
 Scroll.move(byID[2], "left")
 assert(shape(S.trees.ws1) == "1+2,3,4,5", "moved into 1's column, got " .. shape(S.trees.ws1))
 Scroll.move(byID[2], "left")
@@ -376,7 +376,7 @@ assert(shape(S.trees.ws1) == "2,1,3,4,5", "and out of it to the left, got " .. s
 Scroll.move(byID[2], "right")
 Scroll.move(byID[2], "right")
 assert(shape(S.trees.ws1) == "1,2,3,4,5", "and back, got " .. shape(S.trees.ws1))
-S.cfg.experimental.scrolling.moveConsumes = nil
+S.cfg.scrolling.moveConsumes = nil
 -- swap-window: the windows trade columns, the columns keep their widths.
 Scroll.cycleWidth(byID[1])
 focus(1)
@@ -402,21 +402,21 @@ assert(shape(S.trees.ws1) == "1,2,3,4,5" and Scroll.columns(S.trees.ws1)[2].widt
 leaves()[2].columnWidth = nil
 
 -- move-column, whatever move does.
-S.cfg.experimental.scrolling.moveConsumes = true
+S.cfg.scrolling.moveConsumes = true
 Scroll.moveColumn(byID[1], "right")
 assert(shape(S.trees.ws1) == "2,1,3,4,5", "move-column-right")
 Scroll.moveColumn(byID[1], "left")
-S.cfg.experimental.scrolling.moveConsumes = nil
+S.cfg.scrolling.moveConsumes = nil
 
 -- Past the ends: on to the display that way, or with edgeToDisplay off,
 -- nothing (niri).
 assert(Scroll.focus(byID[1], "left") == false and Scroll.move(byID[1], "left") == false, "to the display")
-S.cfg.experimental.scrolling.edgeToDisplay = false
+S.cfg.scrolling.edgeToDisplay = false
 focused = {}
 assert(Scroll.focus(byID[1], "left") == true and #focused == 0, "niri: nothing")
 assert(Scroll.move(byID[1], "left") == true and Scroll.focus(byID[1], "up") == true, "niri: nothing")
 assert(shape(S.trees.ws1) == "1,2,3,4,5", "and nothing moved")
-S.cfg.experimental.scrolling.edgeToDisplay = nil
+S.cfg.scrolling.edgeToDisplay = nil
 
 -- Inserting beside a window: columns in columns, BSP elsewhere.
 assert(shape(Scroll.insertBeside("ws1", Scroll.build({ { L(1) } }), 1, 9, "top")) == "9+1", "into the column")
@@ -459,10 +459,10 @@ arrange()
 do
     local saved = S.trees.ws1
     S.trees.ws1 = Scroll.build({ { L(1) } })
-    S.cfg.experimental.scrolling.centerSingle = true
+    S.cfg.scrolling.centerSingle = true
     focus(1)
     assert(math.abs(rectOf(1).x - (10 + (980 - 485) / 2)) <= 1, "one column: centred")
-    S.cfg.experimental.scrolling.centerSingle = nil
+    S.cfg.scrolling.centerSingle = nil
     S.trees.ws1 = saved
     focus(1)
     focus(4)
@@ -471,9 +471,9 @@ end
 
 -- Focus follows mouse scrolls at most ffmMaxScroll.
 assert(Scroll.pointerMayFocus(4), "no limit")
-S.cfg.experimental.scrolling.ffmMaxScroll = 0
+S.cfg.scrolling.ffmMaxScroll = 0
 assert(Scroll.pointerMayFocus(2) and not Scroll.pointerMayFocus(3), "0: only columns in view")
-S.cfg.experimental.scrolling.ffmMaxScroll = nil
+S.cfg.scrolling.ffmMaxScroll = nil
 
 -- center-visible-columns: 1 and 2 in view, centred together.
 Scroll.centerVisible(byID[1])
@@ -571,7 +571,7 @@ arrange()
 assert(not Scroll.isAway(5), "gone from the tree, gone from away")
 
 -- peek: the columns beside a full-width one show at the sides.
-S.cfg.experimental.scrolling.peek = 50
+S.cfg.scrolling.peek = 50
 focus(2)
 Scroll.toggleFullWidth(byID[2])
 arrange()
@@ -579,7 +579,7 @@ assert(rectOf(2).x == 60 and rectOf(2).w == 880, "full width within the peek, go
 assert(rectOf(1) and rectOf(1).x + rectOf(1).w == 50, "1 shows at the left")
 assert(rectOf(3) and rectOf(3).x == 950, "3 shows at the right")
 Scroll.toggleFullWidth(byID[2])
-S.cfg.experimental.scrolling.peek = nil
+S.cfg.scrolling.peek = nil
 
 -- Snapping, and a display beyond the edge: straight to the corner.
 S.instantLayout = true
@@ -589,5 +589,11 @@ for _, m in ipairs(moves) do
     assert(m.duration == 0 and m.rect.x == 999 and m.rect.y == 799, "parked at once")
 end
 S.instantLayout = nil
+
+-- Its experimental name still works.
+S.cfg.experimental = { scrolling = S.cfg.scrolling }
+S.cfg.scrolling = false
+assert(Scroll.enabled("ws1"), "experimental.scrolling turns it on too")
+S.cfg.scrolling, S.cfg.experimental = S.cfg.experimental.scrolling, nil
 
 print("Scroll tests passed")

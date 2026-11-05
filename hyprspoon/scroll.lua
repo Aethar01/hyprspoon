@@ -1,11 +1,9 @@
--- hyprspoon/scroll.lua: EXPERIMENTAL, the prototype for issue #18: niri's
--- scrollable tiling. Windows go in columns side by side on a strip wider
--- than the display, scrolled so the focused column is fully on show. It's
--- here to find out whether scrolling can be smooth with 6+ columns before
--- the layout interface (#15) is built for it; see tests/scroll_bench.lua
--- for the measurement.
+-- hyprspoon/scroll.lua: niri's scrollable tiling (issue #18). Windows go in
+-- columns side by side on a strip wider than the display, scrolled so the
+-- focused column is fully on show. tests/scroll_bench.lua measures how
+-- smoothly it scrolls.
 --
--- Turned on per workspace with experimental.scrolling (hyprspoon/state.lua).
+-- Turned on per workspace with `scrolling` (hyprspoon/state.lua).
 -- The workspace's BSP tree holds the columns: vertical splits separate
 -- columns, left to right, and the tiles under a horizontal split are one
 -- column's windows, top to bottom (M.columns reads a tree that way, and
@@ -90,7 +88,9 @@ local views = {}
 local away = {}
 
 local function cfg()
-    local c = S.cfg and S.cfg.experimental and S.cfg.experimental.scrolling
+    local c = S.cfg and S.cfg.scrolling
+    -- Where it was while it was experimental.
+    if not c then c = S.cfg and S.cfg.experimental and S.cfg.experimental.scrolling end
     if not c then return nil end
     return c == true and {} or c
 end

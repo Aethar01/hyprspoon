@@ -8,7 +8,7 @@
 -- Before running:
 --   * rebuild the native modules (make -C hyprspoon/native) and reload:
 --     this needs hyprspoon.native.frames' stats()
---   * turn tiling on, and experimental.scrolling on for the workspace
+--   * turn tiling on, and scrolling on for the workspace
 --   * focus a tiled window on a workspace with 6 or more columns, from
 --     several apps (a terminal, a browser, an editor, Finder...)
 --
@@ -49,11 +49,11 @@ function M.run(options, outPath)
     local current = Focus.currentWindow()
     local _, _, key = Tree.findByID(current and current:id())
     assert(key, 'focus a tiled window first')
-    assert(Scroll.enabled(key), 'experimental.scrolling is off for ' .. key)
+    assert(Scroll.enabled(key), 'scrolling is off for ' .. key)
     local leaves = Tree.leaves(S.trees[key])
     assert(#leaves >= 6, 'want 6 or more columns, have ' .. #leaves)
 
-    local scroll = S.cfg.experimental.scrolling
+    local scroll = S.cfg.scrolling
     local duration = type(scroll) == 'table' and scroll.duration or 0.2
 
     -- Left to right and back, `passes` times, from the first column.

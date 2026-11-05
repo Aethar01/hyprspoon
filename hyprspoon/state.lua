@@ -221,6 +221,68 @@ S.defaults = {
         dropColor = { red = 0.35, green = 0.6, blue = 1 },
     },
 
+    -- niri's scrollable tiling, per workspace. Tiled windows go in columns
+    -- side by side, scrolled sideways so the focused one is in view; a new
+    -- window opens as a column right of the focused one. In a workspace
+    -- laid out in columns:
+    --   focus      left/right: the column beside (its window focused
+    --              last); up/down: within the column
+    --   move       left/right: the whole column (move-column-*), or with
+    --              moveConsumes, into and out of columns; up/down: the
+    --              window within its column
+    --   swap       left/right: windows with the column beside
+    --   resize     width by a percentage of the area, height within
+    --              the column; window edges and modifier-drag too
+    --   toggleMaximize  the column full width (maximize-column)
+    --   rotate/mirror   cycleColumnWidth forward/back (columns don't
+    --              rotate); toggleSplit does nothing
+    --   consumeOrExpel(dir), moveColumn(dir), consumeIntoColumn,
+    --   expelFromColumn, cycleColumnWidth(back), centerColumn,
+    --   centerVisibleColumns, expandColumn, focusColumnEnd(last),
+    --   moveColumnToEnd(last); defaultHotkeys binds most of them
+    -- Dragging a window onto a column puts it beside the column, or above
+    -- or below the window, by the edge it's dropped nearest. A window that
+    -- joins a column remembers its own width, and has it again when it
+    -- leaves. Columns out of sight are parked in the display's corner.
+    -- false, true (the defaults below), or a table:
+    --   workspaces = true   all workspaces, or a list, e.g. { 3, "A" }
+    --                       (scratchpads never scroll)
+    --   width = 0.5         a new column's share of the tiling area
+    --   presets = { 1/3, 1/2, 2/3 }  the widths cycleColumnWidth goes
+    --                       through
+    --   center = "never"    "always" (or true) keeps the focused column
+    --                       centred; "on-overflow" centres it when it
+    --                       doesn't fit beside the column focused before
+    --   centerSingle = false  centre a column that's alone
+    --                       (always-center-single-column)
+    --   peek = 0            points kept free at each side, where the
+    --                       columns beside always show (niri's struts);
+    --                       widths are shares of what's left
+    --   fill = false        columns of `width` share the area while they
+    --                       fit (not niri's: one fills it, two take half...)
+    --   duration = 0.2      seconds a scroll takes; 0 snaps
+    --   moveConsumes = false  move left/right takes the window into the
+    --                       column that way, or out of its own into a new
+    --                       one (consume-or-expel), instead of moving the
+    --                       column: two moves swap columns (moveColumn
+    --                       still moves columns)
+    --   edgeToDisplay = true  past the first or last column, focus and
+    --                       move go on to the display that way; false
+    --                       stops there, as niri does
+    --   ffmMaxScroll = nil  focus follows mouse only focuses a column if
+    --                       that scrolls the view at most this share of
+    --                       its width; 0 for only columns in view (niri's
+    --                       max-scroll-amount)
+    --   wheel = { "alt" }   holding these, scrolling (two fingers, or a
+    --                       mouse wheel a column a step) scrolls the
+    --                       columns, as niri's Mod+scroll; false: none
+    --   swipe = false       fingers whose sideways swipe scrolls the
+    --                       columns, settling on one; not the same as
+    --                       swipe.fingers unless workspaces swipe
+    --                       vertically (swipe.direction)
+    --   swipeSpan = 0.5     share of the trackpad that scrolls a view
+    scrolling = false,
+
     -- Features still being tried out, off by default. They may change or
     -- go before they graduate to options of their own.
     experimental = {
@@ -241,71 +303,6 @@ S.defaults = {
         -- Needs hyprspoon.native.border and macOS 13. Rebuild native modules
         -- after updating. Off means no snapshot or extra window watching.
         borderMask = false,
-
-        -- Prototype for issue #18: niri's scrollable tiling. Tiled windows
-        -- go in columns side by side, scrolled sideways so the focused
-        -- one is in view. A new window opens as a column right of the
-        -- focused one. In a workspace laid out in columns:
-        --   focus      left/right: the column beside (its window focused
-        --              last); up/down: within the column
-        --   move       left/right: the whole column (move-column-*);
-        --              up/down: the window within its column
-        --   swap       left/right: windows with the column beside
-        --   resize     width by a percentage of the area, height within
-        --              the column; window edges and modifier-drag too
-        --   toggleMaximize  the column full width (maximize-column)
-        --   rotate/mirror   cycleColumnWidth forward/back (columns don't
-        --              rotate); toggleSplit does nothing
-        --   consumeOrExpel(dir), moveColumn(dir), consumeIntoColumn,
-        --   expelFromColumn, cycleColumnWidth(back), centerColumn,
-        --   centerVisibleColumns, expandColumn, focusColumnEnd(last),
-        --   moveColumnToEnd(last); defaultHotkeys binds most of them
-        -- Dragging a window onto a column puts it beside the column, or
-        -- above or below the window, by the edge it's dropped nearest.
-        -- Columns out of sight are parked in the display's corner. false,
-        -- true (the defaults below), or a table:
-        --   workspaces = true   all workspaces, or a list, e.g. { 3, "A" }
-        --                       (scratchpads never scroll)
-        --   width = 0.5         a new column's share of the tiling area
-        --   presets = { 1/3, 1/2, 2/3 }  the widths cycleColumnWidth
-        --                       goes through
-        --   fill = false        columns of `width` share the area while
-        --                       they fit (not niri's: one fills it, two
-        --                       take half...)
-        --   duration = 0.2      seconds a scroll takes; 0 snaps
-        --   peek = 0            points kept free at each side, where the
-        --                       columns beside always show (niri's
-        --                       struts); widths are shares of what's left
-        --   edgeToDisplay = true  past the first or last column, focus and
-        --                       move go on to the display that way; false
-        --                       stops there, as niri does
-        --   centerSingle = false  centre a column that's alone
-        --                       (always-center-single-column)
-        --   ffmMaxScroll = nil  focus follows mouse only focuses a column
-        --                       if that scrolls the view at most this share
-        --                       of its width; 0 for only columns in view
-        --                       (niri's max-scroll-amount)
-        --   swipe = false       fingers whose sideways swipe scrolls the
-        --                       columns, settling on one; not the same as
-        --                       swipe.fingers unless workspaces swipe
-        --                       vertically (swipe.direction)
-        --   swipeSpan = 0.5     share of the trackpad that scrolls a view
-        --   wheel = { "alt" }   holding these, scrolling (two fingers, or
-        --                       a mouse wheel a column a step) scrolls the
-        --                       columns, as niri's Mod+scroll; false: none
-        --   moveConsumes = false  move left/right takes the window into the
-        --                       column that way, or out of its own into a
-        --                       new one (consume-or-expel), instead of
-        --                       moving the column: two moves swap columns
-        --                       (moveColumn still moves columns)
-        -- A window that joins a column remembers its own width, and has it
-        -- again when it leaves.
-        --   center = "never"    "always" (or true) keeps the focused
-        --                       column centred; "on-overflow" centres it
-        --                       when it doesn't fit beside the column
-        --                       focused before
-        -- Measure with tests/scroll_bench.lua. Expect it to change.
-        scrolling = false,
     },
 }
 

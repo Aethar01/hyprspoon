@@ -45,7 +45,7 @@
 --   hooks     callbacks and shell commands on changes, and query() for status bars
 --   group     window groups and the group-bar API
 --   groupbar  clickable title strips for grouped tiles
---   scroll    EXPERIMENTAL: columns that scroll sideways, niri-style (#18)
+--   scroll    columns that scroll sideways, niri-style
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
@@ -139,9 +139,9 @@ local M = {
     swap = Actions.swap,
     move = Actions.move,
     toggleFloat = Actions.toggleFloat,
-    -- EXPERIMENTAL, with experimental.scrolling: niri's column actions.
+    -- With `scrolling`: niri's column actions.
     -- Unbound by default. focus, swap, move, resize and toggleMaximize act
-    -- on columns too (see experimental.scrolling in hyprspoon/state.lua).
+    -- on columns too (see `scrolling` in hyprspoon/state.lua).
     cycleColumnWidth = Actions.cycleColumnWidth,
     consumeOrExpel = Actions.consumeOrExpel,
     moveColumn = Actions.moveColumn,
@@ -194,7 +194,7 @@ local function hotkeyActions()
         "expelFromColumn", "centerColumn", "centerVisibleColumns", "expandColumn" }) do
         actions[name] = M[name]
     end
-    -- Scrolling columns (experimental.scrolling); nothing elsewhere.
+    -- Scrolling columns (`scrolling`); nothing elsewhere.
     for suffix, dir in pairs({ Left = "left", Right = "right" }) do
         actions["consumeOrExpel" .. suffix] = function() M.consumeOrExpel(dir) end
         actions["moveColumn" .. suffix] = function() M.moveColumn(dir) end
