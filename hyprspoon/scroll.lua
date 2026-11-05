@@ -66,6 +66,7 @@ local DEFAULTS = {
     fill = false,                   -- columns of `width` share the area while they fit
     duration = 0.2,                 -- seconds a scroll takes; 0 snaps
     center = "never",               -- "never", "always" (or true) or "on-overflow"
+    peek = 0,                       -- points kept at each side for the columns beside (niri's struts)
 }
 
 -- Tree key -> { x = scroll offset in points, focusID = the window focused
@@ -466,9 +467,13 @@ function M.arrange(key, tree, area, screen, byID, full)
     views[key] = view
 
     local gap = S.cfg.tiling.innerGap
+    -- Columns are sized and scrolled within `view`, narrower than the area
+    -- by `peek` at each side, where the columns beside it show.
+    local peek = math.max(0, math.min(opt("peek"), math.floor((area.w - S.cfg.minWidth) / 2)))
+    local inner = { x = area.x + peek, y = area.y, w = area.w - 2 * peek, h = area.h }
     local own = {}
     for i, col in ipairs(cols) do own[i] = col.full and 1 or col.width end
-    local widths = M.widths(own, #cols, opt("width"), area.w, gap, opt("fill"), S.cfg.minWidth)
+    local widths = M.widths(own, #cols, opt("width"), inner.w, gap, opt("fill"), S.cfg.minWidth)
     local starts = M.strip(widths, gap)
 
     local known, fresh = {}, nil
@@ -483,7 +488,7 @@ function M.arrange(key, tree, area, screen, byID, full)
         end
     end
     local ci, focusID = focusOf(cols, view, fresh)
-    local x, prev = placeView(view, cols, starts, widths, area.w, ci)
+    local x, prev = placeView(view, cols, starts, widths, inner.w, ci)
     -- A window opened from the column focused before, focused in a new
     -- column: closing it goes back there (activate_prev_column_on_removal).
     if focusID and fresh and fresh[focusID] and prev and ci == prev + 1 and #cols[ci] == 1 then
@@ -498,7 +503,7 @@ function M.arrange(key, tree, area, screen, byID, full)
     view.x = x
     view.focusID, view.active = focusID, focusID
     view.rel = ci and x - starts[ci] or nil
-    view.cols, view.starts, view.widths, view.viewW, view.areaH = cols, starts, widths, area.w, area.h
+    view.cols, view.starts, view.widths, view.viewW, view.areaH = cols, starts, widths, inner.w, area.h
     view.known = known
 
     local sf = screen:fullFrame()
@@ -513,7 +518,7 @@ function M.arrange(key, tree, area, screen, byID, full)
     local least = S.cfg.minHeight
     local seen, came = {}, false
     for i, col in ipairs(cols) do
-        local colRect = hs.geometry.rect(area.x + starts[i] - x, area.y, widths[i], area.h)
+        local colRect = hs.geometry.rect(inner.x + starts[i] - x, area.y, widths[i], area.h)
         local where = M.classify(colRect, sf, others, area)
         local heights = M.heights((function()
             local t = {}

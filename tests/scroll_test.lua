@@ -439,6 +439,17 @@ S.trees.ws1 = Scroll.build(c)
 arrange()
 assert(not Scroll.isAway(5), "gone from the tree, gone from away")
 
+-- peek: the columns beside a full-width one show at the sides.
+S.cfg.experimental.scrolling.peek = 50
+focus(2)
+Scroll.toggleFullWidth(byID[2])
+arrange()
+assert(rectOf(2).x == 60 and rectOf(2).w == 880, "full width within the peek, got " .. rectOf(2).x)
+assert(rectOf(1) and rectOf(1).x + rectOf(1).w == 50, "1 shows at the left")
+assert(rectOf(3) and rectOf(3).x == 950, "3 shows at the right")
+Scroll.toggleFullWidth(byID[2])
+S.cfg.experimental.scrolling.peek = nil
+
 -- Snapping, and a display beyond the edge: straight to the corner.
 S.instantLayout = true
 screens[2] = screen("B", 1000)

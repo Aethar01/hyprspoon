@@ -267,6 +267,9 @@ S.defaults = {
         --                       they fit (not niri's: one fills it, two
         --                       take half...)
         --   duration = 0.2      seconds a scroll takes; 0 snaps
+        --   peek = 0            points kept free at each side, where the
+        --                       columns beside always show (niri's
+        --                       struts); widths are shares of what's left
         --   center = "never"    "always" (or true) keeps the focused
         --                       column centred; "on-overflow" centres it
         --                       when it doesn't fit beside the column
