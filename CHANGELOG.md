@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-05)
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating:
+`frames.so` takes the start frame columns slide in from. Without the
+rebuild, columns coming into view slide in from the display's corner
+instead of its edge.
 
 - New `scrolling`: niri's scrollable tiling, per workspace. Windows go in
   columns side by side, scrolled so the focused column is in view, with
