@@ -247,7 +247,13 @@ S.defaults = {
         -- true (the defaults below), or a table:
         --   workspaces = true   all workspaces, or a list, e.g. { 3, "A" }
         --                       (scratchpads never scroll)
-        --   width = 0.5         a column's share of the tiling area
+        --   width = 0.5         a column's share of the tiling area; 1 for
+        --                       one window filling it at a time, the
+        --                       others scrolled out of sight
+        --   fill = true         columns of that width share the area while
+        --                       they fit: one fills it, two take half...
+        -- Resizing (keyboard, modifier-drag, window edges) sets a column's
+        -- own width; the others still fill around it.
         --   duration = 0.2      seconds a scroll takes; 0 snaps
         --   center = false      keep the focused column centred
         -- cycleColumnWidth() cycles the focused column's width. Measure
