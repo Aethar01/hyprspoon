@@ -6,6 +6,7 @@ package.loaded["hyprspoon.swipe"] = M
 local S = require("hyprspoon.state")
 local Spaces = require("hyprspoon.spaces")
 local Slide = require("hyprspoon.slide")
+local Scroll = require("hyprspoon.scroll")
 
 -- ---------------------------------------------------------------------------
 -- Swipes
@@ -81,6 +82,28 @@ local function lifted(s)
     if s.started then hs.timer.doAfter(0, function() settle(s) end) end
 end
 
+-- The axis workspaces are swiped along: `swipe.direction`, else the
+-- workspaces' slide's ("vertical": fingers up for the next workspace).
+local function axis()
+    local d = S.cfg.swipe and S.cfg.swipe.direction
+    if d then return d end
+    return S.cfg.slide and S.cfg.slide.workspaces == "vertical" and "vertical" or "horizontal"
+end
+
+-- How far along the workspace axis fingers at x, y are, increasing
+-- towards the next workspace.
+local function along(x, y)
+    if axis() == "vertical" then return y, x end
+    return -x, y
+end
+
+-- A swipe scrolling columns (hyprspoon/scroll.lua) lifted.
+local function scrollLifted(s)
+    local v = velocity(s)
+    local key = s.scroll
+    hs.timer.doAfter(0, function() Scroll.panEnd(key, v) end)
+end
+
 local function onGesture(event)
     local touches = event:getTouches()
     if not touches then return false end
@@ -94,8 +117,15 @@ local function onGesture(event)
         end
     end
     local cfg = S.cfg.swipe
-    if n ~= cfg.fingers then
-        lifted(swipe)
+    local workspaces = cfg and n == cfg.fingers
+    -- Sideways swipes scroll columns, unless they switch workspaces.
+    local columns = n == Scroll.swipeFingers() and not (workspaces and axis() == "horizontal")
+    if not workspaces and not columns then
+        if swipe and swipe.scroll then
+            scrollLifted(swipe)
+        else
+            lifted(swipe)
+        end
         swipe = nil
         return false
     end
@@ -108,8 +138,15 @@ local function onGesture(event)
     local s = swipe
     local dx, dy = x - s.x, y - s.y
 
+    if s.scroll then
+        local p = s.x0 - x
+        s.samples[#s.samples + 1] = { t = hs.timer.secondsSinceEpoch(), p = p / Scroll.swipeSpan() }
+        if #s.samples > 8 then table.remove(s.samples, 1) end
+        Scroll.panTo(s.scroll, s.view0, p)
+        return false
+    end
     if s.following then
-        local p = clamp((s.x0 - x) * s.dir / cfg.span, 0, 1)
+        local p = clamp((along(x, y) - s.a0) * s.dir / cfg.span, 0, 1)
         s.progress = p
         s.samples[#s.samples + 1] = { t = hs.timer.secondsSinceEpoch(), p = p }
         if #s.samples > 8 then table.remove(s.samples, 1) end
@@ -118,10 +155,28 @@ local function onGesture(event)
     end
     if s.fired then return false end
 
+    if columns and math.abs(dx) >= START and math.abs(dx) > 2 * math.abs(dy) then
+        local key, view0 = Scroll.panBegin(hs.mouse.getCurrentScreen())
+        if key then
+            -- From where the fingers first touched, so the columns keep up.
+            s.scroll, s.view0, s.x0, s.samples = key, view0, s.x, {}
+            Scroll.panTo(key, view0, s.x0 - x)
+            return false
+        end
+        if not workspaces then
+            s.fired = true
+            return false
+        end
+    end
+    if not workspaces then return false end
+
+    local da, db = along(x, y)
+    local a0, b0 = along(s.x, s.y)
+    da, db = da - a0, db - b0
     if cfg.follow and Slide.canPan() then
-        if math.abs(dx) >= START and math.abs(dx) > 2 * math.abs(dy) then
-            s.dir = dx < 0 and 1 or -1
-            s.x0, s.progress, s.samples, s.following = x, 0, {}, true
+        if math.abs(da) >= START and math.abs(da) > 2 * math.abs(db) then
+            s.dir = da > 0 and 1 or -1
+            s.a0, s.progress, s.samples, s.following = along(x, y), 0, {}, true
             -- Switching makes accessibility calls; a slow app must not hold
             -- up the event tap (macOS disables taps that take too long).
             hs.timer.doAfter(0, function()
@@ -129,9 +184,9 @@ local function onGesture(event)
                 begin(s)
             end)
         end
-    elseif math.abs(dx) >= cfg.distance and math.abs(dx) > 2 * math.abs(dy) then
+    elseif math.abs(da) >= cfg.distance and math.abs(da) > 2 * math.abs(db) then
         s.fired = true
-        local delta = dx < 0 and 1 or -1
+        local delta = da > 0 and 1 or -1
         hs.timer.doAfter(0, function() Spaces.gotoWorkspaceRelative(delta) end)
     end
     return false
@@ -139,6 +194,7 @@ end
 
 -- Forgets a swipe in progress (reload, shutdown).
 local function stop()
+    if swipe and swipe.scroll then Scroll.panEnd(swipe.scroll, 0) end
     swipe = nil
 end
 

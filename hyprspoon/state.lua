@@ -92,6 +92,9 @@ S.defaults = {
         follow = true,
         span = 0.35,
         distance = 0.12,
+        -- The axis: "horizontal" or "vertical" (fingers up for the next
+        -- workspace). nil: as slide.workspaces.
+        direction = nil,
     },
 
     -- Rings around the windows on show, except native full screen (Split
@@ -253,9 +256,12 @@ S.defaults = {
         --   toggleMaximize  the column full width (maximize-column)
         --   rotate/mirror   cycleColumnWidth forward/back (columns don't
         --              rotate); toggleSplit does nothing
-        --   consumeOrExpel(dir), consumeIntoColumn, expelFromColumn,
-        --   cycleColumnWidth(back), centerColumn, expandColumn,
-        --   focusColumnEnd(last), moveColumnToEnd(last)
+        --   consumeOrExpel(dir), moveColumn(dir), consumeIntoColumn,
+        --   expelFromColumn, cycleColumnWidth(back), centerColumn,
+        --   centerVisibleColumns, expandColumn, focusColumnEnd(last),
+        --   moveColumnToEnd(last); defaultHotkeys binds most of them
+        -- Dragging a window onto a column puts it beside the column, or
+        -- above or below the window, by the edge it's dropped nearest.
         -- Columns out of sight are parked in the display's corner. false,
         -- true (the defaults below), or a table:
         --   workspaces = true   all workspaces, or a list, e.g. { 3, "A" }
@@ -270,10 +276,27 @@ S.defaults = {
         --   peek = 0            points kept free at each side, where the
         --                       columns beside always show (niri's
         --                       struts); widths are shares of what's left
+        --   edgeToDisplay = true  past the first or last column, focus and
+        --                       move go on to the display that way; false
+        --                       stops there, as niri does
+        --   centerSingle = false  centre a column that's alone
+        --                       (always-center-single-column)
+        --   ffmMaxScroll = nil  focus follows mouse only focuses a column
+        --                       if that scrolls the view at most this share
+        --                       of its width; 0 for only columns in view
+        --                       (niri's max-scroll-amount)
+        --   swipe = false       fingers whose sideways swipe scrolls the
+        --                       columns, settling on one; not the same as
+        --                       swipe.fingers unless workspaces swipe
+        --                       vertically (swipe.direction)
+        --   swipeSpan = 0.5     share of the trackpad that scrolls a view
         --   moveConsumes = false  move left/right takes the window into the
         --                       column that way, or out of its own into a
         --                       new one (consume-or-expel), instead of
         --                       moving the column: two moves swap columns
+        --                       (moveColumn still moves columns)
+        -- A window that joins a column remembers its own width, and has it
+        -- again when it leaves.
         --   center = "never"    "always" (or true) keeps the focused
         --                       column centred; "on-overflow" centres it
         --                       when it doesn't fit beside the column

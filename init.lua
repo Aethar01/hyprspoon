@@ -144,6 +144,8 @@ local M = {
     -- on columns too (see experimental.scrolling in hyprspoon/state.lua).
     cycleColumnWidth = Actions.cycleColumnWidth,
     consumeOrExpel = Actions.consumeOrExpel,
+    moveColumn = Actions.moveColumn,
+    centerVisibleColumns = Actions.centerVisibleColumns,
     consumeIntoColumn = Actions.consumeIntoColumn,
     expelFromColumn = Actions.expelFromColumn,
     centerColumn = Actions.centerColumn,
@@ -188,9 +190,21 @@ local function hotkeyActions()
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
         "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
         "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo",
-        "toggleGroup", "groupNext", "groupPrev", "moveOutOfGroup" }) do
+        "toggleGroup", "groupNext", "groupPrev", "moveOutOfGroup", "consumeIntoColumn",
+        "expelFromColumn", "centerColumn", "centerVisibleColumns", "expandColumn" }) do
         actions[name] = M[name]
     end
+    -- Scrolling columns (experimental.scrolling); nothing elsewhere.
+    for suffix, dir in pairs({ Left = "left", Right = "right" }) do
+        actions["consumeOrExpel" .. suffix] = function() M.consumeOrExpel(dir) end
+        actions["moveColumn" .. suffix] = function() M.moveColumn(dir) end
+    end
+    actions.cycleColumnWidth = function() M.cycleColumnWidth() end
+    actions.cycleColumnWidthBack = function() M.cycleColumnWidth(true) end
+    actions.focusColumnFirst = function() M.focusColumnEnd(false) end
+    actions.focusColumnLast = function() M.focusColumnEnd(true) end
+    actions.moveColumnToFirst = function() M.moveColumnToEnd(false) end
+    actions.moveColumnToLast = function() M.moveColumnToEnd(true) end
     for suffix, dir in pairs(DIRECTIONS) do
         actions["focus" .. suffix] = function() M.focus(dir) end
         actions["swap" .. suffix] = function() M.swap(dir) end
@@ -283,6 +297,33 @@ function M.hotkeysFor(super, ctrlSuper)
         map["resize" .. suffix] = { super, suffix:lower() }
         map["preselect" .. suffix] = { ctrlSuper, suffix:lower() }
     end
+    -- Scrolling columns, niri's keys where they're free (rotate and mirror
+    -- cycle a column's width there). Move-column goes on Shift over the
+    -- third layer, as Ctrl+SUPER+H/L switch workspaces.
+    local columnShift = { table.unpack(ctrlSuper) }
+    for _, m in ipairs(super) do
+        if not modifierSet(columnShift):find(modifierSet({ m }), 1, true) then
+            columnShift[#columnShift + 1] = m
+        end
+    end
+    if not modifierSet(columnShift):find("shift", 1, true) then columnShift[#columnShift + 1] = "shift" end
+    map.consumeOrExpelLeft = { super, "[" }
+    map.consumeOrExpelRight = { super, "]" }
+    if modifierSet(columnShift) == modifierSet(superShift) then
+        -- SUPER has Ctrl already: the third layer's brackets instead.
+        map.moveColumnLeft = { ctrlSuper, "[" }
+        map.moveColumnRight = { ctrlSuper, "]" }
+    else
+        map.moveColumnLeft = { columnShift, "h" }
+        map.moveColumnRight = { columnShift, "l" }
+    end
+    map.centerColumn = { super, "c" }
+    map.centerVisibleColumns = { ctrlSuper, "c" }
+    map.expandColumn = { ctrlSuper, "f" }
+    map.focusColumnFirst = { super, "home" }
+    map.focusColumnLast = { super, "end" }
+    map.moveColumnToFirst = { superShift, "home" }
+    map.moveColumnToLast = { superShift, "end" }
     for i = 1, 10 do
         local key = tostring(i % 10)
         map["workspace" .. i] = { super, key }
@@ -316,6 +357,15 @@ for suffix, key in pairs({ Prev = "[", Next = "]" }) do
     for _, action in ipairs({ "focusDisplay", "moveToDisplay", "moveWorkspaceToDisplay" }) do
         M.ctrlAltCmdHotkeys[action .. suffix][2] = key
     end
+end
+-- Consume-or-expel and move-column on the third layer: SUPER+, and . are
+-- the contrast shortcuts, and the brackets are the displays'.
+do
+    local third = M.ctrlAltCmdHotkeys.previousWorkspace[1]
+    M.ctrlAltCmdHotkeys.consumeOrExpelLeft = { third, "," }
+    M.ctrlAltCmdHotkeys.consumeOrExpelRight = { third, "." }
+    M.ctrlAltCmdHotkeys.moveColumnLeft = { third, ";" }
+    M.ctrlAltCmdHotkeys.moveColumnRight = { third, "'" }
 end
 
 -- Binds `mapping` (action name -> { mods, key }, as from hotkeysFor),
@@ -441,7 +491,7 @@ function M:start(opts)
     Ffm.start()
     S.running.sessionWatcher = hs.caffeinate.watcher.new(Ffm.onSessionEvent):start()
 
-    if S.cfg.swipe then
+    if S.cfg.swipe or Scroll.swipeFingers() then
         S.running.gestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture },
             Swipe.onGesture):start()
     end

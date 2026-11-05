@@ -7,6 +7,7 @@ local S = require("hyprspoon.state")
 local Util = require("hyprspoon.util")
 local Focus = require("hyprspoon.focus")
 local Spaces = require("hyprspoon.spaces")
+local Scroll = require("hyprspoon.scroll")
 
 -- ---------------------------------------------------------------------------
 -- Focus follows mouse
@@ -106,7 +107,7 @@ local function ffmFocusPending()
         hover.forget()
         return
     end
-    if S.ffmFocusedID ~= entry.id then
+    if S.ffmFocusedID ~= entry.id and Scroll.pointerMayFocus(entry.id) then
         -- The pointer is the user's say: it overrides any request of ours.
         S.intent = nil
         -- Scrolling columns don't centre on what the pointer focuses.

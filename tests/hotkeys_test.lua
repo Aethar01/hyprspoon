@@ -31,6 +31,12 @@ local expected = {
     moveToWorkspaceSilentD = { "ctrl+alt", "d" },
     focusDisplayNext = { "alt", "." },
     moveWorkspaceToDisplayPrev = { "ctrl+alt", "," },
+    consumeOrExpelLeft = { "alt", "[" },
+    moveColumnRight = { "ctrl+alt+shift", "l" },
+    centerColumn = { "alt", "c" },
+    centerVisibleColumns = { "ctrl+alt", "c" },
+    expandColumn = { "ctrl+alt", "f" },
+    moveColumnToLast = { "alt+shift", "end" },
 }
 for name, want in pairs(expected) do
     local spec = assert(M.defaultHotkeys[name], name .. " must be bound")
@@ -39,7 +45,7 @@ for name, want in pairs(expected) do
 end
 local count = 0
 for _ in pairs(M.defaultHotkeys) do count = count + 1 end
-assert(count == 76, "defaultHotkeys has " .. count .. " bindings")
+assert(count == 87, "defaultHotkeys has " .. count .. " bindings")
 
 -- The Ctrl+Option+Cmd map changes modifiers and avoids system shortcuts.
 local function sorted(list)
@@ -51,17 +57,23 @@ local ctrlAltCmd = {
     alt = sorted({ "ctrl", "alt", "cmd" }),
     ["alt+shift"] = sorted({ "ctrl", "alt", "cmd", "shift" }),
     ["ctrl+alt"] = sorted({ "ctrl", "alt", "shift" }),
+    ["ctrl+alt+shift"] = sorted({ "ctrl", "alt", "shift" }),
 }
 local changedKeys = {
     focusDisplayPrev = "[", focusDisplayNext = "]",
     moveToDisplayPrev = "[", moveToDisplayNext = "]",
     moveWorkspaceToDisplayPrev = "[", moveWorkspaceToDisplayNext = "]",
+    consumeOrExpelLeft = ",", consumeOrExpelRight = ".",
+    moveColumnLeft = ";", moveColumnRight = "'",
 }
+-- Moved to the third layer.
+local changedMods = { consumeOrExpelLeft = true, consumeOrExpelRight = true,
+    moveColumnLeft = true, moveColumnRight = true }
 assert(M.hyperHotkeys == nil, "the old Hyper name must not be exposed")
 for name, spec in pairs(M.defaultHotkeys) do
     local got = assert(M.ctrlAltCmdHotkeys[name], name .. " must be in ctrlAltCmdHotkeys")
     assert(got[2] == (changedKeys[name] or spec[2]), name .. " changed key")
-    assert(sorted(got[1]) == ctrlAltCmd[mods(spec)], name .. " is " .. mods(got) .. " in ctrlAltCmdHotkeys")
+    assert(sorted(got[1]) == (changedMods[name] and ctrlAltCmd["ctrl+alt"] or ctrlAltCmd[mods(spec)]), name .. " is " .. mods(got) .. " in ctrlAltCmdHotkeys")
 end
 for name in pairs(M.ctrlAltCmdHotkeys) do
     assert(M.defaultHotkeys[name], name .. " is only in ctrlAltCmdHotkeys")

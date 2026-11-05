@@ -58,6 +58,7 @@ package.loaded["hyprspoon.tree"] = {
         for _, l in ipairs(leaves()) do if l.windowID == id then return {}, l, "ws1" end end
     end,
     keyUUID = function() return "A" end,
+    keyForScreen = function() return "ws1" end,
     saveTrees = function() end,
 }
 package.loaded["hyprspoon.spaces"] = {
@@ -385,6 +386,41 @@ assert(Scroll.columns(S.trees.ws1)[1].width == 2 / 3, "the first column kept its
 Scroll.swap(byID[1], "left")
 for _, l in ipairs(leaves()) do l.columnWidth = nil end
 
+-- A window remembers its own column's width while in another column.
+Util.focusHistory = { 2 }
+focus(2)
+leaves()[2].columnWidth = 1 / 3
+Scroll.consumeOrExpel(byID[2], "left")
+assert(Scroll.columns(S.trees.ws1)[1].width == nil, "joined 1's column, at its width")
+Scroll.consumeOrExpel(byID[2], "right")
+assert(shape(S.trees.ws1) == "1,2,3,4,5" and Scroll.columns(S.trees.ws1)[2].width == 1 / 3,
+    "back out at its own third")
+Scroll.consume(byID[1])
+Scroll.expel(byID[2])
+assert(shape(S.trees.ws1) == "1,2,3,4,5" and Scroll.columns(S.trees.ws1)[2].width == 1 / 3,
+    "consume and expel too")
+leaves()[2].columnWidth = nil
+
+-- move-column, whatever move does.
+S.cfg.experimental.scrolling.moveConsumes = true
+Scroll.moveColumn(byID[1], "right")
+assert(shape(S.trees.ws1) == "2,1,3,4,5", "move-column-right")
+Scroll.moveColumn(byID[1], "left")
+S.cfg.experimental.scrolling.moveConsumes = nil
+
+-- Past the ends: on to the display that way, or with edgeToDisplay off,
+-- nothing (niri).
+assert(Scroll.focus(byID[1], "left") == false and Scroll.move(byID[1], "left") == false, "to the display")
+S.cfg.experimental.scrolling.edgeToDisplay = false
+focused = {}
+assert(Scroll.focus(byID[1], "left") == true and #focused == 0, "niri: nothing")
+assert(Scroll.move(byID[1], "left") == true and Scroll.focus(byID[1], "up") == true, "niri: nothing")
+assert(shape(S.trees.ws1) == "1,2,3,4,5", "and nothing moved")
+S.cfg.experimental.scrolling.edgeToDisplay = nil
+
+-- Inserting beside a window: columns in columns, BSP elsewhere.
+assert(shape(Scroll.insertBeside("ws1", Scroll.build({ { L(1) } }), 1, 9, "top")) == "9+1", "into the column")
+
 -- Widths: presets, niri's "+10%", full width, edges.
 focus(1)
 Scroll.cycleWidth(byID[1])
@@ -418,6 +454,49 @@ arrange()
 assert(rectOf(1).w == 980 - 485 - 10 and rectOf(2).x + rectOf(2).w == 990, "fills what 2 leaves")
 for _, l in ipairs(leaves()) do l.columnWidth = nil end
 arrange()
+
+-- always-center-single-column.
+do
+    local saved = S.trees.ws1
+    S.trees.ws1 = Scroll.build({ { L(1) } })
+    S.cfg.experimental.scrolling.centerSingle = true
+    focus(1)
+    assert(math.abs(rectOf(1).x - (10 + (980 - 485) / 2)) <= 1, "one column: centred")
+    S.cfg.experimental.scrolling.centerSingle = nil
+    S.trees.ws1 = saved
+    focus(1)
+    focus(4)
+    focus(1)
+end
+
+-- Focus follows mouse scrolls at most ffmMaxScroll.
+assert(Scroll.pointerMayFocus(4), "no limit")
+S.cfg.experimental.scrolling.ffmMaxScroll = 0
+assert(Scroll.pointerMayFocus(2) and not Scroll.pointerMayFocus(3), "0: only columns in view")
+S.cfg.experimental.scrolling.ffmMaxScroll = nil
+
+-- center-visible-columns: 1 and 2 in view, centred together.
+Scroll.centerVisible(byID[1])
+arrange()
+assert(math.abs(rectOf(1).x - 10) <= 1, "already filling the view: no move")
+
+-- A swipe pans the view, then settles on a column, which takes focus.
+focus(1)
+local key, x0 = Scroll.panBegin({})
+assert(key == "ws1" and x0 == 0, "panning ws1")
+Scroll.panTo(key, x0, 0.4) -- 0.4 of the trackpad, span 0.5: 0.8 of the view
+applied = {}
+for _, tm in ipairs(timers) do tm.fn() end
+timers = {}
+assert(rectOf(2) and rectOf(2).x == 10 + 495 - 784 and applied[1].opts.duration == 0, "follows the fingers")
+focused = {}
+Scroll.panEnd(key, 0)
+assert(focused[1] == 3, "settles on the nearest column, 3, and focuses it")
+Util.focusHistory = { 3 }
+arrange()
+assert(Scroll.signature("ws1") == "|scroll 990",
+    "with an edge at the view's, got " .. Scroll.signature("ws1"))
+focus(1)
 
 -- center-column.
 focus(2)

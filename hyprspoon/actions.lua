@@ -358,7 +358,7 @@ function M.move(direction)
         else
             side = py < t.y + t.h / 2 and "top" or "bottom"
         end
-        S.trees[toKey] = select(1, Tree.insertBeside(tree, target.windowID, id, side))
+        S.trees[toKey] = select(1, Scroll.insertBeside(toKey, tree, target.windowID, id, side))
     else
         S.trees[toKey] = Tree.leaf(id)
     end
@@ -412,6 +412,21 @@ end
 -- bottom, or if it shares its column, leaves it for a new one that way.
 function M.consumeOrExpel(direction)
     Scroll.consumeOrExpel(Focus.currentWindow(), direction)
+end
+
+-- Move the focused column past the one beside it, "left" or "right",
+-- whether or not moveConsumes makes move consume and expel.
+function M.moveColumn(direction)
+    local win = Focus.currentWindow()
+    if win and Scroll.moveColumn(win, direction) == false then
+        -- Past the end: on to the display that way, as move does.
+        M.move(direction)
+    end
+end
+
+-- Centre the columns wholly in view, together.
+function M.centerVisibleColumns()
+    Scroll.centerVisible(Focus.currentWindow())
 end
 
 -- The window to the right joins the focused column, at its bottom.

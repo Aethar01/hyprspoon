@@ -250,6 +250,7 @@ pointer. Distances are fractions of the trackpad's width. Set
 | `swipe.follow` | `true` | With slides on, the workspaces move with the fingers |
 | `swipe.span` | `0.35` | With `follow`, how far the fingers move a whole workspace |
 | `swipe.distance` | `0.12` | Without `follow`, how far the fingers travel before it switches |
+| `swipe.direction` | `nil` | `"horizontal"` or `"vertical"` (fingers up for the next workspace); by default as `slide.workspaces`. Vertical leaves sideways swipes free to scroll columns |
 
 ### Group bars (`group.bar`)
 
@@ -388,6 +389,7 @@ may change or go before they graduate to options of their own.
 | Option | Default | Description |
 |---|---|---|
 | `experimental.borderMask` | `false` | Hide the parts of a ring that windows above its own cover; `true` for the defaults below, or a table |
+| `experimental.scrolling` | `false` | niri's scrolling columns: `true` for the defaults, or a table of the options documented under `scrolling` in `hyprspoon/state.lua` (workspaces, width, presets, center, peek, swipe, moveConsumes, edgeToDisplay, centerSingle, ffmMaxScroll, ...) |
 | `experimental.borderMask.drags` | `"mask"` | While a native drag preview is active: `"mask"` keeps the rings masked as windows move; `"show"` draws them on top, as without masks, and masks them again on drop |
 
 Rings are drawn above every window, so without masks a ring shows over a
@@ -486,9 +488,23 @@ check the chords you choose.
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
 | Option+Y | Flip the split | `toggleSplit` |
 | Option+= | Balance the splits | `balance` |
-| Option+R | Rotate the layout (Shift: mirror it) | `rotate`, `mirror` |
+| Option+R | Rotate the layout (Shift: mirror it); in scrolling columns, the column's next (Shift: previous) width preset | `rotate`, `mirror` |
 | Option+Tab | Overview | `toggleOverview` |
 | Option+W | Close the window | `closeWindow` |
+
+With [`experimental.scrolling`](#experimental-options), these act on its
+columns (and do nothing elsewhere); focus, move, resize and Option+Shift+F
+act on columns too:
+
+| Keys | Action | Name |
+|---|---|---|
+| Option+[ / ] | Into the column to the left / right, or out of its own into a new one that way | `consumeOrExpelLeft`, `consumeOrExpelRight` |
+| Ctrl+Option+Shift+H/L | Move the column left / right | `moveColumnLeft`, `moveColumnRight` |
+| Option+C | Centre the column (Ctrl: the columns in view, together) | `centerColumn`, `centerVisibleColumns` |
+| Ctrl+Option+F | Widen the column into the room the columns in view leave | `expandColumn` |
+| Option+Home / End | Focus the first / last column (Shift: move the column there) | `focusColumnFirst`, `focusColumnLast`, `moveColumnToFirst`, `moveColumnToLast` |
+| (unbound) | Next / previous width preset | `cycleColumnWidth`, `cycleColumnWidthBack` |
+| (unbound) | The next column's first window into this one; this window out into its own | `consumeIntoColumn`, `expelFromColumn` |
 
 ### Characters and shortcuts each keymap takes over
 
@@ -500,7 +516,7 @@ hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
 |---|---|
 | Option+1…0 | ¡ ™ £ ¢ ∞ § ¶ • ª º |
 | Shift+Option+1…0 | ⁄ € ‹ › ﬁ ﬂ ‡ ° · ‚ |
-| Option+W F B T G Y R | ∑ ƒ ∫ † © ¥ ® |
+| Option+W F B T G Y R C | ∑ ƒ ∫ † © ¥ ® ç |
 | Shift+Option+F B R | Ï ı ‰ |
 | Option+H J K L | ˙ ∆ ˚ ¬ |
 | Shift+Option+H J K L | Ó Ô  (the Apple logo) Ò |
@@ -508,6 +524,7 @@ hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
 | Shift+Option+A S D | Å Í Î |
 | Option+= , . | ≠ ≤ ≥ |
 | Shift+Option+, . | ¯ ˘ |
+| Option+[ ] | “ ‘ |
 | Option+\` | the grave accent dead key (à, è, …) |
 
 Option+arrows also stop moving the text cursor by word or paragraph. The
@@ -515,7 +532,9 @@ Ctrl+Option bindings take over no characters, but may conflict with VoiceOver
 commands when VoiceOver is on.
 
 `ctrlAltCmdHotkeys` takes over no characters: every binding includes Ctrl or Cmd.
-It uses `[` / `]` instead of `,` / `.` for all display actions, which avoids
+It uses `[` / `]` instead of `,` / `.` for all display actions (and puts
+consume-or-expel on Ctrl+Option+Shift+`,` / `.`, move-column on
+Ctrl+Option+Shift+`;` / `'`), which avoids
 macOS's Ctrl+Option+Cmd+Shift+`.` sysdiagnose shortcut and the accessibility
 shortcuts Ctrl+Option+Cmd+`,` / `.` (contrast down/up). Workspace 8 stays on
 Ctrl+Option+Cmd+`8`, which is also the invert-colours shortcut when that's

@@ -66,13 +66,20 @@ local DEFAULTS = {
     fill = false,                   -- columns of `width` share the area while they fit
     duration = 0.2,                 -- seconds a scroll takes; 0 snaps
     center = "never",               -- "never", "always" (or true) or "on-overflow"
-    peek = 0,
-    moveConsumes = false,           -- move left/right is consume-or-expel, not move-column (not niri's)                       -- points kept at each side for the columns beside (niri's struts)
+    peek = 0,                       -- points kept at each side for the columns beside (niri's struts)
+    moveConsumes = false,           -- move left/right is consume-or-expel, not move-column (not niri's)
+    edgeToDisplay = true,           -- past the first or last column, the display that way (not niri's)
+    centerSingle = false,           -- a column on its own is centred (always-center-single-column)
+    ffmMaxScroll = nil,             -- focus follows mouse scrolls at most this share of the view
+                                    -- (niri's max-scroll-amount; 0: only columns wholly in view)
+    swipe = false,                  -- fingers on the trackpad that scroll the view sideways
+    swipeSpan = 0.5,                -- share of the trackpad's width that scrolls a whole view
 }
 
 -- Tree key -> { x = scroll offset in points, focusID = the window focused
--- last, pointer = it, if focus follows mouse focused it, active = the window the view was kept by last time and rel, the
--- offset from its column's start, openedFrom = { id, back, rel } while a
+-- last, pointer = it, if focus follows mouse focused it, active = the
+-- window the view was kept by last time and rel, the offset from its
+-- column's start, pan = the offset a swipe holds the view at, openedFrom = { id, back, rel } while a
 -- window just opened beside `back` is focused; and from the last layout:
 -- cols, starts, widths, viewW, areaH, known = { [window id] = true } }.
 local views = {}
@@ -455,7 +462,9 @@ local function placeView(view, cols, starts, widths, viewW, ci)
     -- Focus follows mouse only scrolls as far as it must, centred or not:
     -- centring would move the window from under the pointer.
     local center = opt("center")
+    if #cols == 1 and opt("centerSingle") then center = "always" end
     if view.pointer and view.pointer == view.focusID then center = "never" end
+    if view.pan then return view.pan, prev end
     if ci then x = M.viewport(starts, widths, viewW, x, ci, center, prev) end
     return x, prev
 end
@@ -506,13 +515,14 @@ function M.arrange(key, tree, area, screen, byID, full)
     view.rel = ci and x - starts[ci] or nil
     view.cols, view.starts, view.widths, view.viewW, view.areaH = cols, starts, widths, inner.w, area.h
     view.known = known
+    view.last = { area = area, screen = screen, byID = byID, full = full }
 
     local sf = screen:fullFrame()
     local others = {}
     for _, s in ipairs(hs.screen.allScreens()) do
         if s:getUUID() ~= screen:getUUID() then others[#others + 1] = s:fullFrame() end
     end
-    local duration = (S.instantLayout or S.dragState) and 0 or opt("duration")
+    local duration = (S.instantLayout or S.dragState or view.pan) and 0 or opt("duration")
     -- Every step of a scroll fires windowMoved too.
     settle(duration)
 
@@ -681,6 +691,29 @@ end
 
 local STEP = { left = -1, up = -1, right = 1, down = 1 }
 
+-- Nothing that way: false hands over to the display that way
+-- (`edgeToDisplay`), true stops there, as niri does.
+local function atEnd()
+    return not opt("edgeToDisplay")
+end
+
+-- Window `leaf` joins a column, leaving column `from`: alone in it, it
+-- remembers that column's width for when it leaves again.
+local function joining(leaf, from)
+    leaf.windowHeight = nil
+    if #from == 1 then leaf.solo = { width = from.width, full = from.full } end
+end
+
+-- Window `leaf` leaves column `from` for a column of its own: at the width
+-- it had before it joined, else as wide as `from`.
+local function leaving(leaf, from)
+    leaf.windowHeight = nil
+    local solo = leaf.solo
+    leaf.solo = nil
+    if solo then return { leaf, width = solo.width, full = solo.full } end
+    return { leaf, width = from.width, full = from.full }
+end
+
 -- focus(direction): left and right go to the column beside the focused
 -- one, to its window focused last (focus-column-left/right); up and down
 -- to the window above or below in the column (focus-window-up/down).
@@ -689,34 +722,53 @@ function M.focus(win, direction)
     local key, cols, ci, wi = context(win)
     if not key then return false end
     local d = STEP[direction]
+    local target
     if direction == "left" or direction == "right" then
-        return cols[ci + d] ~= nil and focusLeaf(key, activeIn(cols[ci + d]))
+        target = cols[ci + d] and activeIn(cols[ci + d])
+    else
+        target = cols[ci][wi + d]
     end
-    return cols[ci][wi + d] ~= nil and focusLeaf(key, cols[ci][wi + d])
+    if not target then return atEnd() end
+    return focusLeaf(key, target)
 end
 
 -- Moves the window up or down its column (move-window-up/down).
 local function moveInColumn(win, key, cols, ci, wi, d)
     local col = cols[ci]
-    if not col[wi + d] then return false end
+    if not col[wi + d] then return atEnd() end
     col[wi], col[wi + d] = col[wi + d], col[wi]
     commit(key, cols)
     Focus.focus(win)
     return true
 end
 
+-- The focused column past the one beside it, "left" or "right"
+-- (move-column-left/right).
+function M.moveColumn(win, direction)
+    local key, cols, ci = context(win)
+    if not key then return false end
+    local d = STEP[direction]
+    if not d or direction == "up" or direction == "down" then return false end
+    if not cols[ci + d] then return atEnd() end
+    cols[ci], cols[ci + d] = cols[ci + d], cols[ci]
+    commit(key, cols)
+    Focus.focus(win)
+    Util.warpToWindow(win)
+    return true
+end
+
 -- move(direction): left and right move the focused column past the one
--- beside it (move-column-left/right), or with `moveConsumes` take the
--- window into that column or out of its own (M.consumeOrExpel); up and
--- down move the window within its column (move-window-up/down). False
--- when there's nothing that way.
+-- beside it (M.moveColumn), or with `moveConsumes` take the window into
+-- that column or out of its own (M.consumeOrExpel); up and down move the
+-- window within its column (move-window-up/down). False when there's
+-- nothing that way, to go on to the display that way.
 function M.move(win, direction)
     local key, cols, ci, wi = context(win)
     if not key then return false end
     local d = STEP[direction]
     if direction == "up" or direction == "down" then return moveInColumn(win, key, cols, ci, wi, d) end
     if opt("moveConsumes") then return M.consumeOrExpel(win, direction) end
-    if not cols[ci + d] then return false end
+    if not cols[ci + d] then return atEnd() end
     cols[ci], cols[ci + d] = cols[ci + d], cols[ci]
     commit(key, cols)
     Focus.focus(win)
@@ -733,7 +785,7 @@ function M.swap(win, direction)
     local d = STEP[direction]
     if direction == "up" or direction == "down" then return moveInColumn(win, key, cols, ci, wi, d) end
     local other = cols[ci + d]
-    if not other then return false end
+    if not other then return atEnd() end
     local _, owi = locate({ other }, activeIn(other))
     cols[ci][wi], other[owi] = other[owi], leaf
     leaf.windowHeight, cols[ci][wi].windowHeight = nil, nil
@@ -745,18 +797,19 @@ end
 
 -- Takes the window into the column `direction` ("left" or "right"), at its
 -- bottom, or when it shares its column, out into a new column of its own
--- that way, as wide as the one it left (consume-or-expel-window-left/right).
+-- that way, at the width it had before it joined, else as wide as the one
+-- it left (consume-or-expel-window-left/right).
 function M.consumeOrExpel(win, direction)
     local key, cols, ci, wi, leaf = context(win)
     if not key then return false end
     local col = cols[ci]
-    leaf.windowHeight = nil
     if #col > 1 then
         table.remove(col, wi)
-        table.insert(cols, direction == "left" and ci or ci + 1, { leaf, width = col.width, full = col.full })
+        table.insert(cols, direction == "left" and ci or ci + 1, leaving(leaf, col))
     else
         local target = cols[ci + STEP[direction]]
-        if not target then return false end
+        if not target then return atEnd() end
+        joining(leaf, col)
         target[#target + 1] = leaf
         table.remove(cols, ci)
     end
@@ -772,8 +825,8 @@ function M.consume(win)
     local key, cols, ci = context(win)
     local nextCol = key and cols[ci + 1]
     if not nextCol then return end
+    joining(nextCol[1], nextCol)
     local leaf = table.remove(nextCol, 1)
-    leaf.windowHeight = nil
     table.insert(cols[ci], leaf)
     if #nextCol == 0 then table.remove(cols, ci + 1) end
     commit(key, cols)
@@ -785,8 +838,7 @@ function M.expel(win)
     local key, cols, ci, wi, leaf = context(win)
     if not key or #cols[ci] < 2 then return end
     table.remove(cols[ci], wi)
-    leaf.windowHeight = nil
-    table.insert(cols, ci + 1, { leaf, width = cols[ci].width, full = cols[ci].full })
+    table.insert(cols, ci + 1, leaving(leaf, cols[ci]))
     commit(key, cols)
     Focus.focus(win)
 end
@@ -815,6 +867,24 @@ function M.center(win)
     local ci = view and view.cols and locate(view.cols, leaf)
     if not ci then return end
     view.x = math.floor(view.starts[ci] + view.widths[ci] / 2 - view.viewW / 2 + 0.5)
+    view.active, view.rel = leaf.windowID, view.x - view.starts[ci]
+    Layout.tileNow(false, Tree.keyUUID(key))
+end
+
+-- Centres the columns wholly in view, together (center-visible-columns).
+function M.centerVisible(win)
+    local key, _, _, _, leaf = context(win)
+    local view = key and views[key]
+    local ci = view and view.cols and locate(view.cols, leaf)
+    if not ci then return end
+    local lo, hi
+    for j, s in ipairs(view.starts) do
+        local e = s + view.widths[j]
+        if j == ci or (s >= view.x - 1 and e <= view.x + view.viewW + 1) then
+            lo, hi = math.min(lo or s, s), math.max(hi or e, e)
+        end
+    end
+    view.x = math.floor((lo + hi) / 2 - view.viewW / 2 + 0.5)
     view.active, view.rel = leaf.windowID, view.x - view.starts[ci]
     Layout.tileNow(false, Tree.keyUUID(key))
 end
@@ -944,6 +1014,108 @@ function M.adopt(leaf, key, frame)
         Layout.tileNow(false, Tree.keyUUID(key))
     end
     return true
+end
+
+-- Tree.insertBeside for any workspace: in columns, beside a window means
+-- a new column left or right of its column, or above or below it in it.
+function M.insertBeside(key, tree, targetID, newID, side)
+    if M.enabled(key) then return M.insert(tree, targetID, newID, side) end
+    return Tree.insertBeside(tree, targetID, newID, side)
+end
+
+-- Whether focus follows mouse may focus window `id`: not if that would
+-- scroll the view further than `ffmMaxScroll` of its width.
+function M.pointerMayFocus(id)
+    local most = opt("ffmMaxScroll")
+    if not most or not cfg() or not S.tilingEnabled then return true end
+    local _, _, key = Tree.findByID(id)
+    local view = key and M.enabled(key) and views[key]
+    local ci = view and view.cols and locate(view.cols, id)
+    if not ci then return true end
+    local x = M.viewport(view.starts, view.widths, view.viewW, view.x, ci, "never")
+    return math.abs(x - view.x) <= most * view.viewW + 1
+end
+
+-- ---------------------------------------------------------------------------
+-- Swiping (hyprspoon/swipe.lua)
+-- ---------------------------------------------------------------------------
+
+local panTimer = nil
+
+local function panArrange(key)
+    local view = views[key]
+    local last = view and view.last
+    if not last or not S.trees[key] then return end
+    M.arrange(key, S.trees[key], last.area, last.screen, last.byID, last.full)
+end
+
+function M.swipeSpan()
+    return opt("swipeSpan")
+end
+
+-- The fingers that scroll the view, or nil.
+function M.swipeFingers()
+    local n = cfg() and opt("swipe")
+    return type(n) == "number" and n or nil
+end
+
+-- A swipe starts on the display `screen`: the key of its workspace if that
+-- scrolls, to pan.
+function M.panBegin(screen)
+    if not cfg() or not S.tilingEnabled or not screen then return nil end
+    local key = Tree.keyForScreen(screen)
+    local view = key and M.enabled(key) and views[key]
+    if not view or not view.cols or #view.cols == 0 then return nil end
+    view.pan = view.x
+    return key, view.x
+end
+
+-- The swipe has moved the fingers `dx` (fractions of the trackpad's
+-- width, positive to the left) since it started at view offset `x0`.
+function M.panTo(key, x0, dx)
+    local view = views[key]
+    if not view or not view.pan then return end
+    local total = view.starts[#view.starts] + view.widths[#view.widths]
+    local x = x0 + dx * view.viewW / opt("swipeSpan")
+    view.pan = math.floor(math.max(-view.viewW / 2, math.min(x, total - view.viewW / 2)) + 0.5)
+    -- At most one layout a frame: each step moves every window in view.
+    if not panTimer then
+        panTimer = hs.timer.doAfter(1 / 60, function()
+            panTimer = nil
+            panArrange(key)
+        end)
+    end
+end
+
+-- The fingers lifted, moving at `v` views a second (positive to the
+-- left): the view goes on a little and settles on the nearest column
+-- (centred with `center` "always", else with an edge at the view's),
+-- which takes focus.
+function M.panEnd(key, v)
+    local view = views[key]
+    if not view or not view.pan then return end
+    if panTimer then panTimer:stop() panTimer = nil end
+    local want = view.pan + (v or 0) * view.viewW * 0.15
+    view.pan = nil
+    local center = opt("center")
+    local best, bestX, bestD
+    for i, s in ipairs(view.starts) do
+        local w = view.widths[i]
+        local spots = (center == "always" or center == true) and { s + w / 2 - view.viewW / 2 }
+            or { s, s + w - view.viewW }
+        for _, x in ipairs(spots) do
+            local d = math.abs(x - want)
+            if not bestD or d < bestD then best, bestX, bestD = i, x, d end
+        end
+    end
+    if not best then return end
+    view.x = math.floor(bestX + 0.5)
+    local leaf = activeIn(view.cols[best])
+    view.focusID, view.active, view.rel = leaf.windowID, leaf.windowID, view.x - view.starts[best]
+    view.pointer = nil
+    Layout.tileNow(false, Tree.keyUUID(key))
+    local win = Util.winByID[leaf.windowID]
+    if win then Focus.focus(win) end
 end
 
 -- Puts every window scrolled out of sight back on its display, at its

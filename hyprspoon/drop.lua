@@ -8,6 +8,7 @@ local Util = require("hyprspoon.util")
 local Tree = require("hyprspoon.tree")
 local Discover = require("hyprspoon.discover")
 local Layout = require("hyprspoon.layout")
+local Scroll = require("hyprspoon.scroll")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: drag and drop
@@ -196,7 +197,7 @@ local function finishDrag(win, point)
     if target and side ~= "group" then
         S.trees[state.key] = Tree.removeID(S.trees[state.key], id)
         S.trees[target.key] = select(1,
-            Tree.insertBeside(S.trees[target.key], target.win:id(), id, side))
+            Scroll.insertBeside(target.key, S.trees[target.key], target.win:id(), id, side))
         -- Park it on the target's display so the retile keeps it there.
         win:setFrame(target.frame, 0)
     elseif not target and not state.member then

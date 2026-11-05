@@ -8,6 +8,7 @@ local Util = require("hyprspoon.util")
 local Spaces = require("hyprspoon.spaces")
 local Layout = require("hyprspoon.layout")
 local Focus = require("hyprspoon.focus")
+local Scroll = require("hyprspoon.scroll")
 
 -- Native tabs travel together when joining, leaving, or dissolving a group.
 local function units(leaf)
@@ -112,7 +113,7 @@ local function detach(leaf, list)
 end
 
 local function insert(key, beside, leaf, side)
-    S.trees[key] = select(1, Tree.insertBeside(S.trees[key], beside, leaf.windowID, side or "right"))
+    S.trees[key] = select(1, Scroll.insertBeside(key, S.trees[key], beside, leaf.windowID, side or "right"))
     local _, target = Tree.ancestors(S.trees[key], leaf.windowID)
     target.members, target.kind, target.tabs = leaf.members, leaf.kind, leaf.tabs
 end
