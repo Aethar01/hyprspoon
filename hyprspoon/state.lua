@@ -239,25 +239,37 @@ S.defaults = {
         -- after updating. Off means no snapshot or extra window watching.
         borderMask = false,
 
-        -- Prototype for issue #18: tiled windows in columns side by side,
-        -- scrolled sideways so the focused one is in view (niri's
-        -- layout). Columns are the BSP tree's tiles in order, one window
-        -- or group each; directional focus, swaps and Cmd-Tab scroll.
+        -- Prototype for issue #18: niri's scrollable tiling. Tiled windows
+        -- go in columns side by side, scrolled sideways so the focused
+        -- one is in view. A new window opens as a column right of the
+        -- focused one. In a workspace laid out in columns:
+        --   focus      left/right: the column beside (its window focused
+        --              last); up/down: within the column
+        --   move       left/right: the whole column (move-column-*);
+        --              up/down: the window within its column
+        --   swap       left/right: windows with the column beside
+        --   resize     width by a percentage of the area, height within
+        --              the column; window edges and modifier-drag too
+        --   toggleMaximize  the column full width (maximize-column)
+        --   consumeOrExpel(dir), consumeIntoColumn, expelFromColumn,
+        --   cycleColumnWidth(back), centerColumn, expandColumn,
+        --   focusColumnEnd(last), moveColumnToEnd(last)
         -- Columns out of sight are parked in the display's corner. false,
         -- true (the defaults below), or a table:
         --   workspaces = true   all workspaces, or a list, e.g. { 3, "A" }
         --                       (scratchpads never scroll)
-        --   width = 0.5         a column's share of the tiling area; 1 for
-        --                       one window filling it at a time, the
-        --                       others scrolled out of sight
-        --   fill = true         columns of that width share the area while
-        --                       they fit: one fills it, two take half...
-        -- Resizing (keyboard, modifier-drag, window edges) sets a column's
-        -- own width; the others still fill around it.
+        --   width = 0.5         a new column's share of the tiling area
+        --   presets = { 1/3, 1/2, 2/3 }  the widths cycleColumnWidth
+        --                       goes through
+        --   fill = false        columns of `width` share the area while
+        --                       they fit (not niri's: one fills it, two
+        --                       take half...)
         --   duration = 0.2      seconds a scroll takes; 0 snaps
-        --   center = false      keep the focused column centred
-        -- cycleColumnWidth() cycles the focused column's width. Measure
-        -- with tests/scroll_bench.lua. Throwaway: expect it to change.
+        --   center = "never"    "always" (or true) keeps the focused
+        --                       column centred; "on-overflow" centres it
+        --                       when it doesn't fit beside the column
+        --                       focused before
+        -- Measure with tests/scroll_bench.lua. Expect it to change.
         scrolling = false,
     },
 }

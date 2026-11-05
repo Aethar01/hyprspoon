@@ -80,7 +80,7 @@ local function handFocusBack(goneID, win)
         local w = Util.winByID[id]
         if id ~= goneID and w and w:id() == id then valid[id] = true end
     end
-    local pick = siblingToFocus(tree, goneID, valid)
+    local pick = Scroll.afterClose(key, tree, goneID, valid) or siblingToFocus(tree, goneID, valid)
     if not pick or pick == win:id() then return false end
     Util.dlog("focused %s closing -> refocus %s", tostring(goneID), tostring(pick))
     Focus.focus(Util.winByID[pick])
@@ -386,7 +386,8 @@ local function reconcileTree(key, windows)
     for id in pairs(before) do
         if not valid[id] and not waiting[id] and not S.autoFloat[id] and not S.openIDs[id]
            and wasFocused(id) then
-            pendingRefocus = siblingToFocus(previous, id, valid) or pendingRefocus
+            pendingRefocus = Scroll.afterClose(key, previous, id, valid)
+                or siblingToFocus(previous, id, valid) or pendingRefocus
             Util.dlog("closed focused %s -> refocus %s", tostring(id), tostring(pendingRefocus))
             break
         end
@@ -498,9 +499,14 @@ local function reconcileTree(key, windows)
                 -- preselection decides both instead, once.
                 local inserted = false
                 local p = S.presel
+                local scrolling = Scroll.enabled(key)
                 if p and p.key == key and Tree.treeContains(tree, p.id) then
                     S.presel = nil
-                    tree, inserted = Tree.insertBeside(tree, p.id, id, p.side)
+                    if scrolling then
+                        tree, inserted = Scroll.insert(tree, p.id, id, p.side)
+                    else
+                        tree, inserted = Tree.insertBeside(tree, p.id, id, p.side)
+                    end
                 end
                 local _, targetLeaf = Tree.ancestors(tree, target)
                 -- A window opened while a group was focused joins that group.
@@ -508,6 +514,10 @@ local function reconcileTree(key, windows)
                     Tree.addMember(targetLeaf, id, "group")
                     showMember(targetLeaf, id, key)
                     inserted = true
+                end
+                -- Columns: a new column right of the focused one, like niri.
+                if not inserted and scrolling then
+                    tree, inserted = Scroll.insert(tree, target, id, "right")
                 end
                 if not inserted and targetLeaf and targetLeaf.rect then
                     tree, inserted = Tree.insertBeside(tree, target, id,

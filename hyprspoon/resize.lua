@@ -102,7 +102,7 @@ local function resizePercent(win, xPct, yPct)
     local path, leaf, key = Layout.locate(win)
     if not path or not leaf.rect then return false end
     if Scroll.enabled(key) then
-        Scroll.resize(leaf, key, xPct)
+        Scroll.resize(leaf, key, xPct, yPct)
         return true
     end
 

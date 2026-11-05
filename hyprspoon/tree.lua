@@ -127,7 +127,8 @@ local function stripLeaf(leaf)
         tabs[i] = copyList(list)
     end
     return { windowID = leaf.windowID, pseudo = leaf.pseudo, members = copyList(leaf.members),
-        kind = leaf.kind, tabs = tabs }
+        kind = leaf.kind, tabs = tabs, columnWidth = leaf.columnWidth, fullWidth = leaf.fullWidth,
+        windowHeight = leaf.windowHeight }
 end
 
 local function stripTree(node)

@@ -139,9 +139,17 @@ local M = {
     swap = Actions.swap,
     move = Actions.move,
     toggleFloat = Actions.toggleFloat,
-    -- EXPERIMENTAL, with experimental.scrolling: cycle the focused column's
-    -- width. Unbound by default.
+    -- EXPERIMENTAL, with experimental.scrolling: niri's column actions.
+    -- Unbound by default. focus, swap, move, resize and toggleMaximize act
+    -- on columns too (see experimental.scrolling in hyprspoon/state.lua).
     cycleColumnWidth = Actions.cycleColumnWidth,
+    consumeOrExpel = Actions.consumeOrExpel,
+    consumeIntoColumn = Actions.consumeIntoColumn,
+    expelFromColumn = Actions.expelFromColumn,
+    centerColumn = Actions.centerColumn,
+    expandColumn = Actions.expandColumn,
+    focusColumnEnd = Actions.focusColumnEnd,
+    moveColumnToEnd = Actions.moveColumnToEnd,
     toggleFullScreen = Actions.toggleFullScreen,
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
