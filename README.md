@@ -503,6 +503,7 @@ act on columns too:
 | Option+C | Centre the column (Ctrl: the columns in view, together) | `centerColumn`, `centerVisibleColumns` |
 | Ctrl+Option+F | Widen the column into the room the columns in view leave | `expandColumn` |
 | Option+Home / End | Focus the first / last column (Shift: move the column there) | `focusColumnFirst`, `focusColumnLast`, `moveColumnToFirst`, `moveColumnToLast` |
+| Option+scroll | Scroll the columns: two fingers pan them and settle on one; a mouse wheel goes a column a step (`experimental.scrolling.wheel`) | |
 | (unbound) | Next / previous width preset | `cycleColumnWidth`, `cycleColumnWidthBack` |
 | (unbound) | The next column's first window into this one; this window out into its own | `consumeIntoColumn`, `expelFromColumn` |
 
