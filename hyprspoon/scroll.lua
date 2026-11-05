@@ -69,7 +69,7 @@ local DEFAULTS = {
 }
 
 -- Tree key -> { x = scroll offset in points, focusID = the window focused
--- last, active = the window the view was kept by last time and rel, the
+-- last, pointer = it, if focus follows mouse focused it, active = the window the view was kept by last time and rel, the
 -- offset from its column's start, openedFrom = { id, back, rel } while a
 -- window just opened beside `back` is focused; and from the last layout:
 -- cols, starts, widths, viewW, areaH, known = { [window id] = true } }.
@@ -450,7 +450,11 @@ local function placeView(view, cols, starts, widths, viewW, ci)
     elseif prev and view.rel then
         x = starts[prev] + view.rel
     end
-    if ci then x = M.viewport(starts, widths, viewW, x, ci, opt("center"), prev) end
+    -- Focus follows mouse only scrolls as far as it must, centred or not:
+    -- centring would move the window from under the pointer.
+    local center = opt("center")
+    if view.pointer and view.pointer == view.focusID then center = "never" end
+    if ci then x = M.viewport(starts, widths, viewW, x, ci, center, prev) end
     return x, prev
 end
 
@@ -576,6 +580,8 @@ function M.reveal(id)
     local view = views[key]
     if not view or not view.cols then return end
     view.focusID = id
+    local f = S.ffmFocus
+    view.pointer = f and f.id == id and hs.timer.secondsSinceEpoch() - f.time < 2 and id or nil
     local ci = locate(view.cols, id)
     if ci then
         local x = placeView(view, view.cols, view.starts, view.widths, view.viewW, ci)

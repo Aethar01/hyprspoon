@@ -109,6 +109,8 @@ local function ffmFocusPending()
     if S.ffmFocusedID ~= entry.id then
         -- The pointer is the user's say: it overrides any request of ours.
         S.intent = nil
+        -- Scrolling columns don't centre on what the pointer focuses.
+        S.ffmFocus = { id = entry.id, time = hs.timer.secondsSinceEpoch() }
         Focus.request(entry.win)
     end
 end

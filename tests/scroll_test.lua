@@ -265,6 +265,19 @@ S.cfg.experimental.scrolling.center = "always"
 focus(3)
 assert(appliedIDs() == "2,3,4", "centred, 2 and 4 hang over the edges, got " .. appliedIDs())
 S.cfg.experimental.scrolling.center = nil
+focus(4)
+focus(1)
+assert(Scroll.signature("ws1") == "|scroll 0", "back to the first")
+-- Focus follows mouse doesn't centre: 2 is on show, so nothing moves.
+S.cfg.experimental.scrolling.center = "always"
+S.ffmFocus = { id = 2, time = clock }
+focus(2)
+assert(Scroll.signature("ws1") == "|scroll 0", "the pointer's focus isn't centred")
+S.ffmFocus = nil
+focus(1)
+assert(Scroll.signature("ws1") ~= "|scroll 0", "the keyboard's is")
+S.cfg.experimental.scrolling.center = nil
+focus(4)
 focus(1)
 assert(Scroll.signature("ws1") == "|scroll 0", "back to the first")
 
