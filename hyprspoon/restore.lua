@@ -174,6 +174,8 @@ function M.rebuild(key, tree, valid)
             end
             local leaf = Tree.leaf(shown or back[1])
             leaf.pseudo = leaf.pseudo or node.pseudo
+            leaf.columnWidth, leaf.fullWidth = node.columnWidth, node.fullWidth
+            leaf.windowHeight, leaf.solo = node.windowHeight, node.solo
             if node.members and (#back > 1 or node.kind == "group") then
                 leaf.members, leaf.kind = back, node.kind
                 for _, list in ipairs(node.tabs or {}) do

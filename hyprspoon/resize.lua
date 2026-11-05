@@ -7,6 +7,7 @@ local S = require("hyprspoon.state")
 local Util = require("hyprspoon.util")
 local Tree = require("hyprspoon.tree")
 local Layout = require("hyprspoon.layout")
+local Scroll = require("hyprspoon.scroll")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: resizing
@@ -64,6 +65,11 @@ local function adoptFrame(win)
 
     print(string.format("hyprspoon: adopting frame of %s: %s (tile %.0f,%.0f,%.0f,%.0f)",
         tostring(win:id()), seen, r.x, r.y, r.w, r.h))
+    -- A column takes the new width as its own; anything else snaps back.
+    if Scroll.enabled(key) then
+        if not Scroll.adopt(leaf, key, f) then Layout.tileNow(false, Tree.keyUUID(key)) end
+        return
+    end
     if leaf.pseudo then
         if differs(f.w, r.w) or differs(f.h, r.h) then
             leaf.pseudo = { w = math.min(f.w, leaf.rect.w), h = math.min(f.h + inset, leaf.rect.h) }
@@ -95,6 +101,10 @@ end
 local function resizePercent(win, xPct, yPct)
     local path, leaf, key = Layout.locate(win)
     if not path or not leaf.rect then return false end
+    if Scroll.enabled(key) then
+        Scroll.resize(leaf, key, xPct, yPct)
+        return true
+    end
 
     local r = leaf.rect
     local axes = {
@@ -132,7 +142,12 @@ local function beginResize(win, point)
     resizeState = nil
 
     local f = win:frame()
-    local path, leaf = Layout.locate(win)
+    local path, leaf, key = Layout.locate(win)
+    if path and Scroll.enabled(key) then
+        -- A column: the edge nearest the pointer, width only.
+        resizeState = { win = win, frame = f, xBranch = point.x > f.x + f.w / 2 and "a" or "b" }
+        return
+    end
     if not path or leaf.pseudo then
         -- Floating or pseudotiled: grow from the corner nearest the cursor.
         resizeState = {

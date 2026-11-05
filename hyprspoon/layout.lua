@@ -16,6 +16,7 @@ local Drop = require("hyprspoon.drop")
 local Restore = require("hyprspoon.restore")
 local Hooks = require("hyprspoon.hooks")
 local Groupbar = require("hyprspoon.groupbar")
+local Scroll = require("hyprspoon.scroll")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -79,7 +80,7 @@ local function handFocusBack(goneID, win)
         local w = Util.winByID[id]
         if id ~= goneID and w and w:id() == id then valid[id] = true end
     end
-    local pick = siblingToFocus(tree, goneID, valid)
+    local pick = Scroll.afterClose(key, tree, goneID, valid) or siblingToFocus(tree, goneID, valid)
     if not pick or pick == win:id() then return false end
     Util.dlog("focused %s closing -> refocus %s", tostring(goneID), tostring(pick))
     Focus.focus(Util.winByID[pick])
@@ -385,7 +386,8 @@ local function reconcileTree(key, windows)
     for id in pairs(before) do
         if not valid[id] and not waiting[id] and not S.autoFloat[id] and not S.openIDs[id]
            and wasFocused(id) then
-            pendingRefocus = siblingToFocus(previous, id, valid) or pendingRefocus
+            pendingRefocus = Scroll.afterClose(key, previous, id, valid)
+                or siblingToFocus(previous, id, valid) or pendingRefocus
             Util.dlog("closed focused %s -> refocus %s", tostring(id), tostring(pendingRefocus))
             break
         end
@@ -497,9 +499,14 @@ local function reconcileTree(key, windows)
                 -- preselection decides both instead, once.
                 local inserted = false
                 local p = S.presel
+                local scrolling = Scroll.enabled(key)
                 if p and p.key == key and Tree.treeContains(tree, p.id) then
                     S.presel = nil
-                    tree, inserted = Tree.insertBeside(tree, p.id, id, p.side)
+                    if scrolling then
+                        tree, inserted = Scroll.insert(tree, p.id, id, p.side)
+                    else
+                        tree, inserted = Tree.insertBeside(tree, p.id, id, p.side)
+                    end
                 end
                 local _, targetLeaf = Tree.ancestors(tree, target)
                 -- A window opened while a group was focused joins that group.
@@ -507,6 +514,10 @@ local function reconcileTree(key, windows)
                     Tree.addMember(targetLeaf, id, "group")
                     showMember(targetLeaf, id, key)
                     inserted = true
+                end
+                -- Columns: a new column right of the focused one, like niri.
+                if not inserted and scrolling then
+                    tree, inserted = Scroll.insert(tree, target, id, "right")
                 end
                 if not inserted and targetLeaf and targetLeaf.rect then
                     tree, inserted = Tree.insertBeside(tree, target, id,
@@ -598,8 +609,9 @@ end
 -- `full` is { id =, rect = } for the workspace's maximized window: it gets
 -- the whole area, while its tile (`rect`) is kept for navigation and for
 -- coming back to. A pseudotiled window gets its own size, centred in its
--- tile.
-local function applyTree(node, rect, byID, full)
+-- tile. `opts` (hyprspoon/scroll.lua) can set `duration` in place of the
+-- animation option, and `dx`: start that far along from the tile and ease in.
+local function applyTree(node, rect, byID, full, opts)
     if not node then return end
 
     -- Remembered so resizing knows each split's and tile's size.
@@ -630,18 +642,27 @@ local function applyTree(node, rect, byID, full)
             local pending = Discover.layoutChecks[id]
             if pending and pending.key == rectKey then return end
             Discover.cancelLayoutCheck(id)
+            local native = Util.native("frames")
             -- setFrame is several accessibility calls and fires windowMoved,
-            -- so leave windows that are already in place alone.
-            local f = win:frame()
-            local moved = math.abs(f.x - rect.x) > 1 or math.abs(f.y - rect.y) > 1
-            local resized = math.abs(f.w - rect.w) > 1 or math.abs(f.h - rect.h) > 1
+            -- so leave windows that are already in place alone. A scroll
+            -- (`opts`) with native frames leaves even that to the app's
+            -- queue, so the main thread never waits on a busy app for it.
+            local moved, resized = true, false
+            if not (opts and native) then
+                local f = win:frame()
+                moved = math.abs(f.x - rect.x) > 1 or math.abs(f.y - rect.y) > 1
+                resized = math.abs(f.w - rect.w) > 1 or math.abs(f.h - rect.h) > 1
+            end
             -- setFrame is size, position, size; one call is enough when only
             -- one of them changes. Only setFrame animates. hyprspoon.native.frames
             -- makes the same choice itself, off the main thread.
-            local duration = S.cfg.tiling.animationDuration
+            local duration = opts and opts.duration or S.cfg.tiling.animationDuration
             if S.dragState or S.instantLayout or hs.mouse.getButtons().left then duration = 0 end
-            local native = Util.native("frames")
-            if native and (moved or resized) then
+            if opts and opts.dx and duration > 0 then
+                moved = true
+                Util.setFrame(win, rect, duration,
+                    { x = rect.x + opts.dx, y = rect.y, w = rect.w, h = rect.h })
+            elseif native and (moved or resized) then
                 Util.setFrame(win, rect, duration)
             elseif duration > 0 and (moved or resized) then
                 win:setFrame(rect, duration)
@@ -679,8 +700,8 @@ local function applyTree(node, rect, byID, full)
             rect.h
         )
 
-        applyTree(node.a, aRect, byID, full)
-        applyTree(node.b, bRect, byID, full)
+        applyTree(node.a, aRect, byID, full, opts)
+        applyTree(node.b, bRect, byID, full, opts)
     else
         local usable = math.max(1, rect.h - gap)
         local first = math.floor(usable * ratio)
@@ -693,8 +714,8 @@ local function applyTree(node, rect, byID, full)
             usable - first
         )
 
-        applyTree(node.a, aRect, byID, full)
-        applyTree(node.b, bRect, byID, full)
+        applyTree(node.a, aRect, byID, full, opts)
+        applyTree(node.b, bRect, byID, full, opts)
     end
 end
 
@@ -736,9 +757,11 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
 
             local ids = {}
             for i, win in ipairs(windows) do ids[i] = win:id() end
-            local signature = key .. "|" .. table.concat(ids, ",") .. "|"
+            local scrolling = Scroll.enabled(key)
+            local base = key .. "|" .. table.concat(ids, ",") .. "|"
                 .. string.format("%.0f,%.0f,%.0f,%.0f",
                     usableFrame.x, usableFrame.y, usableFrame.w, usableFrame.h)
+            local signature = base .. (scrolling and Scroll.signature(key) or "")
 
             if not (onlyIfChanged and signatures[key] == signature) then
                 changed = true
@@ -753,7 +776,14 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                     Border.sync()
                 end
                 local fullRect = S.filled[key] and screen:frame() or usableFrame
-                applyTree(tree, usableFrame, byID, maxID and { id = maxID, rect = fullRect } or nil)
+                local full = maxID and { id = maxID, rect = fullRect } or nil
+                if scrolling then
+                    Scroll.arrange(key, tree, usableFrame, screen, byID, full)
+                    -- As scrolled to: new windows can move the view.
+                    signatures[key] = base .. Scroll.signature(key)
+                else
+                    applyTree(tree, usableFrame, byID, full)
+                end
             end
         end
     end
@@ -914,6 +944,7 @@ end
 -- avoids hs.window.allWindows(), which asks every running app over AX.
 -- Parked windows stay parked and get the frame once their workspace shows.
 local function restoreFloatingFrames()
+    Scroll.bringBack()
     for id, frame in pairs(S.floatingFrames) do
         local win = Util.winByID[id]
         if Spaces.isHidden(id) then
@@ -961,6 +992,7 @@ end
 -- Focus went to `id`: another tile of a workspace with a maximized window
 -- puts that window back in its tile, so the focused one can be seen.
 local function focused(id)
+    Scroll.reveal(id)
     if not S.tilingEnabled or next(S.maximized) == nil or not id or S.autoFloat[id] then return end
     local _, _, key = Tree.findByID(id)
     local maxID = key and S.maximized[key]
@@ -981,6 +1013,7 @@ local function toggleWorkspaceTiling(key)
         return true
     end
     S.untiled[key] = true
+    Scroll.bringBack(key)
     Groupbar.update()
     S.maximized[key] = nil
     S.keyIndex = {}
@@ -1016,6 +1049,7 @@ end
 
 -- Cancels the pending retile and recheck (reload, shutdown).
 local function stop()
+    Scroll.stop()
     S.presel = nil
     showPresel()
     if retileTimer then retileTimer:stop() end
@@ -1028,6 +1062,7 @@ end
 M.stop = stop
 M.tileNow = tileNow
 M.layOut = layOut
+M.applyTree = applyTree
 M.mayBeTab = mayBeTab
 M.handFocusBack = handFocusBack
 M.BSP_TAB_SETTLE = BSP_TAB_SETTLE

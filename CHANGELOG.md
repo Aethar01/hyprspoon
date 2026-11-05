@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.0 (2026-11-05)
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating:
+`frames.so` takes the start frame columns slide in from. Without the
+rebuild, columns coming into view slide in from the display's corner
+instead of its edge.
+
+- New `scrolling`: niri's scrollable tiling, per workspace. Windows go in
+  columns side by side, scrolled so the focused column is in view, with
+  columns of several windows (consume and expel), width presets, full-width
+  columns, `center` ("never", "always", "on-overflow"), `peek` (niri's
+  struts), Option+scroll and optional swipes to scroll, and a column's own
+  width remembered while its window is in another. Focus, move, swap,
+  resize, maximize, rotate and mirror act on columns there, and
+  `defaultHotkeys` binds the new column actions (see the README). Off by
+  default; `experimental.scrolling` from the prototype still works.
+- `swipe.direction`: swipe workspaces vertically, leaving sideways swipes
+  to scroll columns.
+
 ## 0.4.3 (2026-11-02)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:

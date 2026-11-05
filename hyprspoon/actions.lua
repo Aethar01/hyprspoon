@@ -11,6 +11,7 @@ local Focus = require("hyprspoon.focus")
 local Layout = require("hyprspoon.layout")
 local Resize = require("hyprspoon.resize")
 local Spaces = require("hyprspoon.spaces")
+local Scroll = require("hyprspoon.scroll")
 
 -- ---------------------------------------------------------------------------
 -- Actions (bind these to hotkeys)
@@ -60,6 +61,8 @@ local unmaximizedFrames = {}
 function M.toggleMaximize(fill)
     fill = fill == true
     local win = Focus.currentWindow()
+    -- A column goes full width (niri's maximize-column).
+    if not fill and Scroll.toggleFullWidth(win) then return end
     if not win or Layout.toggleMaximized(win, fill) then return end
 
     local id, screen = win:id(), win:screen()
@@ -164,7 +167,9 @@ local function neighbourInDirection(win, direction, preferHistory)
     local id = win:id()
     local path, leaf, key = Tree.findByID(S.tilingEnabled and id or nil)
     if leaf and leaf.rect then
-        if preferHistory then
+        -- Columns go by their order, not by which section of the tree was
+        -- used last.
+        if preferHistory and not Scroll.enabled(key) then
             local split = (direction == "left" or direction == "right") and "vertical" or "horizontal"
             local from = (direction == "right" or direction == "down") and "a" or "b"
             -- Walk outward to the first split with a sibling in this
@@ -203,6 +208,7 @@ end
 -- focus, even with nothing on it (and from one with nothing on it).
 function M.focus(direction)
     local win = Focus.currentWindow()
+    if Scroll.focus(win, direction) then return end
     local target = win and neighbourInDirection(win, direction, true)
     if target then
         Focus.focus(target)
@@ -221,6 +227,7 @@ end
 function M.swap(direction)
     local win = Focus.currentWindow()
     if not win then return end
+    if Scroll.swap(win, direction) then return end
 
     local other = neighbourInDirection(win, direction)
     if not other then
@@ -279,6 +286,7 @@ end
 function M.move(direction)
     local win = Focus.currentWindow()
     if not win then return end
+    if Scroll.move(win, direction) then return end
     local id = win:id()
 
     local _, leaf, key = Layout.locate(win)
@@ -350,7 +358,7 @@ function M.move(direction)
         else
             side = py < t.y + t.h / 2 and "top" or "bottom"
         end
-        S.trees[toKey] = select(1, Tree.insertBeside(tree, target.windowID, id, side))
+        S.trees[toKey] = select(1, Scroll.insertBeside(toKey, tree, target.windowID, id, side))
     else
         S.trees[toKey] = Tree.leaf(id)
     end
@@ -391,6 +399,64 @@ local function setFloat(win, float)
 
     Focus.invalidateWindowCache()
     Layout.tileNow()
+end
+
+-- Scrolling columns (`scrolling`), niri's column actions. The
+-- focused column's width to the next of the presets (a third, half, two
+-- thirds), or with `back` the one before.
+function M.cycleColumnWidth(back)
+    Scroll.cycleWidth(Focus.currentWindow(), back == true)
+end
+
+-- The focused window joins the column `direction` ("left"/"right") at its
+-- bottom, or if it shares its column, leaves it for a new one that way.
+function M.consumeOrExpel(direction)
+    Scroll.consumeOrExpel(Focus.currentWindow(), direction)
+end
+
+-- Move the focused column past the one beside it, "left" or "right",
+-- whether or not moveConsumes makes move consume and expel.
+function M.moveColumn(direction)
+    local win = Focus.currentWindow()
+    if win and Scroll.moveColumn(win, direction) == false then
+        -- Past the end: on to the display that way, as move does.
+        M.move(direction)
+    end
+end
+
+-- Centre the columns wholly in view, together.
+function M.centerVisibleColumns()
+    Scroll.centerVisible(Focus.currentWindow())
+end
+
+-- The window to the right joins the focused column, at its bottom.
+function M.consumeIntoColumn()
+    Scroll.consume(Focus.currentWindow())
+end
+
+-- The focused window leaves its column for a new one to the right.
+function M.expelFromColumn()
+    Scroll.expel(Focus.currentWindow())
+end
+
+-- Centre the focused column on the display.
+function M.centerColumn()
+    Scroll.center(Focus.currentWindow())
+end
+
+-- The focused column takes the width the columns wholly in view leave.
+function M.expandColumn()
+    Scroll.expand(Focus.currentWindow())
+end
+
+-- Focus the first column, or with `last` the last.
+function M.focusColumnEnd(last)
+    Scroll.focusEnd(Focus.currentWindow(), last == true)
+end
+
+-- Move the focused column first, or with `last` last.
+function M.moveColumnToEnd(last)
+    Scroll.moveToEnd(Focus.currentWindow(), last == true)
 end
 
 -- Toggle floating for the focused window (overrides the automatic choice).
@@ -516,7 +582,8 @@ function M.toggleSplit()
     local win = Focus.currentWindow()
     local path, _, key = Layout.locate(win)
     local parent = path and path[1] and path[1].node
-    if not parent then return end
+    -- Columns: the splits are what make them columns, so leave them be.
+    if not parent or Scroll.enabled(key) then return end
 
     parent.split = (parent.split == "vertical") and "horizontal" or "vertical"
     Layout.tileNow(false, Tree.keyUUID(key))
@@ -548,18 +615,22 @@ function M.preselect(direction)
     if win and sides[direction] then Layout.preselect(win, sides[direction]) end
 end
 
--- Turn the workspace's layout a quarter clockwise.
+-- Turn the workspace's layout a quarter clockwise. In columns (which
+-- don't rotate), the focused column's width to the next preset instead.
 function M.rotate()
     local key = currentKey()
     if not key or not S.trees[key] then return end
+    if Scroll.enabled(key) then return Scroll.cycleWidth(Focus.currentWindow()) end
     Tree.rotate(S.trees[key])
     Layout.tileNow(false, Tree.keyUUID(key))
 end
 
--- Mirror the workspace's layout left to right.
+-- Mirror the workspace's layout left to right. In columns, the focused
+-- column's width to the preset before instead.
 function M.mirror()
     local key = currentKey()
     if not key or not S.trees[key] then return end
+    if Scroll.enabled(key) then return Scroll.cycleWidth(Focus.currentWindow(), true) end
     Tree.mirror(S.trees[key])
     Layout.tileNow(false, Tree.keyUUID(key))
 end

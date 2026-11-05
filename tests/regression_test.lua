@@ -11,6 +11,13 @@ local function read(name)
     return sources[name]
 end
 
+-- Scrolling columns (hyprspoon/scroll.lua) are off: nothing is scrolled away.
+Scroll = {
+    enabled = function() return false end,
+    isAway = function() return false end,
+    awayUUID = function() return nil end,
+}
+
 -- Snippet of hyprspoon/<name>.lua from the line starting `first` up to `last`.
 local function extract(name, first, last)
     local source = read(name)
@@ -566,10 +573,21 @@ assert(movedEdges.top == 20, "top-edge drag adopts the split above the inset")
 -- Swipes fire once per gesture, only with the configured finger count and
 -- mostly sideways movement; fingers moving left go to the next workspace.
 local switches = {}
+local pans = {}
+local scrollFingers = nil
 local gestures = setmetatable({
     S = { cfg = { swipe = { fingers = 3, distance = 0.12 } } },
+    Scroll = {
+        swipeFingers = function() return scrollFingers end,
+        swipeSpan = function() return 0.5 end,
+        panBegin = function() return "ws5", 100 end,
+        panTo = function(key, x0, dx) pans[#pans + 1] = { key, x0, dx } end,
+        panEnd = function(key, v) pans.ended = { key, v } end,
+    },
     Spaces = { gotoWorkspaceRelative = function(delta) switches[#switches + 1] = delta end },
-    hs = { timer = { doAfter = after } },
+    hs = { timer = { doAfter = after, secondsSinceEpoch = function() return 0 end },
+        mouse = { getCurrentScreen = function() return {} end } },
+    START = 0.015,
 }, { __index = _G })
 local onGesture = assert(load(extract("swipe", "local swipe = nil",
     "-- Forgets a swipe") .. "return onGesture", "swipe", "t", gestures))()
@@ -598,6 +616,26 @@ assert(#switches == 2, "mostly vertical movement is not a sideways swipe")
 gesture(3, { { 0.5, 0.5 }, { 0.45, 0.5 } })
 assert(#switches == 2, "short movements don't switch")
 assert(onGesture({ getTouches = function() return nil end }) == false, "non-gesture events pass through")
+
+-- Sideways swipes with scrolling's fingers pan the columns; with the same
+-- fingers as workspaces, only once workspaces swipe vertically.
+scrollFingers = 4
+gesture(4, { { 0.6, 0.5 }, { 0.5, 0.5 }, { 0.4, 0.5 } })
+assert(#pans >= 1 and pans[1][1] == "ws5" and pans[1][2] == 100, "four fingers pan the columns")
+assert(math.abs(pans[#pans][3] - (0.6 - 0.4)) < 1e-9, "by how far the fingers went left")
+assert(pans.ended and pans.ended[1] == "ws5", "and settle once they lift")
+local before = #switches
+pans = {}
+scrollFingers = 3
+gesture(3, { { 0.6, 0.5 }, { 0.55, 0.5 }, { 0.45, 0.5 }, { 0.3, 0.5 } })
+assert(#pans == 0 and #switches == before + 1, "the same fingers switch workspaces sideways")
+gestures.S.cfg.swipe.direction = "vertical"
+gesture(3, { { 0.6, 0.5 }, { 0.5, 0.5 }, { 0.4, 0.5 } })
+assert(#pans >= 1 and #switches == before + 1, "workspaces swiped vertically: sideways pans")
+gesture(3, { { 0.5, 0.3 }, { 0.5, 0.35 }, { 0.5, 0.5 } })
+assert(#switches == before + 2 and switches[#switches] == 1, "fingers up go to the next workspace")
+gestures.S.cfg.swipe.direction = nil
+scrollFingers = nil
 
 print("Window classification, rules, layout, snapshots, discovery, PiP, BSP navigation, pseudotile resizing, borders, and swipe regressions passed")
 

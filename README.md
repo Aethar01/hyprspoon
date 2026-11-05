@@ -12,6 +12,9 @@ A Hyprland-inspired tiling window manager for macOS, as a
   Spaces, so there's no Mission Control animation. Give displays their
   own workspaces in the config; any other display (a projector, AirPlay)
   gets one workspace of its own.
+- **Scrolling columns** (optional, per workspace), like niri: windows in
+  columns on a strip wider than the display, scrolled to the focused one
+  by keyboard, Option+scroll or a swipe.
 - **Workspace slides** on a spring, like Hyprland's animations.
 - **Window borders** drawn by WindowServer, fading between the active and
   inactive colours.
@@ -250,6 +253,43 @@ pointer. Distances are fractions of the trackpad's width. Set
 | `swipe.follow` | `true` | With slides on, the workspaces move with the fingers |
 | `swipe.span` | `0.35` | With `follow`, how far the fingers move a whole workspace |
 | `swipe.distance` | `0.12` | Without `follow`, how far the fingers travel before it switches |
+| `swipe.direction` | `nil` | `"horizontal"` or `"vertical"` (fingers up for the next workspace); by default as `slide.workspaces`. Vertical leaves sideways swipes free to scroll columns |
+
+### Scrolling columns (`scrolling`)
+
+niri's scrollable tiling, per workspace. Tiled windows go in columns side
+by side on a strip wider than the display, scrolled so the focused column
+is in view. A new window opens as a column right of the focused one; a
+column holds one window or several, stacked. Focus, move, swap, resize
+and maximize act on columns (see [the keymap](#default-keymap)). Dragging
+a window onto a column puts it beside the column, or above or below the
+window, by the edge it's dropped nearest. A window that joins a column
+remembers its own width, and has it again when it leaves.
+
+macOS won't leave a window wholly off its display, so columns out of sight
+slide to the edge and are parked in the display's corner, like a hidden
+workspace's windows. Set `scrolling = true` for the defaults, or a table:
+
+| Option | Default | Description |
+|---|---|---|
+| `scrolling.workspaces` | `true` | All workspaces, or a list such as `{ 3, "A" }`. Scratchpads never scroll |
+| `scrolling.width` | `0.5` | A new column's share of the tiling area |
+| `scrolling.presets` | `{ 1/3, 1/2, 2/3 }` | The widths `cycleColumnWidth` (Option+R) goes through |
+| `scrolling.center` | `"never"` | `"never"` scrolls just enough to show the focused column; `"always"` (or `true`) centres it; `"on-overflow"` centres it when it doesn't fit beside the column focused before |
+| `scrolling.centerSingle` | `false` | Centre a column that's on its own |
+| `scrolling.peek` | `0` | Points kept free at each side, where the columns beside always show (niri's struts) |
+| `scrolling.fill` | `false` | Columns of `width` share the area while they fit (not niri's) |
+| `scrolling.duration` | `0.2` | Seconds a scroll takes; `0` snaps |
+| `scrolling.moveConsumes` | `false` | Move left/right takes the window into the column that way, or out of its own into a new one, instead of moving the column; two moves pass a column (not niri's) |
+| `scrolling.edgeToDisplay` | `true` | Past the first or last column, focus and move go on to the display that way; `false` stops there, as niri does |
+| `scrolling.ffmMaxScroll` | `nil` | Focus follows mouse only focuses a column if that scrolls the view at most this share of its width; `0` for only columns in view |
+| `scrolling.wheel` | `{ "alt" }` | Holding these, scrolling scrolls the columns: two fingers pan them and settle on one, a mouse wheel goes a column a step; `false` for none |
+| `scrolling.swipe` | `false` | Fingers whose sideways swipe pans the columns. Not `swipe.fingers` unless workspaces swipe vertically (`swipe.direction`) |
+| `scrolling.swipeSpan` | `0.5` | With `swipe`, the share of the trackpad's width that scrolls a whole view |
+
+```lua
+scrolling = { workspaces = { 5 }, center = "always", peek = 48 },
+```
 
 ### Group bars (`group.bar`)
 
@@ -486,9 +526,24 @@ check the chords you choose.
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
 | Option+Y | Flip the split | `toggleSplit` |
 | Option+= | Balance the splits | `balance` |
-| Option+R | Rotate the layout (Shift: mirror it) | `rotate`, `mirror` |
+| Option+R | Rotate the layout (Shift: mirror it); in scrolling columns, the column's next (Shift: previous) width preset | `rotate`, `mirror` |
 | Option+Tab | Overview | `toggleOverview` |
 | Option+W | Close the window | `closeWindow` |
+
+With [`scrolling`](#scrolling-columns-scrolling), these act on its
+columns (and do nothing elsewhere); focus, move, resize and Option+Shift+F
+act on columns too:
+
+| Keys | Action | Name |
+|---|---|---|
+| Option+[ / ] | Into the column to the left / right, or out of its own into a new one that way | `consumeOrExpelLeft`, `consumeOrExpelRight` |
+| Ctrl+Option+Shift+H/L | Move the column left / right | `moveColumnLeft`, `moveColumnRight` |
+| Option+C | Centre the column (Ctrl: the columns in view, together) | `centerColumn`, `centerVisibleColumns` |
+| Ctrl+Option+F | Widen the column into the room the columns in view leave | `expandColumn` |
+| Option+Home / End | Focus the first / last column (Shift: move the column there) | `focusColumnFirst`, `focusColumnLast`, `moveColumnToFirst`, `moveColumnToLast` |
+| Option+scroll | Scroll the columns: two fingers pan them and settle on one; a mouse wheel goes a column a step (`scrolling.wheel`) | |
+| (unbound) | Next / previous width preset | `cycleColumnWidth`, `cycleColumnWidthBack` |
+| (unbound) | The next column's first window into this one; this window out into its own | `consumeIntoColumn`, `expelFromColumn` |
 
 ### Characters and shortcuts each keymap takes over
 
@@ -500,7 +555,7 @@ hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
 |---|---|
 | Option+1…0 | ¡ ™ £ ¢ ∞ § ¶ • ª º |
 | Shift+Option+1…0 | ⁄ € ‹ › ﬁ ﬂ ‡ ° · ‚ |
-| Option+W F B T G Y R | ∑ ƒ ∫ † © ¥ ® |
+| Option+W F B T G Y R C | ∑ ƒ ∫ † © ¥ ® ç |
 | Shift+Option+F B R | Ï ı ‰ |
 | Option+H J K L | ˙ ∆ ˚ ¬ |
 | Shift+Option+H J K L | Ó Ô  (the Apple logo) Ò |
@@ -508,6 +563,7 @@ hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
 | Shift+Option+A S D | Å Í Î |
 | Option+= , . | ≠ ≤ ≥ |
 | Shift+Option+, . | ¯ ˘ |
+| Option+[ ] | “ ‘ |
 | Option+\` | the grave accent dead key (à, è, …) |
 
 Option+arrows also stop moving the text cursor by word or paragraph. The
@@ -515,7 +571,9 @@ Ctrl+Option bindings take over no characters, but may conflict with VoiceOver
 commands when VoiceOver is on.
 
 `ctrlAltCmdHotkeys` takes over no characters: every binding includes Ctrl or Cmd.
-It uses `[` / `]` instead of `,` / `.` for all display actions, which avoids
+It uses `[` / `]` instead of `,` / `.` for all display actions (and puts
+consume-or-expel on Ctrl+Option+Shift+`,` / `.`, move-column on
+Ctrl+Option+Shift+`;` / `'`), which avoids
 macOS's Ctrl+Option+Cmd+Shift+`.` sysdiagnose shortcut and the accessibility
 shortcuts Ctrl+Option+Cmd+`,` / `.` (contrast down/up). Workspace 8 stays on
 Ctrl+Option+Cmd+`8`, which is also the invert-colours shortcut when that's
@@ -790,6 +848,9 @@ after updating from source.
 
 ## Known limitations
 
+- Scrolling columns out of sight are parked in a corner rather than off
+  the display, so a scroll is a slide to the edge, not one continuous
+  strip, and apps slow to move their windows lag behind it.
 - It uses private macOS (SkyLight) APIs for borders, slides and window
   events, so a macOS update can break them. The Lua fallbacks keep the
   basics working.

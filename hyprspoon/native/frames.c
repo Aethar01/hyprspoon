@@ -5,7 +5,8 @@
 // hyprspoon.native.frames (build: make -C hyprspoon/native). spaces.lua also
 // uses it to confirm which saved windows still exist.
 //
-// Lua functions: set(pid, wid, x, y, w, h, duration), liveIDs(),
+// Lua functions: set(pid, wid, x, y, w, h, duration[, fx, fy, fw, fh]),
+// stats(reset), liveIDs(),
 // tabSnapshot(callback), tabWindows(pid, wanted, callback),
 // tabState(pid) (compatibility), tabButtons(pid, wid, delta), tabShow(...)
 // (tabs.c), focus(pid, wid, raise) (focus.c), dragBegin(options) and dragEnd(x, y)
@@ -63,6 +64,8 @@ typedef struct {
     bool sole;           // see framesSet
     CGRect given;        // the frame last applied
     bool haveGiven;
+    CGRect from;         // where an animation starts, if not where it is
+    bool haveFrom;
 } Request;
 
 #define MAX_REQUESTS 512
@@ -121,6 +124,11 @@ typedef struct {
     uint32_t tabShown;
     CFStringRef tabTitle;
     bool running;
+    // Under requestsLock: animation frames stepped, how many started late
+    // (the app answered slower than the frame rate), and the time spent
+    // in accessibility calls per frame (see stats()).
+    uint64_t steps, late;
+    double stepTotal, stepWorst;
 } App;
 
 #define MAX_APPS 64
@@ -286,10 +294,10 @@ typedef struct {
 // A request taken up by the app's loop.
 typedef struct {
     uint32_t wid;
-    CGRect target, given;
+    CGRect target, given, from;
     double duration;
     uint64_t generation;
-    bool known;
+    bool known, haveFrom;
 } Taken;
 
 #define MAX_ANIMATIONS 64
@@ -340,8 +348,8 @@ static void appLoop(void *context) {
             Request *r = &requests[i];
             if (!r->pending || r->pid != app->pid) continue;
             r->pending = false;
-            taken[takenCount++] = (Taken){ r->wid, r->target, r->given, r->duration, r->generation,
-                r->sole && r->haveGiven && r->duration <= 0 };
+            taken[takenCount++] = (Taken){ r->wid, r->target, r->given, r->from, r->duration,
+                r->generation, r->sole && r->haveGiven && r->duration <= 0, r->haveFrom };
         }
         bool raise = app->raiseQueued && !stop;
         uint32_t raiseWid = app->raise;
@@ -380,7 +388,13 @@ static void appLoop(void *context) {
                 checkedEnhanced = true;
             }
             CGRect from = t->given;
-            if (!t->known && !readFrame(win, &from)) {
+            if (t->haveFrom) {
+                // Starts from a frame of its own: put it there first.
+                from = t->from;
+                setSize(win, from.size);
+                setPosition(win, from.origin);
+                setSize(win, from.size);
+            } else if (!t->known && !readFrame(win, &from)) {
                 forgetWindow(app, t->wid);
                 continue;
             }
@@ -395,6 +409,7 @@ static void appLoop(void *context) {
         }
 
         double t = now();
+        bool stepped = animCount > 0;
         for (int i = 0; i < animCount; i++) {
             Animation *a = &anims[i];
             // Replaced: the new request is taken up on the next pass.
@@ -424,9 +439,20 @@ static void appLoop(void *context) {
             setSize(a->win, f.size);
         }
 
+        double done = now();
+        if (stepped) {
+            double spent = done - t;
+            os_unfair_lock_lock(&requestsLock);
+            app->steps++;
+            app->stepTotal += spent;
+            if (spent > app->stepWorst) app->stepWorst = spent;
+            if (animCount > 0 && tick + step - done <= 0) app->late++;
+            os_unfair_lock_unlock(&requestsLock);
+        }
+
         if (animCount > 0) {
             tick += step;
-            double wait = tick - now();
+            double wait = tick - done;
             if (wait > 0) usleep((useconds_t)(wait * 1e6));
             else tick = now(); // the app is slower than the frame rate
         }
@@ -443,7 +469,8 @@ static bool wake(App *app) {
     return true;
 }
 
-void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sole) {
+static void request(pid_t pid, uint32_t wid, CGRect target, double duration, bool sole,
+        const CGRect *from) {
     App *app = appFor(pid, true);
     if (!app) return;
     os_unfair_lock_lock(&requestsLock);
@@ -454,12 +481,18 @@ void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sol
         r->target = target;
         r->duration = duration;
         r->sole = sole;
+        r->haveFrom = from != NULL;
+        if (from) r->from = *from;
         r->generation++;
         r->pending = true;
         start = wake(app);
     }
     os_unfair_lock_unlock(&requestsLock);
     if (start) dispatch_async_f(app->queue, app, appLoop);
+}
+
+void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sole) {
+    request(pid, wid, target, duration, sole, NULL);
 }
 
 // Raising waits for the app, which can take a busy app (a terminal
@@ -517,14 +550,53 @@ static int l_liveIDs(lua_State *L) {
     return 1;
 }
 
-// set(pid, wid, x, y, w, h, duration)
+// set(pid, wid, x, y, w, h, duration[, fx, fy, fw, fh]): with the last
+// four, the window is put at that frame first and eases from there.
 static int l_set(lua_State *L) {
     pid_t pid = (pid_t)luaL_checkinteger(L, 1);
     uint32_t wid = (uint32_t)luaL_checkinteger(L, 2);
     CGRect f = { { luaL_checknumber(L, 3), luaL_checknumber(L, 4) },
                  { luaL_checknumber(L, 5), luaL_checknumber(L, 6) } };
-    framesSet(pid, wid, f, luaL_optnumber(L, 7, 0), false);
+    double duration = luaL_optnumber(L, 7, 0);
+    if (lua_isnoneornil(L, 8)) {
+        request(pid, wid, f, duration, false, NULL);
+    } else {
+        CGRect from = { { luaL_checknumber(L, 8), luaL_checknumber(L, 9) },
+                        { luaL_checknumber(L, 10), luaL_checknumber(L, 11) } };
+        request(pid, wid, f, duration, false, &from);
+    }
     return 0;
+}
+
+// stats(reset): how smoothly animations have stepped, per app, since the
+// last reset: { [pid] = { steps =, late =, avgMs =, worstMs = } }. A step
+// is one frame of every animation the app has running; late ones took
+// longer than a 60Hz frame, so the next was skipped.
+static int l_stats(lua_State *L) {
+    bool reset = lua_toboolean(L, 1);
+    lua_newtable(L);
+    os_unfair_lock_lock(&requestsLock);
+    for (int i = 0; i < appCount; i++) {
+        App *app = apps[i];
+        if (app->steps > 0) {
+            lua_newtable(L);
+            lua_pushinteger(L, (lua_Integer)app->steps);
+            lua_setfield(L, -2, "steps");
+            lua_pushinteger(L, (lua_Integer)app->late);
+            lua_setfield(L, -2, "late");
+            lua_pushnumber(L, app->stepTotal * 1000 / (double)app->steps);
+            lua_setfield(L, -2, "avgMs");
+            lua_pushnumber(L, app->stepWorst * 1000);
+            lua_setfield(L, -2, "worstMs");
+            lua_rawseti(L, -2, app->pid);
+        }
+        if (reset) {
+            app->steps = app->late = 0;
+            app->stepTotal = app->stepWorst = 0;
+        }
+    }
+    os_unfair_lock_unlock(&requestsLock);
+    return 1;
 }
 
 // Collected with the Lua state (reload, quit), before Lua unloads the
@@ -549,6 +621,7 @@ int luaopen_hyprspoon_native_frames(lua_State *L) {
     static const luaL_Reg funcs[] = {
         { "liveIDs", l_liveIDs },
         { "set", l_set },
+        { "stats", l_stats },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);

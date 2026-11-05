@@ -19,6 +19,7 @@ local S = require("hyprspoon.state")
 local Util = require("hyprspoon.util")
 local Spaces = require("hyprspoon.spaces")
 local Tree = require("hyprspoon.tree")
+local Scroll = require("hyprspoon.scroll")
 
 -- The native module, loaded and styled by M.start(); false if unavailable.
 local native = false
@@ -54,7 +55,8 @@ local function onShow()
         -- Native full screen, Split View too (border.m also hides those
         -- rings, for windows whose events haven't come yet), and windows
         -- with a `noborder` rule.
-        if id and not S.fullscreen[id] and not Spaces.isHidden(id) and not Tree.behindMaximized(id)
+        if id and not S.fullscreen[id] and not Spaces.isHidden(id) and not Scroll.isAway(id)
+           and not Tree.behindMaximized(id)
            and not Tree.filling(id)
            and (barred[id] or (S.cfg.border and not Util.rulesFor(win, true).noborder)) then
             ids[#ids + 1] = id
@@ -135,7 +137,7 @@ end
 function M.focused(win)
     if not native then return end
     local id = win and win:id()
-    if not id or Spaces.isHidden(id) then
+    if not id or Spaces.isHidden(id) or Scroll.isAway(id) then
         M.hide()
         return
     end

@@ -45,6 +45,7 @@
 --   hooks     callbacks and shell commands on changes, and query() for status bars
 --   group     window groups and the group-bar API
 --   groupbar  clickable title strips for grouped tiles
+--   scroll    columns that scroll sideways, niri-style
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
@@ -94,12 +95,13 @@ local Overview = require("hyprspoon.overview")
 local Hooks = require("hyprspoon.hooks")
 local Group = require("hyprspoon.group")
 local Groupbar = require("hyprspoon.groupbar")
+local Scroll = require("hyprspoon.scroll")
 
 -- The public API. Actions are plain functions (no `self`), so they can be
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
 local M = {
     name = "hyprspoon",
-    version = "0.4.3",
+    version = "0.5.0",
     author = "Aethar",
     homepage = "https://github.com/Aethar01/hyprspoon",
     license = "MIT - https://opensource.org/licenses/MIT",
@@ -137,6 +139,19 @@ local M = {
     swap = Actions.swap,
     move = Actions.move,
     toggleFloat = Actions.toggleFloat,
+    -- With `scrolling`: niri's column actions.
+    -- Unbound by default. focus, swap, move, resize and toggleMaximize act
+    -- on columns too (see `scrolling` in hyprspoon/state.lua).
+    cycleColumnWidth = Actions.cycleColumnWidth,
+    consumeOrExpel = Actions.consumeOrExpel,
+    moveColumn = Actions.moveColumn,
+    centerVisibleColumns = Actions.centerVisibleColumns,
+    consumeIntoColumn = Actions.consumeIntoColumn,
+    expelFromColumn = Actions.expelFromColumn,
+    centerColumn = Actions.centerColumn,
+    expandColumn = Actions.expandColumn,
+    focusColumnEnd = Actions.focusColumnEnd,
+    moveColumnToEnd = Actions.moveColumnToEnd,
     toggleFullScreen = Actions.toggleFullScreen,
     toggleMaximize = Actions.toggleMaximize,
     toggleFill = Actions.toggleFill,
@@ -175,9 +190,21 @@ local function hotkeyActions()
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
         "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
         "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo",
-        "toggleGroup", "groupNext", "groupPrev", "moveOutOfGroup" }) do
+        "toggleGroup", "groupNext", "groupPrev", "moveOutOfGroup", "consumeIntoColumn",
+        "expelFromColumn", "centerColumn", "centerVisibleColumns", "expandColumn" }) do
         actions[name] = M[name]
     end
+    -- Scrolling columns (`scrolling`); nothing elsewhere.
+    for suffix, dir in pairs({ Left = "left", Right = "right" }) do
+        actions["consumeOrExpel" .. suffix] = function() M.consumeOrExpel(dir) end
+        actions["moveColumn" .. suffix] = function() M.moveColumn(dir) end
+    end
+    actions.cycleColumnWidth = function() M.cycleColumnWidth() end
+    actions.cycleColumnWidthBack = function() M.cycleColumnWidth(true) end
+    actions.focusColumnFirst = function() M.focusColumnEnd(false) end
+    actions.focusColumnLast = function() M.focusColumnEnd(true) end
+    actions.moveColumnToFirst = function() M.moveColumnToEnd(false) end
+    actions.moveColumnToLast = function() M.moveColumnToEnd(true) end
     for suffix, dir in pairs(DIRECTIONS) do
         actions["focus" .. suffix] = function() M.focus(dir) end
         actions["swap" .. suffix] = function() M.swap(dir) end
@@ -270,6 +297,33 @@ function M.hotkeysFor(super, ctrlSuper)
         map["resize" .. suffix] = { super, suffix:lower() }
         map["preselect" .. suffix] = { ctrlSuper, suffix:lower() }
     end
+    -- Scrolling columns, niri's keys where they're free (rotate and mirror
+    -- cycle a column's width there). Move-column goes on Shift over the
+    -- third layer, as Ctrl+SUPER+H/L switch workspaces.
+    local columnShift = { table.unpack(ctrlSuper) }
+    for _, m in ipairs(super) do
+        if not modifierSet(columnShift):find(modifierSet({ m }), 1, true) then
+            columnShift[#columnShift + 1] = m
+        end
+    end
+    if not modifierSet(columnShift):find("shift", 1, true) then columnShift[#columnShift + 1] = "shift" end
+    map.consumeOrExpelLeft = { super, "[" }
+    map.consumeOrExpelRight = { super, "]" }
+    if modifierSet(columnShift) == modifierSet(superShift) then
+        -- SUPER has Ctrl already: the third layer's brackets instead.
+        map.moveColumnLeft = { ctrlSuper, "[" }
+        map.moveColumnRight = { ctrlSuper, "]" }
+    else
+        map.moveColumnLeft = { columnShift, "h" }
+        map.moveColumnRight = { columnShift, "l" }
+    end
+    map.centerColumn = { super, "c" }
+    map.centerVisibleColumns = { ctrlSuper, "c" }
+    map.expandColumn = { ctrlSuper, "f" }
+    map.focusColumnFirst = { super, "home" }
+    map.focusColumnLast = { super, "end" }
+    map.moveColumnToFirst = { superShift, "home" }
+    map.moveColumnToLast = { superShift, "end" }
     for i = 1, 10 do
         local key = tostring(i % 10)
         map["workspace" .. i] = { super, key }
@@ -304,6 +358,15 @@ for suffix, key in pairs({ Prev = "[", Next = "]" }) do
         M.ctrlAltCmdHotkeys[action .. suffix][2] = key
     end
 end
+-- Consume-or-expel and move-column on the third layer: SUPER+, and . are
+-- the contrast shortcuts, and the brackets are the displays'.
+do
+    local third = M.ctrlAltCmdHotkeys.previousWorkspace[1]
+    M.ctrlAltCmdHotkeys.consumeOrExpelLeft = { third, "," }
+    M.ctrlAltCmdHotkeys.consumeOrExpelRight = { third, "." }
+    M.ctrlAltCmdHotkeys.moveColumnLeft = { third, ";" }
+    M.ctrlAltCmdHotkeys.moveColumnRight = { third, "'" }
+end
 
 -- Binds `mapping` (action name -> { mods, key }, as from hotkeysFor),
 -- replacing whatever an earlier call bound. Resizes repeat while held.
@@ -335,6 +398,7 @@ function M.stop()
     if S.running.moveTap then S.running.moveTap:stop() end
     if S.running.events then S.running.events.stop() end
     if S.running.gestureTap then S.running.gestureTap:stop() end
+    if S.running.scrollTap then S.running.scrollTap:stop() end
     if S.running.windowFilter then S.running.windowFilter:unsubscribeAll() end
     if S.running.pipFilter then S.running.pipFilter:unsubscribeAll() end
     if S.running.spaceWatcher then S.running.spaceWatcher:stop() end
@@ -407,6 +471,7 @@ function M:start(opts)
         hs.shutdownCallback = function()
             Spaces.rememberTitles()
             Spaces.unparkAll()
+            Scroll.bringBack()
             M.stop()
             if previous then previous() end
         end
@@ -427,9 +492,13 @@ function M:start(opts)
     Ffm.start()
     S.running.sessionWatcher = hs.caffeinate.watcher.new(Ffm.onSessionEvent):start()
 
-    if S.cfg.swipe then
+    if S.cfg.swipe or Scroll.swipeFingers() then
         S.running.gestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture },
             Swipe.onGesture):start()
+    end
+    if Scroll.wheelMods() then
+        S.running.scrollTap = hs.eventtap.new({ hs.eventtap.event.types.scrollWheel },
+            Scroll.onScrollWheel):start()
     end
 
     local filter = hs.window.filter.new()
