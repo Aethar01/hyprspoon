@@ -63,7 +63,8 @@ local function beginMouseDrag(mode, point)
     -- hyprspoon.native.frames follows the pointer from here, off the main thread;
     -- the drags below are then never seen here.
     local frames = Util.native("frames")
-    if frames then
+    -- Not Hammerspoon's own windows: see Util.setFrame.
+    if frames and win:pid() ~= (hs.processInfo and hs.processInfo.processID) then
         local f = S.dragState.frame
         local xBranch, yBranch = Resize.resizeBranches()
         S.dragState.native = frames.dragBegin({

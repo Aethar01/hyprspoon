@@ -157,6 +157,10 @@ static void drop(App *app) {
 }
 
 static App *appFor(pid_t pid, bool create) {
+    // Hammerspoon's own windows (the Console) never: accessibility calls to
+    // our own process run AppKit in place, and AppKit off the main thread
+    // crashes. Lua moves them through hs.window instead.
+    if (pid == getpid()) return NULL;
     for (int i = 0; i < appCount; i++) {
         if (apps[i]->pid == pid) return apps[i];
     }

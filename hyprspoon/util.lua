@@ -232,15 +232,20 @@ end
 -- own queue with hyprspoon.native.frames (returning at once, and a slow app holds
 -- up nobody else), else through hs.window. With `from`, the window is put
 -- there first and eases from there.
+local OWN_PID = hs.processInfo and hs.processInfo.processID
+
 local function setFrame(win, rect, duration, from)
     local frames = native("frames")
     local id = win:id()
-    if frames and id then
+    local pid = id and (pidByID[id] or win:pid())
+    -- Hammerspoon's own windows (the Console) are AppKit's in this process,
+    -- which only the main thread may move: never on frames' queues.
+    if frames and id and pid ~= OWN_PID then
         if from then
-            frames.set(pidByID[id] or win:pid(), id, rect.x, rect.y, rect.w, rect.h, duration or 0,
+            frames.set(pid, id, rect.x, rect.y, rect.w, rect.h, duration or 0,
                 from.x, from.y, from.w, from.h)
         else
-            frames.set(pidByID[id] or win:pid(), id, rect.x, rect.y, rect.w, rect.h, duration or 0)
+            frames.set(pid, id, rect.x, rect.y, rect.w, rect.h, duration or 0)
         end
     else
         if from then win:setFrame(from, 0) end
