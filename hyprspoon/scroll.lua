@@ -74,6 +74,8 @@ local DEFAULTS = {
                                     -- (niri's max-scroll-amount; 0: only columns wholly in view)
     swipe = false,                  -- fingers on the trackpad that scroll the view sideways
     swipeSpan = 0.5,                -- share of the trackpad's width that scrolls a whole view
+    wheel = { "alt" },              -- modifiers that make scrolling scroll the columns
+                                    -- (niri's Mod+scroll); false for none
 }
 
 -- Tree key -> { x = scroll offset in points, focusID = the window focused
@@ -1075,8 +1077,14 @@ end
 function M.panTo(key, x0, dx)
     local view = views[key]
     if not view or not view.pan then return end
+    M.panAt(key, x0 + dx * view.viewW / opt("swipeSpan"))
+end
+
+-- Holds the view of workspace `key`, panning, at offset `x`.
+function M.panAt(key, x)
+    local view = views[key]
+    if not view or not view.pan then return end
     local total = view.starts[#view.starts] + view.widths[#view.widths]
-    local x = x0 + dx * view.viewW / opt("swipeSpan")
     view.pan = math.floor(math.max(-view.viewW / 2, math.min(x, total - view.viewW / 2)) + 0.5)
     -- At most one layout a frame: each step moves every window in view.
     if not panTimer then
@@ -1118,6 +1126,102 @@ function M.panEnd(key, v)
     if win then Focus.focus(win) end
 end
 
+-- ---------------------------------------------------------------------------
+-- Scrolling with a modifier (niri's Mod+scroll)
+-- ---------------------------------------------------------------------------
+
+-- The scroll in progress: { key =, x =, samples = { { t, x } } }, and
+-- until when a wheel step waits before the next.
+local wheelPan = nil
+local wheelReady = 0
+
+local function wheelMods()
+    local mods = cfg() and opt("wheel")
+    return type(mods) == "table" and #mods > 0 and mods or nil
+end
+M.wheelMods = wheelMods
+
+local function modsHeld(flags, mods)
+    local want = {}
+    for _, m in ipairs(mods) do want[m] = true end
+    for _, m in ipairs({ "cmd", "alt", "ctrl", "shift", "fn" }) do
+        if (flags[m] and true or false) ~= (want[m] or false) then return false end
+    end
+    return true
+end
+
+local function wheelSettle()
+    local p = wheelPan
+    wheelPan = nil
+    if not p then return end
+    local v, s = 0, p.samples
+    local last = s[#s]
+    for i = #s - 1, 1, -1 do
+        local dt = last.t - s[i].t
+        if dt >= 0.03 or i == 1 then
+            local view = views[p.key]
+            if dt > 0 and view then v = (last.x - s[i].x) / dt / view.viewW end
+            break
+        end
+    end
+    M.panEnd(p.key, v)
+end
+
+-- A scroll event (hyprspoon's scrollWheel tap): with `wheel`'s modifiers
+-- held over a workspace in columns, a trackpad's scroll pans the columns
+-- and settles on one when the fingers lift; a mouse wheel's step focuses
+-- the column beside. True to keep the event from the app beneath.
+function M.onScrollWheel(e)
+    local P = hs.eventtap.event.properties
+    local phase = e:getProperty(P.scrollWheelEventScrollPhase)
+    local momentum = e:getProperty(P.scrollWheelEventMomentumPhase)
+    if wheelPan then
+        -- Coasting after the fingers lift: the settle has it.
+        if momentum ~= 0 then return true end
+        if phase == 4 or phase == 8 then
+            hs.timer.doAfter(0, wheelSettle)
+            return true
+        end
+    end
+    local mods = wheelMods()
+    if not mods or not S.tilingEnabled then return false end
+    if not wheelPan and not modsHeld(e:getFlags(), mods) then return false end
+    local dy = e:getProperty(P.scrollWheelEventPointDeltaAxis1)
+    local dx = e:getProperty(P.scrollWheelEventPointDeltaAxis2)
+    local d = math.abs(dx) > math.abs(dy) and dx or dy
+    if e:getProperty(P.scrollWheelEventIsContinuous) ~= 1 then
+        -- A mouse wheel: a column a step.
+        local now = hs.timer.secondsSinceEpoch()
+        local key = Tree.keyForScreen(hs.mouse.getCurrentScreen())
+        local view = key and M.enabled(key) and views[key]
+        if not view or not view.cols then return false end
+        -- Down a step is right, as niri's, natural scrolling or not (field
+        -- 137, isDirectionInvertedFromDevice, says it's on).
+        if e:getProperty(137) == 1 then d = -d end
+        if d ~= 0 and now >= wheelReady then
+            wheelReady = now + 0.12
+            local ci = view.focusID and locate(view.cols, view.focusID)
+            local target = ci and view.cols[ci + (d > 0 and -1 or 1)]
+            if target then hs.timer.doAfter(0, function() focusLeaf(key, activeIn(target)) end) end
+        end
+        return true
+    end
+    if momentum ~= 0 then return true end
+    if not wheelPan then
+        if phase ~= 1 and phase ~= 2 and phase ~= 128 then return false end
+        local key, x0 = M.panBegin(hs.mouse.getCurrentScreen())
+        if not key then return false end
+        wheelPan = { key = key, x = x0, samples = {} }
+    end
+    local p = wheelPan
+    -- The content follows the fingers (natural scrolling or not).
+    p.x = p.x - d
+    p.samples[#p.samples + 1] = { t = hs.timer.secondsSinceEpoch(), x = p.x }
+    if #p.samples > 8 then table.remove(p.samples, 1) end
+    M.panAt(p.key, p.x)
+    return true
+end
+
 -- Puts every window scrolled out of sight back on its display, at its
 -- column's size, centred (scrolling turned off, quitting).
 function M.bringBack(onlyKey)
@@ -1141,6 +1245,7 @@ end
 -- Cancels pending parks (reload, shutdown). Windows away stay where they
 -- are; the layout after a reload carries on from there.
 function M.stop()
+    if wheelPan then wheelPan = nil end
     for _, a in pairs(away) do cancelPark(a) end
 end
 

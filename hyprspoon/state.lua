@@ -290,6 +290,9 @@ S.defaults = {
         --                       swipe.fingers unless workspaces swipe
         --                       vertically (swipe.direction)
         --   swipeSpan = 0.5     share of the trackpad that scrolls a view
+        --   wheel = { "alt" }   holding these, scrolling (two fingers, or
+        --                       a mouse wheel a column a step) scrolls the
+        --                       columns, as niri's Mod+scroll; false: none
         --   moveConsumes = false  move left/right takes the window into the
         --                       column that way, or out of its own into a
         --                       new one (consume-or-expel), instead of

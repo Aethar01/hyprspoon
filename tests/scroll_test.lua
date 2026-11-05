@@ -498,6 +498,48 @@ assert(Scroll.signature("ws1") == "|scroll 990",
     "with an edge at the view's, got " .. Scroll.signature("ws1"))
 focus(1)
 
+-- Option and two fingers pan the columns; a mouse wheel steps.
+hs.mouse = { getCurrentScreen = function() return {} end }
+hs.eventtap = { event = { properties = {
+    scrollWheelEventScrollPhase = "phase", scrollWheelEventMomentumPhase = "momentum",
+    scrollWheelEventPointDeltaAxis1 = "dy", scrollWheelEventPointDeltaAxis2 = "dx",
+    scrollWheelEventIsContinuous = "continuous",
+} } }
+local function scrollEvent(t)
+    local props = { phase = t.phase or 0, momentum = t.momentum or 0, dy = t.dy or 0, dx = t.dx or 0,
+        continuous = t.continuous == false and 0 or 1 }
+    return {
+        getProperty = function(_, k) return props[k] end,
+        getFlags = function() return t.flags or { alt = true } end,
+    }
+end
+focus(1)
+assert(Scroll.onScrollWheel(scrollEvent({ phase = 1, dx = -10, flags = {} })) == false,
+    "without Option: the app's")
+assert(Scroll.onScrollWheel(scrollEvent({ phase = 1, dx = -10, flags = { alt = true, cmd = true } })) == false,
+    "other modifiers too")
+assert(Scroll.onScrollWheel(scrollEvent({ phase = 1, dx = -100 })) == true, "Option: ours")
+Scroll.onScrollWheel(scrollEvent({ phase = 2, dx = -400 }))
+applied = {}
+for _, tm in ipairs(timers) do tm.fn() end
+timers = {}
+assert(Scroll.signature("ws1") == "|scroll 500", "fingers left 500 points: the view 500 right, got "
+    .. Scroll.signature("ws1"))
+assert(Scroll.onScrollWheel(scrollEvent({ phase = 4, flags = {} })) == true, "the lift is ours, Option or not")
+focused = {}
+for _, tm in ipairs(timers) do tm.fn() end
+timers = {}
+assert(focused[1] == 2 or focused[1] == 3, "settled on a column and focused it")
+assert(Scroll.onScrollWheel(scrollEvent({ momentum = 2, dx = -50, flags = {} })) == false,
+    "coasting after: not ours once settled")
+focus(1)
+focused = {}
+Scroll.onScrollWheel(scrollEvent({ continuous = false, dy = -1 }))
+for _, tm in ipairs(timers) do tm.fn() end
+timers = {}
+assert(focused[1] == 2, "a wheel step down: the next column")
+focus(1)
+
 -- center-column.
 focus(2)
 Scroll.center(byID[2])

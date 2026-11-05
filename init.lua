@@ -398,6 +398,7 @@ function M.stop()
     if S.running.moveTap then S.running.moveTap:stop() end
     if S.running.events then S.running.events.stop() end
     if S.running.gestureTap then S.running.gestureTap:stop() end
+    if S.running.scrollTap then S.running.scrollTap:stop() end
     if S.running.windowFilter then S.running.windowFilter:unsubscribeAll() end
     if S.running.pipFilter then S.running.pipFilter:unsubscribeAll() end
     if S.running.spaceWatcher then S.running.spaceWatcher:stop() end
@@ -494,6 +495,10 @@ function M:start(opts)
     if S.cfg.swipe or Scroll.swipeFingers() then
         S.running.gestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture },
             Swipe.onGesture):start()
+    end
+    if Scroll.wheelMods() then
+        S.running.scrollTap = hs.eventtap.new({ hs.eventtap.event.types.scrollWheel },
+            Scroll.onScrollWheel):start()
     end
 
     local filter = hs.window.filter.new()
