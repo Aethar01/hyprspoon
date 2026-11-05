@@ -567,7 +567,8 @@ function M.toggleSplit()
     local win = Focus.currentWindow()
     local path, _, key = Layout.locate(win)
     local parent = path and path[1] and path[1].node
-    if not parent then return end
+    -- Columns: the splits are what make them columns, so leave them be.
+    if not parent or Scroll.enabled(key) then return end
 
     parent.split = (parent.split == "vertical") and "horizontal" or "vertical"
     Layout.tileNow(false, Tree.keyUUID(key))
@@ -599,18 +600,22 @@ function M.preselect(direction)
     if win and sides[direction] then Layout.preselect(win, sides[direction]) end
 end
 
--- Turn the workspace's layout a quarter clockwise.
+-- Turn the workspace's layout a quarter clockwise. In columns (which
+-- don't rotate), the focused column's width to the next preset instead.
 function M.rotate()
     local key = currentKey()
     if not key or not S.trees[key] then return end
+    if Scroll.enabled(key) then return Scroll.cycleWidth(Focus.currentWindow()) end
     Tree.rotate(S.trees[key])
     Layout.tileNow(false, Tree.keyUUID(key))
 end
 
--- Mirror the workspace's layout left to right.
+-- Mirror the workspace's layout left to right. In columns, the focused
+-- column's width to the preset before instead.
 function M.mirror()
     local key = currentKey()
     if not key or not S.trees[key] then return end
+    if Scroll.enabled(key) then return Scroll.cycleWidth(Focus.currentWindow(), true) end
     Tree.mirror(S.trees[key])
     Layout.tileNow(false, Tree.keyUUID(key))
 end

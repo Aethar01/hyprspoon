@@ -251,6 +251,8 @@ S.defaults = {
         --   resize     width by a percentage of the area, height within
         --              the column; window edges and modifier-drag too
         --   toggleMaximize  the column full width (maximize-column)
+        --   rotate/mirror   cycleColumnWidth forward/back (columns don't
+        --              rotate); toggleSplit does nothing
         --   consumeOrExpel(dir), consumeIntoColumn, expelFromColumn,
         --   cycleColumnWidth(back), centerColumn, expandColumn,
         --   focusColumnEnd(last), moveColumnToEnd(last)
