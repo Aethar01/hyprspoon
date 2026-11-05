@@ -270,6 +270,10 @@ S.defaults = {
         --   peek = 0            points kept free at each side, where the
         --                       columns beside always show (niri's
         --                       struts); widths are shares of what's left
+        --   moveConsumes = false  move left/right takes the window into the
+        --                       column that way, or out of its own into a
+        --                       new one (consume-or-expel), instead of
+        --                       moving the column: two moves swap columns
         --   center = "never"    "always" (or true) keeps the focused
         --                       column centred; "on-overflow" centres it
         --                       when it doesn't fit beside the column

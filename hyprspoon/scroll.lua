@@ -66,7 +66,8 @@ local DEFAULTS = {
     fill = false,                   -- columns of `width` share the area while they fit
     duration = 0.2,                 -- seconds a scroll takes; 0 snaps
     center = "never",               -- "never", "always" (or true) or "on-overflow"
-    peek = 0,                       -- points kept at each side for the columns beside (niri's struts)
+    peek = 0,
+    moveConsumes = false,           -- move left/right is consume-or-expel, not move-column (not niri's)                       -- points kept at each side for the columns beside (niri's struts)
 }
 
 -- Tree key -> { x = scroll offset in points, focusID = the window focused
@@ -705,13 +706,16 @@ local function moveInColumn(win, key, cols, ci, wi, d)
 end
 
 -- move(direction): left and right move the focused column past the one
--- beside it (move-column-left/right), up and down the window within its
--- column (move-window-up/down). False when there's none that way.
+-- beside it (move-column-left/right), or with `moveConsumes` take the
+-- window into that column or out of its own (M.consumeOrExpel); up and
+-- down move the window within its column (move-window-up/down). False
+-- when there's nothing that way.
 function M.move(win, direction)
     local key, cols, ci, wi = context(win)
     if not key then return false end
     local d = STEP[direction]
     if direction == "up" or direction == "down" then return moveInColumn(win, key, cols, ci, wi, d) end
+    if opt("moveConsumes") then return M.consumeOrExpel(win, direction) end
     if not cols[ci + d] then return false end
     cols[ci], cols[ci + d] = cols[ci + d], cols[ci]
     commit(key, cols)

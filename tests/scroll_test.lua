@@ -366,6 +366,16 @@ Scroll.moveToEnd(byID[1], true)
 assert(shape(S.trees.ws1) == "2,3,4,5,1", "move-column-to-last")
 Scroll.moveToEnd(byID[1], false)
 assert(shape(S.trees.ws1) == "1,2,3,4,5", "move-column-to-first")
+-- moveConsumes: move goes into the column beside, then out the far side.
+S.cfg.experimental.scrolling.moveConsumes = true
+Scroll.move(byID[2], "left")
+assert(shape(S.trees.ws1) == "1+2,3,4,5", "moved into 1's column, got " .. shape(S.trees.ws1))
+Scroll.move(byID[2], "left")
+assert(shape(S.trees.ws1) == "2,1,3,4,5", "and out of it to the left, got " .. shape(S.trees.ws1))
+Scroll.move(byID[2], "right")
+Scroll.move(byID[2], "right")
+assert(shape(S.trees.ws1) == "1,2,3,4,5", "and back, got " .. shape(S.trees.ws1))
+S.cfg.experimental.scrolling.moveConsumes = nil
 -- swap-window: the windows trade columns, the columns keep their widths.
 Scroll.cycleWidth(byID[1])
 focus(1)
