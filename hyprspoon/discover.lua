@@ -135,7 +135,10 @@ local function withRecentlyChangedApps(windows)
         if not dirtyPids[pid] or dirtyPids[pid] < now then eventWindows[pid] = nil
         else
             for id, win in pairs(recent) do
-                if snapshot and snapshot[pid] and snapshot[pid][id] == "shown" then
+                -- Not the app's helper windows (Outlook's drag previews):
+                -- events arrive for those too.
+                if snapshot and snapshot[pid] and snapshot[pid][id] == "shown"
+                   and Util.windowKind(win) ~= "ignored" then
                     candidates[#candidates + 1] = win
                 end
             end

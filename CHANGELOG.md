@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2 (2026-11-06)
+
+- Apps' short-lived helper windows are no longer tiled for a moment.
+  Outlook opens one each time text is drag-selected; tiling it split
+  Outlook's tile in half and back on every drag. Discovery took windows
+  from their events without checking they're ones it manages.
+
 ## 0.5.1 (2026-11-05)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:

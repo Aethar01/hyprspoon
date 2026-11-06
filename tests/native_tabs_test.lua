@@ -71,6 +71,7 @@ package.loaded["hyprspoon.util"] = {
     winByID = {}, forgetManagedWindows = function() end,
     native = function() return native end, managedWindows = function() return filter end,
     isPictureInPicture = function() return false end,
+    windowKind = function(w) return w.helper and "ignored" or "standard" end,
 }
 package.loaded["hyprspoon.float"] = { shouldFloat = function() return false end }
 package.loaded["hyprspoon.spaces"] = {
@@ -162,6 +163,17 @@ for _, failure in ipairs({ "empty", "timeout" }) do
     assert(#byScreen.display == 3 and S.openIDs[1] and S.openIDs[2] and S.openIDs[3], failure)
 end
 listed, failList = wins, false
+
+-- An app's helper window (Outlook's drag preview) shown by WindowServer and
+-- seen by an event is still no tile.
+local helper = win(9)
+helper.helper, helper.isStandard = true, function() return false end
+clock = clock + 1
+states[9] = "shown"
+Discover.markDirty(helper)
+byScreen = Discover.windowsByScreen()
+for _, w in ipairs(byScreen.display) do assert(w:id() ~= 9, "a helper window is never tiled") end
+states[9] = nil
 
 -- A focus/visible event hands off synchronously, while the snapshot still
 -- calls the arriving member background. No timer, AX call or layout runs.
