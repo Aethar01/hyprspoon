@@ -5,8 +5,7 @@
 --   1. the choice made while running (cycleLayout, setLayout), saved with
 --      the workspace in S.layouts (hyprspoon/tree.lua)
 --   2. `workspaces[n].layout`, n the number or name of the workspace
---   3. `scrolling.workspaces` ("scrolling" for those, or for all of them
---      when `scrolling` is on without a list)
+--   3. `layout`, the default for every workspace
 --   4. "bsp"
 -- Scratchpads are always "bsp": they're laid out smaller over the workspace
 -- beneath. A layout is registered by adding its name to M.names (cycleLayout
@@ -47,13 +46,6 @@ local function fromOptions(name)
     return known
 end
 
--- `scrolling`, where it still counts as set: it was once `experimental.scrolling`.
-local function scrollingCfg()
-    local c = S.cfg and S.cfg.scrolling
-    if not c then c = S.cfg and S.cfg.experimental and S.cfg.experimental.scrolling end
-    return c or nil
-end
-
 -- Workspace `n` named in `list`, by number or name: its table, or nil.
 local function entry(list, n)
     if type(list) ~= "table" then return nil end
@@ -61,18 +53,18 @@ local function entry(list, n)
     return type(e) == "table" and e or nil
 end
 
--- Whether `scrolling.workspaces` has workspace `key` scroll.
-local function scrollsByList(key, n)
-    local c = scrollingCfg()
-    if not c then return false end
-    local list = c == true and true or c.workspaces
-    if list == nil or list == true then return true end
-    if not n then return false end
-    local label = spaces().label(n)
-    for _, w in ipairs(list) do
-        if tostring(w) == label or w == n then return true end
+-- `scrolling.workspaces` (and `scrolling = true` turning columns on) went
+-- with #17: say so once per set of options, rather than quietly tile in BSP.
+local checked = nil
+local function checkOld()
+    if checked == S.cfg then return end
+    checked = S.cfg
+    local c = S.cfg and S.cfg.scrolling
+    if not c then c = S.cfg and S.cfg.experimental and S.cfg.experimental.scrolling end
+    if c == true or (type(c) == "table" and c.workspaces ~= nil) then
+        print('hyprspoon: scrolling.workspaces is gone; use layout = "scrolling" '
+            .. 'or workspaces = { [n] = { layout = "scrolling" } }')
     end
-    return false
 end
 
 -- The layout of workspace `key` ("ws<n>"): a name from M.names.
@@ -84,14 +76,18 @@ function M.of(key)
     local e = n and entry(S.cfg and S.cfg.workspaces, n)
     local name = e and fromOptions(e.layout)
     if name then return name end
-    if scrollsByList(key, n) then return "scrolling" end
-    return "bsp"
+    checkOld()
+    return fromOptions(S.cfg and S.cfg.layout) or "bsp"
 end
 
--- Whether the options put any workspace in layout `name` (the scroll wheel
--- and swipe taps are only started for scrolling that's configured).
+-- Whether the options, or a choice kept from before a reload, put any
+-- workspace in layout `name` (the scroll wheel and swipe taps are only
+-- started for scrolling that's in use).
 function M.configured(name)
-    if name == "scrolling" and scrollingCfg() then return true end
+    if fromOptions(S.cfg and S.cfg.layout) == name then return true end
+    for _, saved in pairs(S.layouts or {}) do
+        if M.known(saved) == name then return true end
+    end
     for _, e in pairs(S.cfg and S.cfg.workspaces or {}) do
         if type(e) == "table" and fromOptions(e.layout) == name then return true end
     end

@@ -2,13 +2,17 @@
 
 ## Unreleased
 
-- New `workspaces` option (#17): the layout of particular workspaces, by
-  number or name, e.g. `workspaces = { [3] = { layout = "scrolling" } }`.
-  The layouts are `"bsp"` and `"scrolling"` for now.
+- New `layout` and `workspaces` options (#17): the layout every workspace
+  is tiled in, and the layout of particular ones by number or name, e.g.
+  `workspaces = { [3] = { layout = "scrolling" } }`. The layouts are
+  `"bsp"` and `"scrolling"` for now.
+- **Breaking:** `scrolling.workspaces` is gone, and `scrolling = true` no
+  longer turns columns on: `scrolling` only holds the columns' options.
+  Use `layout = "scrolling"` for every workspace, or `workspaces` for some.
+  The old options print a note on start.
 - New `cycleLayout` action (Option+Shift+Y) and `setLayout(name)`: switch the
   focused workspace's layout while running. The choice is kept with the
-  workspace, over reloads, and wins over `workspaces` and
-  `scrolling.workspaces`, which still work.
+  workspace, over reloads, and wins over `layout` and `workspaces`.
 - `query()` gives each workspace's `layout`.
 
 ## 0.6.0 (2026-11-10)

@@ -294,11 +294,13 @@ A workspace is tiled in one of these layouts:
 | `"bsp"` (or `"dwindle"`) | A binary tree of splits, the default |
 | `"scrolling"` (or `"scroll"`) | [Scrolling columns](#scrolling-columns-scrolling) |
 
-`workspaces` gives some of them a layout, by number or name (a name as in
-`namedWorkspaces`, or a display's):
+`layout` is the one every workspace starts in (`"bsp"` by default, as
+Hyprland's `general:layout`), and `workspaces` gives some of them another,
+by number or name (a name as in `namedWorkspaces`, or a display's):
 
 ```lua
-workspaces = { [3] = { layout = "scrolling" }, [4] = { layout = "bsp" } },
+layout = "scrolling",
+workspaces = { [3] = { layout = "bsp" }, A = { layout = "bsp" } },
 ```
 
 `cycleLayout` switches the focused workspace to the next layout (Option+Shift+Y),
@@ -309,19 +311,18 @@ The first of these names the layout:
 
 1. the choice made with `cycleLayout` or `setLayout`
 2. `workspaces[n].layout`
-3. `scrolling.workspaces`: those it lists scroll, or all of them with
-   `scrolling = true`
-4. `"bsp"`
+3. `layout`
 
 Scratchpads are always `"bsp"`. Switching keeps the windows and the tree
 they're in, so the splits that made columns are the BSP tiles' splits again
 on the way back. `scrolling.wheel` and `scrolling.swipe` run
-when `scrolling` is on or a workspace is set to `"scrolling"` in the config as
-the Spoon starts; `query()` has each workspace's `layout`.
+when `layout`, `workspaces` or a kept `cycleLayout` choice has a workspace
+scroll as the Spoon starts; `query()` has each workspace's `layout`.
 
 ### Scrolling columns (`scrolling`)
 
-niri's scrollable tiling, per workspace. Tiled windows go in columns side
+niri's scrollable tiling, for workspaces in the `"scrolling"`
+[layout](#layouts-per-workspace). Tiled windows go in columns side
 by side on a strip wider than the display, scrolled so the focused column
 is in view. A new window opens as a column right of the focused one; a
 column holds one window or several, stacked. Focus, move, swap, resize
@@ -332,11 +333,10 @@ remembers its own width, and has it again when it leaves.
 
 macOS won't leave a window wholly off its display, so columns out of sight
 slide to the edge and are parked in the display's corner, like a hidden
-workspace's windows. Set `scrolling = true` for the defaults, or a table:
+workspace's windows. `scrolling` holds its options:
 
 | Option | Default | Description |
 |---|---|---|
-| `scrolling.workspaces` | `true` | All workspaces, or a list such as `{ 3, "A" }`. Scratchpads never scroll. [`workspaces`](#layouts-per-workspace) and `cycleLayout` win over it |
 | `scrolling.width` | `0.5` | A new column's share of the tiling area |
 | `scrolling.presets` | `{ 1/3, 1/2, 2/3 }` | The widths `cycleColumnWidth` (Option+R) goes through |
 | `scrolling.center` | `"never"` | `"never"` scrolls just enough to show the focused column; `"always"` (or `true`) centres it; `"on-overflow"` centres it when it doesn't fit beside the column focused before |
@@ -352,7 +352,8 @@ workspace's windows. Set `scrolling = true` for the defaults, or a table:
 | `scrolling.swipeSpan` | `0.5` | With `swipe`, the share of the trackpad's width that scrolls a whole view |
 
 ```lua
-scrolling = { workspaces = { 5 }, center = "always", peek = 48 },
+workspaces = { [5] = { layout = "scrolling" } },
+scrolling = { center = "always", peek = 48 },
 ```
 
 ### Group bars (`group.bar`)

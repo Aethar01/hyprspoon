@@ -30,7 +30,7 @@ hs.screen = { allScreens = function() return screens end }
 -- Stand-ins. Workspace "ws1"'s tree is S.trees.ws1.
 local S = {
     cfg = { tiling = { innerGap = 10 }, minWidth = 240, minHeight = 140,
-        scrolling = { duration = 0.2 } },
+        layout = "scrolling", scrolling = { duration = 0.2 } },
     tilingEnabled = true, settleUntil = 0, applied = {}, trees = {},
 }
 package.loaded["hyprspoon.state"] = S
@@ -589,11 +589,5 @@ for _, m in ipairs(moves) do
     assert(m.duration == 0 and m.rect.x == 999 and m.rect.y == 799, "parked at once")
 end
 S.instantLayout = nil
-
--- Its experimental name still works.
-S.cfg.experimental = { scrolling = S.cfg.scrolling }
-S.cfg.scrolling = false
-assert(Scroll.enabled("ws1"), "experimental.scrolling turns it on too")
-S.cfg.scrolling, S.cfg.experimental = S.cfg.experimental.scrolling, nil
 
 print("Scroll tests passed")
