@@ -493,6 +493,8 @@ function M.arrange(key, tree, area, screen, byID, full)
     end
     local ci, focusID = focusOf(cols, view, fresh)
     local x, prev = placeView(view, cols, starts, widths, inner.w, ci)
+    -- How far the view moves: what was out of sight comes in by as much.
+    local shift = x - (view.x or x)
     -- A window opened from the column focused before, focused in a new
     -- column: closing it goes back there (activate_prev_column_on_removal).
     if focusID and fresh and fresh[focusID] and prev and ci == prev + 1 and #cols[ci] == 1 then
@@ -520,8 +522,9 @@ function M.arrange(key, tree, area, screen, byID, full)
     -- Every step of a scroll fires windowMoved too.
     settle(duration)
 
+    -- Each tile: its leaf, rect on the strip, and where that is.
     local least = S.cfg.minHeight
-    local seen, came = {}, false
+    local tiles = {}
     for i, col in ipairs(cols) do
         local colRect = hs.geometry.rect(inner.x + starts[i] - x, area.y, widths[i], area.h)
         local where = M.classify(colRect, sf, others, area)
@@ -532,35 +535,73 @@ function M.arrange(key, tree, area, screen, byID, full)
         end)(), #col, area.h, gap, least)
         local y = area.y
         for j, leaf in ipairs(col) do
-            local id = leaf.windowID
-            seen[id] = true
             local rect = hs.geometry.rect(colRect.x, y, colRect.w, heights[j])
             y = y + heights[j] + gap
-            if where == "show" or where == "hang" then
+            tiles[#tiles + 1] = { leaf = leaf, id = leaf.windowID, rect = rect,
+                show = where == "show" or where == "hang", side = where }
+        end
+    end
+
+    -- Moves the windows there, easing over `d` seconds.
+    local function place(d)
+        local seen, came = {}, false
+        for _, t in ipairs(tiles) do
+            local leaf, id, rect = t.leaf, t.id, t.rect
+            seen[id] = true
+            if t.show then
                 local a = away[id]
-                local opts = { duration = duration }
+                local opts = { duration = d }
                 if a then
                     cancelPark(a)
                     away[id] = nil
                     came = true
                     local edge = M.edgeRect(rect, a.side, sf)
-                    if duration > 0 and not overlapsAny(edge, others) then opts.dx = edge.x - rect.x end
+                    if d > 0 and not overlapsAny(edge, others) then opts.dx = edge.x - rect.x end
                 end
                 Layout.applyTree(leaf, rect, byID, full, opts)
             else
                 -- Kept for directional focus and swaps, which go by tile rects.
                 leaf.rect, leaf.windowRect, leaf.fullRect, leaf.pseudoRect = rect, rect, nil, nil
-                sendAway(id, byID[id], key, rect, where, sf, others, duration)
+                sendAway(id, byID[id], key, rect, t.side, sf, others, d)
             end
         end
-    end
-    for id, a in pairs(away) do
-        if a.key == key and not seen[id] then
-            cancelPark(a)
-            away[id] = nil
+        for id, a in pairs(away) do
+            if a.key == key and not seen[id] then
+                cancelPark(a)
+                away[id] = nil
+            end
         end
+        if came then Border.sync() end
     end
-    if came then Border.sync() end
+
+    -- With experimental.captureRetile, pictures of the columns scroll
+    -- instead, those going out of sight off the display's edge, and those
+    -- coming into it in from there; the windows move once they're up.
+    local took = Layout.captureRetile(key, screen, byID, duration > 0, function()
+        local plan = {}
+        for _, t in ipairs(tiles) do
+            local leaf, id, rect = t.leaf, t.id, t.rect
+            if t.show then
+                Layout.applyTree(leaf, rect, {}, full)
+            else
+                leaf.rect, leaf.windowRect, leaf.fullRect, leaf.pseudoRect = rect, rect, nil, nil
+            end
+            local to = leaf.windowRect or rect
+            local p = { id = id, win = byID[id], to = to }
+            local a = away[id]
+            if a then
+                -- From where it was on the strip; at least out of sight.
+                local from = { x = to.x + shift, y = to.y, w = to.w, h = to.h }
+                if t.show and overlaps(from, sf) then from = M.edgeRect(to, a.side, sf) end
+                p.away, p.from = true, from
+            end
+            plan[#plan + 1] = p
+        end
+        return plan
+    end, function(up)
+        place(up and 0 or duration)
+    end)
+    if not took then place(duration) end
 end
 
 -- What changes the layout besides the windows and the area, for

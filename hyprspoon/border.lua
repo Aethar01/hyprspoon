@@ -174,11 +174,12 @@ end
 -- The ring window `win` has now, for pictures of it that hide the real one
 -- (experimental.captureRetile, hyprspoon/slide.lua): { color = {r, g, b, a},
 -- width =, radius = } (radius the configured one: the native side reads the
--- window's own where macOS reports it), or nil for none.
-function M.ringFor(win)
+-- window's own where macOS reports it), or nil for none. With `coming`, the
+-- one it will have as it scrolls back into view.
+function M.ringFor(win, coming)
     if not native or suspended or not S.cfg.border then return nil end
     local id = win and win:id()
-    if not id or S.fullscreen[id] or Spaces.isHidden(id) or Scroll.isAway(id)
+    if not id or S.fullscreen[id] or Spaces.isHidden(id) or (Scroll.isAway(id) and not coming)
        or Tree.behindMaximized(id) or Tree.filling(id) or Util.rulesFor(win, true).noborder then
         return nil
     end

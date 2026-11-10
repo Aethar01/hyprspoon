@@ -10,7 +10,8 @@
 -- The kinds:
 --   workspaces  workspace and scratchpad slides (hyprspoon/slide.lua)
 --   windows     retiles: the window animations, and with
---               experimental.captureRetile the pictures gliding
+--               experimental.captureRetile the pictures gliding, in
+--               every layout (scrolling columns' scrolls too)
 --   fadeIn      new windows fading in as they pop in, and the pictures
 --               fading to the real windows once settled
 --               (experimental.captureRetile)

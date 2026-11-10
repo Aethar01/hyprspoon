@@ -361,10 +361,13 @@ S.defaults = {
         -- stretched from there, and the pictures show the apps' latest
         -- frames as they glide (refresh). Once it settles the overlay fades
         -- to the real windows. New windows pop in at their tiles. Not while
-        -- dragging, nor in scrolling workspaces.
+        -- dragging. Scrolling columns scroll the same way: columns going
+        -- out of sight glide off the display's edge, and come back in with
+        -- the picture they went with (or pop in without one).
         -- Floating windows over the tiles are hidden until it's done.
         -- Moves as animations.windows and animations.fadeIn say; on while
-        -- windows animate. true, or a table:
+        -- windows animate (in scrolling workspaces, while
+        -- scrolling.duration is above 0). true, or a table:
         --   popin = 0.8   share of their size new windows grow from (1:
         --                 they only fade in)
         --   hold = 0.05   seconds the pictures stay after they settle
