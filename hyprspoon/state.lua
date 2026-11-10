@@ -303,6 +303,15 @@ S.defaults = {
         -- Needs hyprspoon.native.border and macOS 13. Rebuild native modules
         -- after updating. Off means no snapshot or extra window watching.
         borderMask = false,
+        -- Retiles glide pictures of the tiles to their new places, as
+        -- Hyprland's windows do, instead of easing each window through
+        -- accessibility moves: one capture of the display's tiles (about
+        -- 40ms, before anything moves) over the wallpaper, while the
+        -- windows move at once beneath. Not while dragging, nor in
+        -- scrolling workspaces. Floating windows over the tiles are hidden
+        -- until it's done. Uses tiling.animationDuration. A prototype
+        -- (#19); needs hyprspoon.native.slide and Screen Recording.
+        captureRetile = false,
     },
 }
 

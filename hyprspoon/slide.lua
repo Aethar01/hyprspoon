@@ -175,6 +175,24 @@ function M.endPan(commit, velocity)
     if commit then panShownUntil = hs.timer.secondsSinceEpoch() + 0.5 end
 end
 
+-- A retile on `screen` (experimental.captureRetile): `tiles` is a list of
+-- { wid =, from = rect, to = rect }. Call before the windows move: it waits
+-- for the capture. True if pictures cover the retile, so the windows can
+-- move at once.
+function M.retile(screen, tiles, duration)
+    local mod = native or Util.native("slide")
+    if not mod or not mod.retile or not screen or #tiles == 0 then return false end
+    local mode = screen:currentMode()
+    return mod.retile({
+        frame = rect(screen:frame()),
+        scale = mode and mode.scale or 1,
+        duration = duration,
+        hold = 0.05,
+        wallpaperAge = S.cfg.slide and S.cfg.slide.wallpaperRefresh or 0,
+        tiles = tiles,
+    }) == true
+end
+
 -- Workspace `n` is gone: its picture with it.
 function M.forget(n)
     if native and kept[n] then

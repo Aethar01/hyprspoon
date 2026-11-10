@@ -556,6 +556,104 @@ static void run(Slide s) {
     if (build(s, 0)) settle(1, 0);
 }
 
+
+// ---------------------------------------------------------------------------
+// Retiles (#19, experimental.captureRetile; a prototype)
+// ---------------------------------------------------------------------------
+
+// A retile glides pictures of the tiles from where they were to where they
+// go, over the wallpaper, while the windows themselves move at once beneath.
+// Tiles don't overlap, so one capture of them all (about 40ms, as for one
+// window) is cut into a picture of each: capturing each window on its own
+// costs the 40ms each, and WindowServer takes captures one at a time, from
+// one connection or several (measured: 4 windows, ~45ms together, ~160ms
+// apart, ~160ms in parallel on four connections).
+
+#define MAX_TILES 64
+
+typedef struct {
+    uint32_t wid;
+    CGRect from, to;
+} Tile;
+
+static NSString *boundsKey = nil;
+
+// A layer from `from` to `to` over `duration`, eased out; `from` and `to`
+// relative to the overlay.
+static void glide(CALayer *layer, CGRect from, CGRect to, double duration) {
+    layer.anchorPoint = CGPointZero;
+    layer.position = to.origin;
+    layer.bounds = (CGRect){ CGPointZero, to.size };
+    if (duration <= 0) return;
+    CAMediaTimingFunction *ease = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+    CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:positionKey];
+    move.fromValue = [NSValue valueWithBytes:&from.origin objCType:@encode(CGPoint)];
+    move.toValue = [NSValue valueWithBytes:&to.origin objCType:@encode(CGPoint)];
+    CGRect fromBounds = { CGPointZero, from.size }, toBounds = { CGPointZero, to.size };
+    CABasicAnimation *size = [CABasicAnimation animationWithKeyPath:boundsKey];
+    size.fromValue = [NSValue valueWithBytes:&fromBounds objCType:@encode(CGRect)];
+    size.toValue = [NSValue valueWithBytes:&toBounds objCType:@encode(CGRect)];
+    CAAnimationGroup *group = [CAAnimationGroup animation];
+    group.animations = @[ move, size ];
+    group.duration = duration;
+    group.timingFunction = ease;
+    [layer addAnimation:group forKey:slideKey];
+}
+
+// Puts the tiles' pictures up where they are and glides them to where
+// they go over `duration`, then takes them down `hold` seconds later (the
+// apps redrawing at their new sizes). False if there was nothing to take.
+static bool retile(CGRect frame, double scale, Tile *tiles, int count, double duration, double hold) {
+    if (count <= 0 || (!wid && !makeWindow())) return false;
+    uint32_t wids[MAX_TILES];
+    for (int i = 0; i < count; i++) wids[i] = tiles[i].wid;
+    CGRect area;
+    CGImageRef image = capture(wids, count, &area);
+    if (!image) return false;
+    generation++;
+    clearLayers();
+    plane = nil;
+    beginChanges();
+    root.frame = (CGRect){ CGPointZero, frame.size };
+    root.backgroundColor = NULL;
+    CGRect display = displayHolding(frame);
+    Shot *wall = wallpaperFor(display);
+    if (!wall) wall = takeWallpaper(display);
+    if (wall) {
+        [root addSublayer:pictureLayer(wall, frame, CGPointZero)];
+    } else {
+        root.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+    }
+    for (int i = 0; i < count; i++) {
+        CGRect src = CGRectIntersection(tiles[i].from, area);
+        if (CGRectIsNull(src) || CGRectIsEmpty(src)) continue;
+        CALayer *layer = [CALayer layer];
+        layer.contents = (id)image;
+        // The image's unit square, from its top-left like the overlay.
+        layer.contentsRect = CGRectMake((src.origin.x - area.origin.x) / area.size.width,
+            (src.origin.y - area.origin.y) / area.size.height,
+            src.size.width / area.size.width, src.size.height / area.size.height);
+        CGRect from = CGRectOffset(src, -frame.origin.x, -frame.origin.y);
+        // The part not on screen is left out of the picture, and of where it goes.
+        CGRect to = tiles[i].to;
+        double sx = to.size.width / tiles[i].from.size.width, sy = to.size.height / tiles[i].from.size.height;
+        to = CGRectMake(to.origin.x + (src.origin.x - tiles[i].from.origin.x) * sx - frame.origin.x,
+            to.origin.y + (src.origin.y - tiles[i].from.origin.y) * sy - frame.origin.y,
+            src.size.width * sx, src.size.height * sy);
+        glide(layer, from, to, duration);
+        [root addSublayer:layer];
+    }
+    commitChanges();
+    CGImageRelease(image);
+
+    placeWindow(frame, scale);
+    orderWindow(true);
+    settling = generation;
+    dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + hold) * NSEC_PER_SEC)),
+        DISPATCH_TIME_FOREVER, 0);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Lua API
 // ---------------------------------------------------------------------------
@@ -709,6 +807,44 @@ static int l_finish(lua_State *L) {
     return 0;
 }
 
+// retile{ frame = {x, y, w, h}, scale =, duration =, hold =, wallpaperAge =,
+// tiles = { { wid =, from = {x, y, w, h}, to = {...} }, ... } }: glides the
+// tiles' pictures from `from` to `to` over `frame`, then gets out of the
+// way. Waits for the capture (about 40ms) and puts the overlay up before
+// returning, so the windows beneath can move. True if it's up.
+static int l_retile(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getfield(L, 1, "frame");
+    CGRect frame = readRect(L, -1);
+    lua_pop(L, 1);
+    double scale = numberField(L, 1, "scale", 1);
+    double duration = numberField(L, 1, "duration", 0.2);
+    double hold = numberField(L, 1, "hold", 0.05);
+    wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
+    static Tile tiles[MAX_TILES];
+    int count = 0;
+    lua_getfield(L, 1, "tiles");
+    if (lua_type(L, -1) == LUA_TTABLE) {
+        lua_Integer n = luaL_len(L, -1);
+        for (lua_Integer i = 1; i <= n && count < MAX_TILES; i++) {
+            lua_rawgeti(L, -1, i);
+            uint32_t w = (uint32_t)numberField(L, -1, "wid", 0);
+            lua_getfield(L, -1, "from");
+            CGRect from = readRect(L, -1);
+            lua_getfield(L, -2, "to");
+            CGRect to = readRect(L, -1);
+            lua_pop(L, 3);
+            if (w && !CGRectIsEmpty(from) && !CGRectIsEmpty(to)) tiles[count++] = (Tile){ w, from, to };
+        }
+    }
+    lua_pop(L, 1);
+    __block bool up = false;
+    Tile *list = tiles;
+    if (!CGRectIsEmpty(frame) && count > 0) dispatch_sync(queue, ^{ up = retile(frame, scale, list, count, duration, hold); });
+    lua_pushboolean(L, up);
+    return 1;
+}
+
 static void releaseAll(void) {
     generation++;
     plane = nil;
@@ -764,6 +900,7 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
     if (!positionKey) {
         positionKey = [[NSString alloc] initWithUTF8String:"position"];
         slideKey = [[NSString alloc] initWithUTF8String:"slide"];
+        boundsKey = [[NSString alloc] initWithUTF8String:"bounds"];
     }
     if (SLSNewConnection(0, &cid) != kCGErrorSuccess) return luaL_error(L, "hyprspoon.native.slide: no WindowServer connection");
     queue = dispatch_queue_create("hyprspoon.slide",
@@ -799,6 +936,7 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         { "begin", l_begin },
         { "track", l_track },
         { "finish", l_finish },
+        { "retile", l_retile },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);

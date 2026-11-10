@@ -724,6 +724,39 @@ local function layOut(tree, rect)
     applyTree(tree, rect, {})
 end
 
+-- experimental.captureRetile: when the pass about to apply `tree` in
+-- `area` moves tiles on `screen`, pictures of them glide there instead of
+-- the windows easing; the options for applyTree then move the windows at
+-- once. nil to animate as usual.
+local function captureRetile(screen, tree, area, byID, full)
+    local duration = S.cfg.tiling.animationDuration or 0
+    if not (S.cfg.experimental or {}).captureRetile or duration <= 0 or S.dragState
+       or S.instantLayout or hs.mouse.getButtons().left then
+        return nil
+    end
+    applyTree(tree, area, {}, full)
+    local screenFrame = screen:frame()
+    local tiles, moved = {}, false
+    for _, leaf in ipairs(Tree.leaves(tree)) do
+        local win, to = byID[leaf.windowID], leaf.windowRect
+        if win and to then
+            local f = win:frame()
+            -- Only windows on show: a parked one has no picture to take.
+            if f:intersect(screenFrame).area > 0 then
+                if not framesMatch(f, to) then moved = true end
+                tiles[#tiles + 1] = {
+                    wid = leaf.windowID,
+                    from = { x = f.x, y = f.y, w = f.w, h = f.h },
+                    to = { x = to.x, y = to.y, w = to.w, h = to.h },
+                }
+            end
+        end
+    end
+    if not moved then return nil end
+    if not require("hyprspoon.slide").retile(screen, tiles, duration) then return nil end
+    return { duration = 0 }
+end
+
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
 -- flips only ever affect the layout of the window's own screen).
 local function tileNow(onlyIfChanged, onlyScreenUUID)
@@ -782,7 +815,8 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                     -- As scrolled to: new windows can move the view.
                     signatures[key] = base .. Scroll.signature(key)
                 else
-                    applyTree(tree, usableFrame, byID, full)
+                    applyTree(tree, usableFrame, byID, full,
+                        captureRetile(screen, tree, usableFrame, byID, full))
                 end
             end
         end
