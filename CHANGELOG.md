@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0 (2026-11-10)
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating:
+`slide.so` takes capture retiles and the animation curves, and `events.so`
+takes new windows being placed as WindowServer creates them.
+
+- New `animations`: how animations move, like Hyprland's `animation`
+  lines. Its top-level `curve` (`"spring"` or `"ease"`), spring (`mass`,
+  `stiffness`, `damping`) and `duration` set every kind at once, and
+  `workspaces`, `windows` and `fadeIn` each override them for their own.
+  `slide.mass`/`stiffness`/`damping` and `tiling.animationDuration` still
+  work beneath them. Workspace slides can now ease as well as spring.
+- New `experimental.captureRetile` (#19): retiles glide pictures of the
+  tiles, as Hyprland's windows do, with the windows moved at once beneath,
+  instead of easing each window through accessibility calls. One ~40ms
+  capture of the display's tiles, taken off the main thread, so keys are
+  never held up by it; keys pressed while a retile is still gliding carry
+  it on from where the tiles are, keeping their speed. A picture keeps its
+  size as its tile grows, a band of its edge mirrored and the rest
+  stretched, with its border ring drawn alongside; the windows are
+  captured again back to back as they glide (`refresh = "live"`), and once
+  settled the overlay fades to the real windows. New windows pop in at
+  their tiles (`popin`). Over a scratchpad, the workspace it covers shows
+  behind. Off by default.
+- A new window is placed as soon as WindowServer creates it, rather than
+  after the next coalesced retile, so it sits where its app opened it for
+  less time.
+- Closing a window that has no native tabs beside it closes the tiles up
+  straight away. The retile was held a fifth of a second for a tab swap's
+  new tab that never comes.
+
 ## 0.5.2 (2026-11-06)
 
 - Apps' short-lived helper windows are no longer tiled for a moment.

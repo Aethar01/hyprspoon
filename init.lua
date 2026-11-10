@@ -101,7 +101,7 @@ local Scroll = require("hyprspoon.scroll")
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
 local M = {
     name = "hyprspoon",
-    version = "0.5.2",
+    version = "0.6.0",
     author = "Aethar",
     homepage = "https://github.com/Aethar01/hyprspoon",
     license = "MIT - https://opensource.org/licenses/MIT",
