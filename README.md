@@ -145,7 +145,7 @@ kind. `fadeIn` follows `windows` before the top level.
 |---|---|
 | `animations.workspaces` | Workspace and scratchpad slides |
 | `animations.windows` | Retiles. Windows moved through accessibility always ease over `duration`; a spring moves the pictures of [`experimental.captureRetile`](#experimental-options) |
-| `animations.fadeIn` | With `experimental.captureRetile`: new windows fading in as they pop in, and fresh pictures of the windows fading over the old |
+| `animations.fadeIn` | With `experimental.captureRetile`: new windows fading in as they pop in, and the pictures fading to the real windows once settled |
 
 ```lua
 -- Everything on one spring, retiles over 0.2s:
@@ -455,7 +455,7 @@ may change or go before they graduate to options of their own.
 |---|---|---|
 | `experimental.borderMask` | `false` | Hide the parts of a ring that windows above its own cover; `true` for the defaults below, or a table |
 | `experimental.borderMask.drags` | `"mask"` | While a native drag preview is active: `"mask"` keeps the rings masked as windows move; `"show"` draws them on top, as without masks, and masks them again on drop |
-| `experimental.captureRetile` | `false` | Retiles glide pictures of the tiles, as Hyprland's windows do, with the windows moved at once beneath. A picture keeps its size, its edges stretched where the tile outgrows it, until the window has its new size and a fresh picture fades in; new windows pop in at their tiles. One ~40ms capture per retile; floating windows over the tiles hide until it's done. Moves as `animations.windows` and `animations.fadeIn` say. `true`, or a table: `popin = 0.8` (share of their size new windows grow from; `1` only fades), `hold = 0.05` (seconds the pictures stay after settling). A prototype (#19) |
+| `experimental.captureRetile` | `false` | Retiles glide pictures of the tiles, as Hyprland's windows do, with the windows moved at once beneath. A picture keeps its size, its edges stretched where the tile outgrows it, and once settled the overlay fades to the real windows; new windows pop in at their tiles. One ~40ms capture per retile; floating windows over the tiles hide until it's done. Moves as `animations.windows` and `animations.fadeIn` say. `true`, or a table: `popin = 0.8` (share of their size new windows grow from; `1` only fades), `hold = 0.05` (seconds the pictures stay after settling), `refresh = false` (capture the windows again mid-glide once resized; an app still redrawing shows as an extra jump). A prototype (#19) |
 
 Rings are drawn above every window, so without masks a ring shows over a
 float, a panel or Spotlight covering its window. With `borderMask`, each

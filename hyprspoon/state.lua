@@ -77,8 +77,8 @@ S.defaults = {
     --                      accessibility always ease; a spring moves the
     --                      pictures of experimental.captureRetile
     --   fadeIn = {}        with captureRetile: new windows fading in as
-    --                      they pop in, and fresh pictures of the windows
-    --                      fading over the old (default: as windows)
+    --                      they pop in, and the pictures fading to the
+    --                      real windows once settled (default: as windows)
     -- e.g. { curve = "spring", duration = 0.2 } springs everything, and
     -- { windows = { curve = "ease", duration = 0.15 } } only retiles.
     animations = {},
@@ -330,8 +330,8 @@ S.defaults = {
         -- accessibility moves: one capture of the display's tiles (about
         -- 40ms, before anything moves) over the wallpaper, while the
         -- windows move at once beneath. A picture keeps its size, its
-        -- edges stretched where its tile outgrows it, until the window has
-        -- its new size and a fresh picture fades in. New windows pop in at
+        -- edges stretched where its tile outgrows it, and once it settles
+        -- the overlay fades to the real windows. New windows pop in at
         -- their tiles. Not while dragging, nor in scrolling workspaces.
         -- Floating windows over the tiles are hidden until it's done.
         -- Moves as animations.windows and animations.fadeIn say; on while
@@ -339,6 +339,9 @@ S.defaults = {
         --   popin = 0.8   share of their size new windows grow from (1:
         --                 they only fade in)
         --   hold = 0.05   seconds the pictures stay after they settle
+        --   refresh = false  capture the windows again mid-glide once they
+        --                 have their new size, fading those in (an app
+        --                 still redrawing then shows as an extra jump)
         -- A prototype (#19); needs hyprspoon.native.slide and Screen
         -- Recording.
         captureRetile = false,

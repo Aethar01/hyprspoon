@@ -11,8 +11,9 @@
 --   workspaces  workspace and scratchpad slides (hyprspoon/slide.lua)
 --   windows     retiles: the window animations, and with
 --               experimental.captureRetile the pictures gliding
---   fadeIn      new windows fading in as they pop in, and windows' fresh
---               pictures fading over the old (experimental.captureRetile)
+--   fadeIn      new windows fading in as they pop in, and the pictures
+--               fading to the real windows once settled
+--               (experimental.captureRetile)
 
 local M = {}
 package.loaded["hyprspoon.anim"] = M

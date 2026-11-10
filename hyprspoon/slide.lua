@@ -212,6 +212,7 @@ function M.retile(screen, tiles, done)
         fade = Anim.get("fadeIn"),
         hold = retile.hold or 0.05,
         popin = retile.popin or 0.8,
+        refresh = retile.refresh == true,
         wallpaperAge = S.cfg.slide and S.cfg.slide.wallpaperRefresh or 0,
         beneath = beneath,
         tiles = tiles,

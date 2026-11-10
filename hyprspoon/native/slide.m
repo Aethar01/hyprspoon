@@ -349,6 +349,16 @@ typedef struct {
 
 static const Motion defaultMotion = { false, 0.2, 0.6, 800, 38 };
 
+// The retile on show (see Retiles below) while the overlay's generation is
+// retileGeneration: how its tiles move, and how new ones and its handover
+// fade. With `retileRefresh`, windows are captured again mid-glide once
+// they have their new size.
+static unsigned retileGeneration = 0;
+static Motion retileMove, retileFade;
+static bool retileRefresh = false;
+static bool fadingOut = false; // the overlay fading to the windows beneath
+static NSString *boundsKey = nil, *opacityKey = nil, *scaleKey = nil;
+
 // An animation of `key` from `from` to `to` as `m` moves, its duration how
 // long that takes. `velocity`, in distances to go per second, starts a
 // spring off.
@@ -508,10 +518,29 @@ static Motion slideMotion = { false, 0.2, 0.6, 800, 38 };
 static void finish(void *unused) {
     (void)unused;
     if (settling != generation) return;
+    // A retile hands over by fading to the windows beneath, in place by
+    // now: the stretched pictures turn into the real windows in one change.
+    if (shownCount > 0 && retileGeneration == generation && !fadingOut
+        && !(retileFade.ease && retileFade.duration <= 0)) {
+        fadingOut = true;
+        beginChanges();
+        CABasicAnimation *fade = animate(retileFade, opacityKey, @1.0, @0.0, 0);
+        root.opacity = 0;
+        [root addAnimation:fade forKey:opacityKey];
+        commitChanges();
+        dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(fade.duration * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER, 0);
+        return;
+    }
+    fadingOut = false;
     shownCount = 0;
     clearLayers();
     plane = nil;
     orderWindow(false);
+    beginChanges();
+    [root removeAnimationForKey:opacityKey];
+    root.opacity = 1;
+    commitChanges();
     // A stale wallpaper is taken again now, between slides.
     if (wallpaperMaxAge <= 0) return;
     for (int i = 0; i < wallpaperCount; i++) {
@@ -540,6 +569,10 @@ static bool build(Slide s, double progress) {
 
     travel = CGPointMake(s.toward.x * s.frame.size.width, s.toward.y * s.frame.size.height);
     beginChanges();
+    // Not faded, as a retile handing over leaves it.
+    fadingOut = false;
+    [root removeAnimationForKey:opacityKey];
+    root.opacity = 1;
     root.frame = (CGRect){ CGPointZero, s.frame.size };
     root.backgroundColor = NULL;
     if (s.backdrop) {
@@ -617,10 +650,13 @@ static void run(Slide s) {
 // Each tile is a box that moves and resizes on the spring, clipping its
 // picture, which stays at its own size: when the box outgrows it, the
 // picture's last column and row stretch out to fill (edge stretch), so the
-// window isn't scaled. Once the windows beneath have their new sizes, they
-// are captured again and those pictures fade in over the old ones (a
-// refresh), as the app's new frame would. New windows pop in at their
-// tiles, growing from `popin` of their size as they fade in.
+// window isn't scaled. Once it has settled, the overlay fades to the
+// windows beneath, in place by then. With `refresh`, windows that have their
+// new size are captured again mid-glide and fade in over the old pictures,
+// as Hyprland shows an app's new frame; off by default, since macOS doesn't
+// say when an app has finished drawing at its new size, and a picture taken
+// mid-redraw shows as an extra jump. New windows pop in at their tiles,
+// growing from `popin` of their size as they fade in.
 //
 // Tiles don't overlap, so one capture of them all (about 40ms, as for one
 // window) is cut into a picture of each: capturing each window on its own
@@ -647,7 +683,6 @@ typedef struct {
     CGFloat color[4], width, radius;
 } Tile;
 
-static NSString *boundsKey = nil, *opacityKey = nil, *scaleKey = nil;
 
 // The retile on show (while retileGeneration is the overlay's generation):
 // its tiles, the box each is drawn in, and whether that shows a picture of
@@ -656,9 +691,7 @@ static Tile shownTiles[MAX_TILES];
 static CALayer *boxes[MAX_TILES];
 static CALayer *rings[MAX_TILES]; // nil for a tile without one
 static bool live[MAX_TILES];
-static unsigned retileGeneration = 0;
 static CGRect retileFrame;
-static Motion retileMove, retileFade;
 static double popScale = 0.8, retileHold = 0.05;
 static double retileEnds = 0; // when it's taken down (CFAbsoluteTime)
 static int refreshes = 0;
@@ -930,7 +963,7 @@ static void popInNew(void *context) {
 
 static void refresh(void *unused) {
     (void)unused;
-    if (retileGeneration != generation || shownCount == 0) return;
+    if (retileGeneration != generation || shownCount == 0 || !retileRefresh) return;
     recapture(false);
     bool waiting = false;
     for (int i = 0; i < shownCount; i++) waiting |= !live[i];
@@ -1006,7 +1039,7 @@ static CGRect drawnFrame(CALayer *layer) {
 // succession merge into one motion. Only windows it hasn't got are
 // captured. False if there was nothing to show.
 static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion move, Motion fade, double hold,
-                   double pop, const uint32_t *under, int underCount) {
+                   double pop, bool refresh, const uint32_t *under, int underCount) {
     if (count <= 0 || count > MAX_TILES || (!wid && !makeWindow())) return false;
     bool carry = shown && retileGeneration == generation && shownCount > 0
         && CGRectEqualToRect(frame, retileFrame);
@@ -1033,13 +1066,19 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     retileMove = move;
     retileFade = fade;
     retileHold = hold;
+    retileRefresh = refresh;
     popScale = pop;
     refreshes = 0;
 
     double took = 0;
     CALayer *nextBoxes[MAX_TILES], *nextRings[MAX_TILES];
     bool used[MAX_TILES] = { false };
+    bool nextLive[MAX_TILES] = { false };
     beginChanges();
+    // Back from fading out, if it was handing over.
+    fadingOut = false;
+    [root removeAnimationForKey:opacityKey];
+    root.opacity = 1;
     if (!carry) {
         root.frame = (CGRect){ CGPointZero, frame.size };
         root.backgroundColor = NULL;
@@ -1062,6 +1101,8 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
         if (j >= 0) {
             used[j] = true;
             t->radius = shownTiles[j].radius;
+            // Its fresh picture still holds where its tile stays put.
+            nextLive[i] = live[j] && CGRectEqualToRect(shownTiles[j].to, t->to);
             box = boxes[j];
             ring = rings[j];
             // Where the last retile was taking them: the glides still
@@ -1132,15 +1173,17 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     for (int i = 0; i < count; i++) {
         boxes[i] = nextBoxes[i];
         rings[i] = nextRings[i];
-        live[i] = false;
+        live[i] = nextLive[i];
     }
 
     placeWindow(frame, scale);
     orderWindow(true);
-    endNoSooner(fmax(took, REFRESH_AFTER + 0.1) + hold);
+    endNoSooner((refresh ? fmax(took, REFRESH_AFTER + 0.1) : took) + hold);
     dispatch_async_f(queue, (void *)(uintptr_t)generation, popInNew);
-    dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(REFRESH_AFTER * NSEC_PER_SEC)),
-        DISPATCH_TIME_FOREVER, 0);
+    if (refresh) {
+        dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(REFRESH_AFTER * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER, 0);
+    }
     return true;
 }
 
@@ -1357,7 +1400,8 @@ static int l_finish(lua_State *L) {
 
 // retile{ frame = {x, y, w, h}, scale =, move = motion, fade = motion,
 // hold =, popin = (0.8: new tiles grow from that share of their size; 1
-// only fades them in), wallpaperAge =, beneath = {wid, ...} (over a
+// only fades them in), refresh = (capture windows again mid-glide once
+// they have their new size), wallpaperAge =, beneath = {wid, ...} (over a
 // scratchpad, the windows it covers: the backdrop over the wallpaper), (a motion as run() takes it: curve =, duration =,
 // mass =, stiffness =, damping =)
 // tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear =, ring = { color =
@@ -1381,6 +1425,9 @@ static int l_retile(lua_State *L) {
     lua_pop(L, 2);
     double hold = numberField(L, 1, "hold", 0.05);
     double pop = numberField(L, 1, "popin", 0.8);
+    lua_getfield(L, 1, "refresh");
+    bool refresh = lua_toboolean(L, -1);
+    lua_pop(L, 1);
     wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
     static Tile tiles[MAX_TILES];
     int count = 0;
@@ -1431,7 +1478,7 @@ static int l_retile(lua_State *L) {
     static int lastToken = 0;
     int token = ++lastToken;
     dispatch_async(queue, ^{
-        bool up = retile(frame, scale, list, count, move, fade, hold, pop, under, underCount);
+        bool up = retile(frame, scale, list, count, move, fade, hold, pop, refresh, under, underCount);
         free(list);
         postReady(token, up);
     });
