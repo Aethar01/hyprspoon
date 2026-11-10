@@ -649,8 +649,8 @@ static void run(Slide s) {
 //
 // Each tile is a box that moves and resizes on the spring, clipping its
 // picture, which stays at its own size: when the box outgrows it, the
-// picture's last column and row stretch out to fill (edge stretch), so the
-// window isn't scaled. Once it has settled, the overlay fades to the
+// window is mirrored at its edges to fill (see edgeExtended), so it isn't
+// scaled. Once it has settled, the overlay fades to the
 // windows beneath, in place by then. With `refresh`, windows that have their
 // new size are captured again mid-glide and fade in over the old pictures,
 // as Hyprland shows an app's new frame; off by default, since macOS doesn't
@@ -752,10 +752,34 @@ static double fadeIn(CALayer *layer, Motion m) {
     return fade.duration;
 }
 
+// A layer showing `image` stretched over `frame` (in its parent).
+static CALayer *imageLayer(CGImageRef image, CGRect frame, CATransform3D transform) {
+    CALayer *layer = [CALayer layer];
+    layer.bounds = (CGRect){ CGPointZero, frame.size };
+    layer.position = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+    layer.transform = transform;
+    layer.contents = (id)image;
+    return layer;
+}
+
+// Adds to `parent` a strip of `crop` (pixel rect `px`) stretched over `frame`.
+static void stripLayer(CALayer *parent, CGImageRef crop, CGRect px, CGRect frame) {
+    CGImageRef strip = CGImageCreateWithImageInRect(crop, px);
+    if (!strip) return;
+    [parent addSublayer:imageLayer(strip, frame, CATransform3DIdentity)];
+    CGImageRelease(strip);
+}
+
 // A picture of the part `src` (on screen) of `image`, which covers `area`,
-// at the top-left of its box, at its own size: its last column and row
-// stretch out past its right and bottom edges, for the box to clip.
-static CALayer *edgeStretched(CGImageRef image, CGRect area, CGRect src) {
+// at the top-left of its box, at its own size, the window's corners
+// `radius` round. Past its right and bottom edges, for the box to clip as
+// the tile grows: the window mirrored at that edge (a scroll bar or panel
+// there carries on), over a backing stretched from a column (row) just
+// inside its corners. The window's own corners are see-through, and a
+// strip of its last column stretched them into a band at the top and
+// bottom of the new area; there the mirror's corners show the backing.
+// Past the mirror, its far edge stretched.
+static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat radius) {
     double sx = CGImageGetWidth(image) / area.size.width, sy = CGImageGetHeight(image) / area.size.height;
     CGRect px = CGRectIntegral(CGRectMake((src.origin.x - area.origin.x) * sx, (src.origin.y - area.origin.y) * sy,
         src.size.width * sx, src.size.height * sy));
@@ -763,22 +787,25 @@ static CALayer *edgeStretched(CGImageRef image, CGRect area, CGRect src) {
     if (!crop) return nil;
     CGFloat w = CGImageGetWidth(crop), h = CGImageGetHeight(crop);
     CGFloat pw = src.size.width, ph = src.size.height, far = 1e4;
+    // Columns and rows clear of the rounded corners.
+    CGFloat ix = fmin(ceil(radius * sx) + 1, floor(w / 2)), iy = fmin(ceil(radius * sy) + 1, floor(h / 2));
     CALayer *pic = [CALayer layer];
     pic.anchorPoint = CGPointZero;
     pic.frame = CGRectMake(0, 0, pw, ph);
-    pic.contents = (id)crop;
-    // The right column, the bottom row and the corner pixel, stretched.
-    CGRect strips[3] = { { { w - 1, 0 }, { 1, h } }, { { 0, h - 1 }, { w, 1 } }, { { w - 1, h - 1 }, { 1, 1 } } };
-    CGRect places[3] = { { { pw, 0 }, { far, ph } }, { { 0, ph }, { pw, far } }, { { pw, ph }, { far, far } } };
-    for (int i = 0; i < 3; i++) {
-        CGImageRef strip = CGImageCreateWithImageInRect(crop, strips[i]);
-        if (!strip) continue;
-        CALayer *edge = [CALayer layer];
-        edge.frame = places[i];
-        edge.contents = (id)strip;
-        [pic addSublayer:edge];
-        CGImageRelease(strip);
-    }
+    // Backings, beneath everything past the edges.
+    stripLayer(pic, crop, CGRectMake(w - 1 - ix, 0, 1, h), CGRectMake(pw, 0, far, ph));
+    stripLayer(pic, crop, CGRectMake(0, h - 1 - iy, w, 1), CGRectMake(0, ph, pw, far));
+    stripLayer(pic, crop, CGRectMake(w - 1 - ix, h - 1 - iy, 1, 1), CGRectMake(pw, ph, far, far));
+    // Past the mirrors: their far edges (the window's left column and top
+    // row, inside its corners), stretched.
+    stripLayer(pic, crop, CGRectMake(ix, 0, 1, h), CGRectMake(2 * pw, 0, far, ph));
+    stripLayer(pic, crop, CGRectMake(0, iy, w, 1), CGRectMake(0, 2 * ph, pw, far));
+    // The mirrors: right, below, and both at the corner.
+    [pic addSublayer:imageLayer(crop, CGRectMake(pw, 0, pw, ph), CATransform3DMakeScale(-1, 1, 1))];
+    [pic addSublayer:imageLayer(crop, CGRectMake(0, ph, pw, ph), CATransform3DMakeScale(1, -1, 1))];
+    [pic addSublayer:imageLayer(crop, CGRectMake(pw, ph, pw, ph), CATransform3DMakeScale(-1, -1, 1))];
+    // The window itself, on top.
+    [pic addSublayer:imageLayer(crop, CGRectMake(0, 0, pw, ph), CATransform3DIdentity)];
     CGImageRelease(crop);
     return pic;
 }
@@ -861,7 +888,7 @@ static void styleRing(CALayer *ring, const Tile *t) {
 // How long that takes.
 static double showPicture(int i, CGImageRef image, CGRect area, CGRect b) {
     CALayer *box = boxes[i];
-    CALayer *pic = edgeStretched(image, area, b);
+    CALayer *pic = edgeExtended(image, area, b, shownTiles[i].radius);
     if (!pic) return 0;
     double took = 0;
     if (box.sublayers.count == 0) {
@@ -1147,7 +1174,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
                 placeHidden(box, ring, to, w);
             } else {
                 CGRect src = image ? CGRectIntersection(t->from, area) : CGRectNull;
-                CALayer *pic = CGRectIsNull(src) || CGRectIsEmpty(src) ? nil : edgeStretched(image, area, src);
+                CALayer *pic = CGRectIsNull(src) || CGRectIsEmpty(src) ? nil : edgeExtended(image, area, src, t->radius);
                 if (pic) [box addSublayer:pic];
                 CGRect from = pic ? CGRectOffset(src, -frame.origin.x, -frame.origin.y) : to;
                 box.anchorPoint = CGPointZero;
