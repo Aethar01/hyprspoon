@@ -1634,13 +1634,16 @@ static void liftDown(void) {
 
 // A drop that changes nothing: the picture goes back to `to`, the frame
 // its window had as the drag began (parked till then: dragUnpark), growing
-// back to its size on the way, as `m` moves. Our window covers both
-// frames meanwhile, the picture moving inside it.
+// back to its size and opaque on the way, as `m` moves: once there it looks
+// just as the window will, so the window comes back under it unseen (still
+// see-through, the desktop behind it would vanish at once). Our window
+// covers both frames meanwhile, the picture moving inside it.
 static void liftHome(CGRect to, Motion m) {
     if (!liftShown || !liftBox) return;
     CALayer *box = liftBox;
     CALayer *drawn = (CALayer *)box.presentationLayer ?: box;
     NSNumber *scale = [drawn valueForKeyPath:@"transform.scale"] ?: @(liftScale);
+    NSNumber *opacity = @(drawn.opacity);
     CGRect from = liftPlaced;
     CGRect area = CGRectIntegral(CGRectUnion(from, to));
     CGPoint a = CGPointMake(CGRectGetMidX(from) - area.origin.x, CGRectGetMidY(from) - area.origin.y);
@@ -1654,7 +1657,11 @@ static void liftHome(CGRect to, Motion m) {
     beginChanges();
     box.position = b;
     box.transform = CATransform3DIdentity;
+    box.opacity = 1;
     if (m.duration > 0 || !m.ease) {
+        // Eased, not on the spring: an overshoot past opaque means nothing.
+        Motion clear = { true, liftDuration > 0 ? fmax(liftDuration, m.ease ? m.duration * 0.8 : 0.15) : 0, 0, 0, 0 };
+        if (clear.duration > 0) [box addAnimation:animate(clear, opacityKey, opacity, @1.0, 0) forKey:opacityKey];
         [box addAnimation:animate(m, positionKey, [NSValue valueWithBytes:&a objCType:@encode(CGPoint)],
             [NSValue valueWithBytes:&b objCType:@encode(CGPoint)], 0) forKey:positionKey];
         [box addAnimation:animate(m, scaleKey, scale, @1.0, 0) forKey:scaleKey];
