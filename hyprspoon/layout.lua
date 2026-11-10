@@ -939,19 +939,43 @@ local function scheduleRetile(force, immediate, delay)
 end
 
 -- The Space showing changed: the filter has caught up with every window.
--- WindowServer created window `id` (hyprspoon.native.events). The window
--- filter usually takes a new window in as allowed a moment before, which
--- a Space switch does too, so its retile waits behind the usual delay: a
--- window of ours that's just been created, and can't be a native tab, is
--- placed now instead of sitting where the app opened it. Any window being
--- created (menus, tooltips) lands here, so only a pending retile looks.
+-- Windows WindowServer has just created (hyprspoon.native.events), of ours
+-- and not maybe native tabs: id -> { pid =, at = }. Discovery tiles a new
+-- window only once the native-tab snapshot shows it, and the window filter
+-- takes it in as allowed, as a Space switch does too: both retile behind
+-- the usual delay, while the window sits where the app opened it.
+local justCreated = {}
+local CREATED_FOR = 1
+
+local function flushRetile()
+    if not (retileTimer and retilePending) then return end
+    retileTimer:stop()
+    retileTimer = nil
+    retileFlush()
+end
+
+-- Any window being created (menus, tooltips) lands here, so only a pending
+-- retile looks it up.
 local function windowCreated(id)
     if not (retileTimer and retilePending) then return end
     local win = Util.windowFor(id)
     if not win or mayBeTab(win) then return end
-    retileTimer:stop()
-    retileTimer = nil
-    retileFlush()
+    justCreated[id] = { pid = win:pid(), at = hs.timer.secondsSinceEpoch() }
+    flushRetile()
+end
+
+-- The native-tab snapshot changed (`snapshot`: pid -> { id -> state }) and
+-- asked for a retile: done now if it shows a window just created.
+local function snapshotChanged(snapshot)
+    local now, shown = hs.timer.secondsSinceEpoch(), false
+    for id, c in pairs(justCreated) do
+        if now - c.at > CREATED_FOR then
+            justCreated[id] = nil
+        elseif snapshot[c.pid] and snapshot[c.pid][id] == "shown" then
+            justCreated[id], shown = nil, true
+        end
+    end
+    if shown then flushRetile() end
 end
 
 local function spaceChanged()
@@ -1129,6 +1153,7 @@ M.BSP_TAB_SETTLE = BSP_TAB_SETTLE
 M.BSP_SETTLE = BSP_SETTLE
 M.scheduleRetile = scheduleRetile
 M.windowCreated = windowCreated
+M.snapshotChanged = snapshotChanged
 M.scheduleRecheck = scheduleRecheck
 M.spaceChanged = spaceChanged
 M.holdForSpaceMove = holdForSpaceMove
