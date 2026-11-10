@@ -176,27 +176,45 @@ function M.endPan(commit, velocity)
     if commit then panShownUntil = hs.timer.secondsSinceEpoch() + 0.5 end
 end
 
+-- Retiles asked for, by token: called once their overlay is up (or not).
+local pending = {}
+local readyHooked = nil
+
+local function ready(token, up)
+    local done = pending[token]
+    pending[token] = nil
+    if done then done(up) end
+end
+
 -- A retile on `screen` (experimental.captureRetile): `tiles` is a list of
--- { wid =, from = rect, to = rect, appear = }, gliding (and new ones
--- growing) as animations.windows says, fading as animations.fadeIn does. Call
--- before the windows move: it waits for the capture. True if pictures
--- cover the retile, so the windows can move at once.
-function M.retile(screen, tiles)
+-- { wid =, from = rect, to = rect, appear =, ring = }, gliding (and new
+-- ones growing) as animations.windows says, fading as animations.fadeIn
+-- does. Returns at once, true if asked for: the capture runs off the main
+-- thread, and `done(up)` is called once pictures cover the windows (`up`)
+-- or can't, for the windows to move then. A retile still on show is
+-- carried on from where its tiles are drawn.
+function M.retile(screen, tiles, done)
     local mod = native or Util.native("slide")
-    if not mod or not mod.retile or not screen or #tiles == 0 then return false end
+    if not mod or not mod.retile or not mod.onReady or not screen or #tiles == 0 then return false end
+    if readyHooked ~= mod then
+        mod.onReady(ready)
+        readyHooked = mod
+    end
     local mode = screen:currentMode()
-    return mod.retile({
+    local retile = type(S.cfg.experimental.captureRetile) == "table" and S.cfg.experimental.captureRetile or {}
+    local token = mod.retile({
         frame = rect(screen:frame()),
         scale = mode and mode.scale or 1,
         move = Anim.get("windows"),
         fade = Anim.get("fadeIn"),
-        hold = type(S.cfg.experimental.captureRetile) == "table"
-            and S.cfg.experimental.captureRetile.hold or 0.05,
-        popin = type(S.cfg.experimental.captureRetile) == "table"
-            and S.cfg.experimental.captureRetile.popin or 0.8,
+        hold = retile.hold or 0.05,
+        popin = retile.popin or 0.8,
         wallpaperAge = S.cfg.slide and S.cfg.slide.wallpaperRefresh or 0,
         tiles = tiles,
-    }) == true
+    })
+    if not token then return false end
+    pending[token] = done
+    return true
 end
 
 -- Workspace `n` is gone: its picture with it.

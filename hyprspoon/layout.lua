@@ -730,21 +730,33 @@ end
 -- gliding from where it opened.
 local captureTiled = {}
 
+-- Per workspace, the latest pass (a counter), so only its windows move once
+-- its pictures are up, and when its retile was asked for: while one may
+-- still be on show, every pass goes to it, so its tiles glide on to where
+-- this one puts them even if the windows themselves are there already.
+local retileSerial, retileAt = {}, {}
+local RETILE_SHOWN_FOR = 0.6
+
 -- experimental.captureRetile: when the pass about to apply `tree` in
 -- `area` moves tiles on `screen`, pictures of them glide there instead of
--- the windows easing; the options for applyTree then move the windows at
--- once. nil to animate as usual.
+-- the windows easing. The capture runs off the main thread; the windows
+-- move at once when it's done, unless a later pass has come since. True
+-- if it took the pass over; false to apply it as usual.
 local function captureRetile(key, screen, tree, area, byID, full)
     local before = captureTiled[key]
     captureTiled[key] = {}
     for id in pairs(byID) do captureTiled[key][id] = true end
+    -- Any pass supersedes the ones still waiting for their pictures.
+    local serial = (retileSerial[key] or 0) + 1
+    retileSerial[key] = serial
     if not (S.cfg.experimental or {}).captureRetile or Anim.windowDuration() <= 0 or S.dragState
        or S.instantLayout or hs.mouse.getButtons().left then
-        return nil
+        return false
     end
     applyTree(tree, area, {}, full)
     local screenFrame = screen:frame()
-    local tiles, moved = {}, false
+    local now = hs.timer.secondsSinceEpoch()
+    local tiles, moved = {}, now - (retileAt[key] or 0) < RETILE_SHOWN_FOR
     for _, leaf in ipairs(Tree.leaves(tree)) do
         local win, to = byID[leaf.windowID], leaf.windowRect
         if win and to then
@@ -765,9 +777,18 @@ local function captureRetile(key, screen, tree, area, byID, full)
             end
         end
     end
-    if not moved then return nil end
-    if not require("hyprspoon.slide").retile(screen, tiles) then return nil end
-    return { duration = 0 }
+    if not moved then return false end
+    local started = require("hyprspoon.slide").retile(screen, tiles, function(up)
+        if retileSerial[key] ~= serial then return end
+        local was = S.applyingLayout
+        S.applyingLayout = true
+        local ok, err = xpcall(applyTree, debug.traceback, tree, area, byID, full,
+            up and { duration = 0 } or nil)
+        S.applyingLayout = was
+        if not ok then print("hyprspoon: retile failed: " .. tostring(err)) end
+    end)
+    if started then retileAt[key] = now end
+    return started
 end
 
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
@@ -827,9 +848,8 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                     Scroll.arrange(key, tree, usableFrame, screen, byID, full)
                     -- As scrolled to: new windows can move the view.
                     signatures[key] = base .. Scroll.signature(key)
-                else
-                    applyTree(tree, usableFrame, byID, full,
-                        captureRetile(key, screen, tree, usableFrame, byID, full))
+                elseif not captureRetile(key, screen, tree, usableFrame, byID, full) then
+                    applyTree(tree, usableFrame, byID, full)
                 end
             end
         end
