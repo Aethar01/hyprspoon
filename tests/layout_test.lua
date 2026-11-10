@@ -372,6 +372,38 @@ test("a new native tab in a set joins it beside the tab it covers", function()
     wins[5].pid = function() return 5 end
 end)
 
+test("cycleLayout and setLayout switch the focused workspace's layout, retile and save it", function()
+    package.loaded["hyprspoon.resize"] = package.loaded["hyprspoon.resize"] or {}
+    local Actions = require("hyprspoon.actions")
+    local Scroll = require("hyprspoon.scroll")
+    local Focus = package.loaded["hyprspoon.focus"]
+    local alerts, back = {}, 0
+    hs.alert = { show = function(text) alerts[#alerts + 1] = text end }
+    local bringBack = Scroll.bringBack
+    Scroll.bringBack = function(key) back = back + 1; assert(key == "ws1") end
+    package.loaded["hyprspoon.spaces"].label = function(n) return tostring(n) end
+    S.trees.ws1, S.layouts = split(leaf(1), leaf(2)), {}
+    Focus.currentWindow = function() return wins[1] end
+    local tiles, saves = 0, #timers
+    local tileNow = Layout.tileNow
+    Layout.tileNow = function(...) tiles = tiles + 1 end
+
+    Actions.cycleLayout()
+    assert(S.layouts.ws1 == "scrolling" and Scroll.enabled("ws1") and not Scroll.enabled("ws2"))
+    assert(tiles == 1 and back == 0 and #timers > saves, "retiled, and a save is waiting")
+    assert(alerts[#alerts] == "Workspace 1 layout: scrolling")
+    Actions.cycleLayout()
+    assert(S.layouts.ws1 == "bsp" and not Scroll.enabled("ws1"))
+    assert(tiles == 2 and back == 1, "columns out of sight are brought back")
+    Actions.setLayout("scrolling")
+    Actions.setLayout("scroll")
+    assert(S.layouts.ws1 == "scrolling" and tiles == 3, "the same layout again changes nothing")
+    assert(not pcall(Actions.setLayout, "spiral") and S.layouts.ws1 == "scrolling")
+
+    Layout.tileNow, Scroll.bringBack = tileNow, bringBack
+    S.layouts = {}
+end)
+
 test("groupNext, groupPrev, moveOutOfGroup and moveGroupMember go to the focused set's kind", function()
     package.loaded["hyprspoon.resize"] = {}
     local Focus = package.loaded["hyprspoon.focus"]

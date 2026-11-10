@@ -6,6 +6,7 @@ package.loaded["hyprspoon.hooks"] = M
 local S = require("hyprspoon.state")
 local Spaces = require("hyprspoon.spaces")
 local Focus = require("hyprspoon.focus")
+local Layouts = require("hyprspoon.layouts")
 
 -- ---------------------------------------------------------------------------
 -- What has focus
@@ -166,8 +167,9 @@ end
 --               first, then left to right
 --   workspaces  { name, number = what gotoWorkspace takes, display = UUID
 --               it's on, showing (also beneath a scratchpad), focused,
---               scratchpad, windows = ids, tiles first }, in use only, in
---               the order the menu bar shows them
+--               scratchpad, layout = "bsp" or "scrolling" (what
+--               cycleLayout goes through), windows = ids, tiles first },
+--               in use only, in the order the menu bar shows them
 --   windows     { id, app, title, workspace = name, floating, hidden =
 --               parked or beneath a scratchpad, focused }, those with a
 --               workspace and in the current Space's managed-window filter
@@ -203,6 +205,7 @@ function M.query()
             showing = ws.showing == true,
             focused = ws.n == focusedN,
             scratchpad = Spaces.isScratchpad(ws.n),
+            layout = Layouts.of("ws" .. ws.n),
             windows = ids,
         }
     end

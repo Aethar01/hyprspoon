@@ -26,6 +26,7 @@ local UNTILED_KEY = "hyprspoon.untiled"
 local FILLED_KEY = "hyprspoon.filled"
 local PSEUDO_AWAY_KEY = "hyprspoon.pseudoAway"
 local SETS_AWAY_KEY = "hyprspoon.setsAway"
+local LAYOUTS_KEY = "hyprspoon.layouts"
 local bootTime = tonumber(
     (hs.execute("/usr/sbin/sysctl -n kern.boottime") or ""):match("sec = (%d+)")) or 0
 
@@ -47,6 +48,9 @@ S.untiled = {}
 -- going to another workspace or full screen) leaves it here, window id ->
 -- size, for the leaf it gets when it goes back in.
 S.pseudoAway = {}
+-- Tree key -> the layout chosen for that workspace while running
+-- (hyprspoon/layouts.lua), kept with its tree.
+S.layouts = {}
 
 -- ---------------------------------------------------------------------------
 -- Tiles holding several windows
@@ -101,6 +105,7 @@ do
         S.maximized = hs.settings.get(MAXIMIZED_KEY) or {}
         S.untiled = hs.settings.get(UNTILED_KEY) or {}
         S.filled = hs.settings.get(FILLED_KEY) or {}
+        S.layouts = hs.settings.get(LAYOUTS_KEY) or {}
         for id, size in pairs(hs.settings.get(PSEUDO_AWAY_KEY) or {}) do
             S.pseudoAway[tonumber(id)] = size
         end
@@ -267,8 +272,10 @@ local function saveTreesNow()
         end
     end
     table.sort(setsAway, function(a, b) return a.windowID < b.windowID end)
+    local layouts = {}
+    for key, name in pairs(S.layouts) do layouts[key] = name end
     local encoded = hs.json.encode({ trees = out, maximized = maximized, untiled = untiled,
-        filled = filled, pseudoAway = pseudoAway, setsAway = setsAway })
+        filled = filled, pseudoAway = pseudoAway, setsAway = setsAway, layouts = layouts })
     if encoded == savedTrees then return end
     savedTrees = encoded
     hs.settings.set(TREES_KEY, out)
@@ -277,6 +284,7 @@ local function saveTreesNow()
     hs.settings.set(FILLED_KEY, filled)
     hs.settings.set(PSEUDO_AWAY_KEY, pseudoAway)
     hs.settings.set(SETS_AWAY_KEY, setsAway)
+    hs.settings.set(LAYOUTS_KEY, layouts)
     hs.settings.set(TREES_BOOT_KEY, bootTime)
 end
 
