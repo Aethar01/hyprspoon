@@ -14,6 +14,10 @@
   focused workspace's layout while running. The choice is kept with the
   workspace, over reloads, and wins over `layout` and `workspaces`.
 - `query()` gives each workspace's `layout`.
+- New `mouse.dragEffect` (#26, a prototype, off by default): a modifier-drag
+  move drags a shrunk, see-through capture of the window, like Hyprland's.
+  A drop that changes nothing glides it back to the tile. Needs Screen
+  Recording permission; rebuild the native modules (`slide.so`, `frames.so`).
 
 ## 0.6.0 (2026-11-10)
 

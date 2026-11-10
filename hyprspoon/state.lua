@@ -29,6 +29,18 @@ S.defaults = {
         move = {"alt"},          -- + left-drag: move (drops into tiling layout)
         resize = {"alt", "cmd"}, -- + left-drag: resize
         rightResize = {"alt"},   -- + right-drag: resize
+        -- A move drags a slightly shrunk, see-through picture of the window,
+        -- like Hyprland's (a prototype, #26): { scale = 0.95, opacity = 0.8,
+        -- duration = 0.15 }, true for those, or false. macOS ignores alpha
+        -- on other apps' windows, so it's a capture (about 40ms): the drag
+        -- starts with the window itself and the picture takes over once
+        -- it's up, the window parked out of sight meanwhile. Its contents
+        -- are as they were when the drag began; `duration` is seconds to
+        -- shrink and fade, and to fade over the window on drop. Moves only:
+        -- resizes drag the window. Needs hyprspoon.native.frames and
+        -- hyprspoon.native.slide (make -C hyprspoon/native) and Screen
+        -- Recording permission; without them drags are as with false.
+        dragEffect = false,
     },
 
     -- Workspace numbers: 1..alwaysShow (even when empty) and any other in

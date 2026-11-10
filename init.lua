@@ -61,7 +61,8 @@
 --             a background queue per app; focus without waiting for the
 --             app; liveIDs() returns all WindowServer IDs, on any Space, as
 --             { [id] = true }, or nil if the query fails
---   slide     the workspace slides, animated by WindowServer
+--   slide     the workspace slides, animated by WindowServer, and the
+--             pictures moved by modifier-drags with mouse.dragEffect
 --
 -- Modules require each other freely (cycles are harmless: each registers
 -- itself in package.loaded before requiring anything) and call each other

@@ -186,6 +186,16 @@ Modifiers held while dragging anywhere on a window, as lists of
 | `mouse.move` | `{"alt"}` | Left-drag to move (dropping into the tiling layout) |
 | `mouse.resize` | `{"alt", "cmd"}` | Left-drag to resize |
 | `mouse.rightResize` | `{"alt"}` | Right-drag to resize |
+| `mouse.dragEffect` | `false` | Prototype: a move drags a shrunk, see-through picture of the window, like Hyprland's: `{ scale = 0.95, opacity = 0.8, duration = 0.15 }`, or `true` for those (see below) |
+
+With `mouse.dragEffect`, the window being moved is a capture of it, shrunk
+to `scale` and faded to `opacity` over `duration` seconds, since macOS
+ignores alpha on other apps' windows. The drag starts with the window
+itself and the picture takes over once it's up (a capture takes about
+40ms), the window parked out of sight until the drop. Its contents don't
+update while it's dragged. Resizes always drag the window. It needs
+`hyprspoon.native.frames`, `hyprspoon.native.slide` and Screen Recording
+permission; without any of them drags work as before.
 
 ### Workspaces
 

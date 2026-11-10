@@ -165,6 +165,17 @@ local function cancelDrag()
     dropState = nil
 end
 
+-- Whether dropping the dragged tile at `point` leaves the layout as it
+-- was (finishDrag's retile would only snap it back to its tile).
+local function wouldStay(point)
+    local state = dropState
+    if not state or not S.tilingEnabled then return false end
+    if dropTarget(state.targets, point) then return false end
+    if state.member then return true end
+    local dropScreen = screenAt(point)
+    return not dropScreen or Tree.keyForScreen(dropScreen) == state.key
+end
+
 -- Returns true when the drop was handled by the tiling layout.
 local function finishDrag(win, point)
     preview(nil)
@@ -220,5 +231,6 @@ M.beginDrag = beginDrag
 M.updateDrag = updateDrag
 M.cancelDrag = cancelDrag
 M.finishDrag = finishDrag
+M.wouldStay = wouldStay
 
 return M

@@ -11,6 +11,7 @@ local Drop = require("hyprspoon.drop")
 local Border = require("hyprspoon.border")
 local Discover = require("hyprspoon.discover")
 local Spaces = require("hyprspoon.spaces")
+local Slide = require("hyprspoon.slide")
 
 -- ---------------------------------------------------------------------------
 -- Mouse: modifier + drag anywhere on a window
@@ -62,11 +63,24 @@ local function beginMouseDrag(mode, point)
 
     -- hyprspoon.native.frames follows the pointer from here, off the main thread;
     -- the drags below are then never seen here.
+    -- A picture still on its way back from the last drop: its window is
+    -- sent home by this drag's begin.
+    Slide.cancelHome()
     local frames = Util.native("frames")
     -- Not Hammerspoon's own windows: see Util.setFrame.
     if frames and win:pid() ~= (hs.processInfo and hs.processInfo.processID) then
         local f = S.dragState.frame
         local xBranch, yBranch = Resize.resizeBranches()
+        -- mouse.dragEffect: a move drags a shrunk, see-through picture of
+        -- the window once it's up, the window parked where a window on
+        -- another workspace waits.
+        local lift, liftScale, park = nil, nil, nil
+        if mode == "move" then
+            lift, liftScale = Slide.lifter()
+            local uuid = lift and screen and screen:getUUID()
+            park = uuid and Spaces.parkPoint(uuid, f) or nil
+            if not park then lift = nil end
+        end
         S.dragState.native = frames.dragBegin({
             pid = win:pid(),
             wid = win:id(),
@@ -82,7 +96,11 @@ local function beginMouseDrag(mode, point)
             -- fast as it can.
             preview = Border.previewer(),
             interval = S.dragState.interval,
+            lift = lift,
+            liftScale = liftScale,
+            park = park and { x = park.x, y = park.y } or nil,
         })
+        S.dragState.lifted = S.dragState.native and lift ~= nil or nil
         -- The window's own reports of each frame would only keep the main
         -- thread busy mid-drag; it's looked at once when the drag ends.
         if S.dragState.native and S.running.events then S.running.events.mute(win:id()) end
@@ -171,9 +189,14 @@ function onMouseEvent(event)
             or eventType == mouseTypes.rightMouseUp) then
         local win = S.dragState.win
         local mode = S.dragState.mode
+        local lifted = S.dragState.lifted
+        local home = nil
         if S.dragState.native then
-            -- Waits for the app to take the last frame.
-            Util.native("frames").dragEnd(point.x, point.y)
+            -- Waits for the app to take the last frame (a window parked for
+            -- its picture is given it too). A drop that changes nothing
+            -- leaves it parked instead, while its picture goes back.
+            local stays = lifted and mode == "move" and win ~= nil and Drop.wouldStay(point)
+            home = select(2, Util.native("frames").dragEnd(point.x, point.y, stays))
             if S.running.events then S.running.events.mute(nil) end
         else
             if S.dragState.trailing then S.dragState.trailing:stop() end
@@ -181,11 +204,36 @@ function onMouseEvent(event)
         end
         S.dragState = nil
         followInLua(false)
+        if home then
+            -- The picture glides back to the tile and grows back to its
+            -- size; only then does the window come back under it, and the
+            -- picture fades. Nothing flashes where it was dropped. The drop
+            -- (a retile that leaves it be) waits for it too.
+            Drop.preview(nil)
+            Slide.home(home, function()
+                local frames = Util.native("frames")
+                if frames and frames.dragUnpark then frames.dragUnpark() end
+                S.windowInfo[win:id()], S.applied[win:id()] = nil, nil
+                -- At once: WindowServer may still have it parked, and a
+                -- captureRetile would glide it in from there over the
+                -- whole display.
+                local was = S.instantLayout
+                S.instantLayout = true
+                Drop.finishDrag(win, point)
+                S.instantLayout = was
+                Slide.land()
+            end)
+            return true
+        end
         if mode == "move" and win then
             -- Its own move reports were muted (or taken for ours) during the
             -- drag, so which display it's on is looked up afresh.
             S.windowInfo[win:id()], S.applied[win:id()] = nil, nil
-            if Drop.finishDrag(win, point) then return true end
+            if Drop.finishDrag(win, point) then
+                -- The picture fades once the window is in its place.
+                if lifted then Slide.land() end
+                return true
+            end
         end
         if mode == "resize" and Resize.finishResize() then
             return true
@@ -199,6 +247,7 @@ function onMouseEvent(event)
                 if info.uuid and not info.full then Spaces.claim(win, info.uuid) end
             end
         end
+        if lifted then Slide.land() end
         return true
     end
 
