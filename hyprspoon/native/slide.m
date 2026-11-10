@@ -2099,9 +2099,11 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         SLSReleaseConnection(captureCid);
         return luaL_error(L, "hyprspoon.native.slide: no WindowServer connection");
     }
-    liftQueue = dispatch_queue_create("hyprspoon.slide.lift",
-        dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
-    dispatch_set_target_queue(liftQueue, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
+    // The QoS goes in the attributes: retargeting a queue that autoreleases
+    // per work item at a global queue traps in libdispatch (macOS 27).
+    liftQueue = dispatch_queue_create("hyprspoon.slide.lift", dispatch_queue_attr_make_with_qos_class(
+        dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM),
+        QOS_CLASS_USER_INTERACTIVE, 0));
     liftDrainPort = MACH_PORT_NULL;
     if (SLSGetEventPort(liftCid, &liftDrainPort) == kCGErrorSuccess && liftDrainPort != MACH_PORT_NULL) {
         liftDrain = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, liftDrainPort, 0, liftQueue);
