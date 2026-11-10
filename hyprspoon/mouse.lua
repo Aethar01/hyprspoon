@@ -214,7 +214,13 @@ function onMouseEvent(event)
                 local frames = Util.native("frames")
                 if frames and frames.dragUnpark then frames.dragUnpark() end
                 S.windowInfo[win:id()], S.applied[win:id()] = nil, nil
+                -- At once: WindowServer may still have it parked, and a
+                -- captureRetile would glide it in from there over the
+                -- whole display.
+                local was = S.instantLayout
+                S.instantLayout = true
                 Drop.finishDrag(win, point)
+                S.instantLayout = was
                 Slide.land()
             end)
             return true
