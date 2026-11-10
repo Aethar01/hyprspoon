@@ -749,6 +749,7 @@ function M:start(opts)
             end
         else
             Layout.scheduleRetile(false, true)
+            if event == hs.window.filter.windowDestroyed then Layout.windowGone(win) end
         end
         Layout.scheduleRecheck()
     end)

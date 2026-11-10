@@ -986,6 +986,18 @@ local function windowCreated(id)
     flushRetile()
 end
 
+-- Window `win` was destroyed. Its first event, leaving the Space, held the
+-- retile back for a tab swap's new tab, and later requests never bring it
+-- forward: a window with no tabs beside it has none coming, so the tiles
+-- left close up now instead of a fifth of a second later.
+local function windowGone(win)
+    if not win then return end
+    local id = win:id()
+    local set = id and Tree.setOf(id)
+    if (set and #set.members > 1) or Discover.nativePeer(win) then return end
+    flushRetile()
+end
+
 -- The native-tab snapshot changed (`snapshot`: pid -> { id -> state }) and
 -- asked for a retile: done now if it shows a window just created.
 local function snapshotChanged(snapshot)
@@ -1176,6 +1188,7 @@ M.BSP_SETTLE = BSP_SETTLE
 M.scheduleRetile = scheduleRetile
 M.windowCreated = windowCreated
 M.snapshotChanged = snapshotChanged
+M.windowGone = windowGone
 M.scheduleRecheck = scheduleRecheck
 M.spaceChanged = spaceChanged
 M.holdForSpaceMove = holdForSpaceMove
