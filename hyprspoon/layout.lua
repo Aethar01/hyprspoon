@@ -725,8 +725,8 @@ local function layOut(tree, rect)
 end
 
 -- Per workspace, the windows its last pass tiled (experimental.captureRetile):
--- one not among them is new there, and pops in rather than gliding from
--- where it opened.
+-- one not among them is new there, and fades in at its tile rather than
+-- gliding from where it opened.
 local captureTiled = {}
 
 -- experimental.captureRetile: when the pass about to apply `tree` in

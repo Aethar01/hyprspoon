@@ -574,13 +574,10 @@ static void run(Slide s) {
 typedef struct {
     uint32_t wid;
     CGRect from, to;
-    bool appear; // new to the layout: pops in at `to` instead of gliding
+    bool appear; // new to the layout: fades in at `to`, not captured
 } Tile;
 
-static NSString *boundsKey = nil, *opacityKey = nil, *scaleKey = nil;
-
-// How small a new tile's picture starts as it pops in (Hyprland's popin).
-#define APPEAR_SCALE 0.85
+static NSString *boundsKey = nil, *opacityKey = nil;
 
 // A layer from `from` to `to` over `duration`, eased out; `from` and `to`
 // relative to the overlay.
@@ -604,36 +601,52 @@ static void glide(CALayer *layer, CGRect from, CGRect to, double duration) {
     [layer addAnimation:group forKey:slideKey];
 }
 
-// A layer that pops in at `to` over `duration`: grows from APPEAR_SCALE
-// about its middle as it fades in.
-static void appear(CALayer *layer, CGRect to, double duration) {
-    layer.anchorPoint = CGPointMake(0.5, 0.5);
-    layer.position = CGPointMake(CGRectGetMidX(to), CGRectGetMidY(to));
-    layer.bounds = (CGRect){ CGPointZero, to.size };
-    if (duration <= 0) return;
-    CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:opacityKey];
-    fade.fromValue = @0.0;
-    fade.toValue = @1.0;
-    CABasicAnimation *grow = [CABasicAnimation animationWithKeyPath:scaleKey];
-    grow.fromValue = @(APPEAR_SCALE);
-    grow.toValue = @1.0;
-    CAAnimationGroup *group = [CAAnimationGroup animation];
-    group.animations = @[ fade, grow ];
-    group.duration = duration;
-    group.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
-    [layer addAnimation:group forKey:slideKey];
+// A patch of the backdrop over `to`, a new tile's place: it fades away over
+// `duration`, slowly at first, so the window itself (moved there at once,
+// beneath the overlay) fades in once it has had time to get there.
+static CALayer *revealLayer(Shot *wall, CGRect frame, CGRect to, double duration) {
+    CALayer *layer = [CALayer layer];
+    layer.frame = to;
+    if (wall) {
+        CGRect b = wall->bounds;
+        CGRect at = CGRectOffset(to, frame.origin.x, frame.origin.y);
+        layer.contents = (id)wall->image;
+        layer.contentsRect = CGRectMake((at.origin.x - b.origin.x) / b.size.width,
+            (at.origin.y - b.origin.y) / b.size.height, at.size.width / b.size.width, at.size.height / b.size.height);
+    } else {
+        layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+    }
+    layer.opacity = 0;
+    if (duration > 0) {
+        CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:opacityKey];
+        fade.fromValue = @1.0;
+        fade.toValue = @0.0;
+        fade.duration = duration;
+        fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseIn];
+        [layer addAnimation:fade forKey:slideKey];
+    }
+    return layer;
 }
 
 // Puts the tiles' pictures up where they are and glides them to where
 // they go over `duration`, then takes them down `hold` seconds later (the
 // apps redrawing at their new sizes). False if there was nothing to take.
+//
+// A new tile (`appear`) isn't in the capture: it opened over the others,
+// so it would be in their pictures (black, mid-way through macOS's own
+// opening animation), and has nothing worth showing of its own yet. Its
+// place is a hole in the overlay, covered by a patch of the backdrop that
+// fades away, so the window itself fades in there.
 static bool retile(CGRect frame, double scale, Tile *tiles, int count, double duration, double hold) {
     if (count <= 0 || (!wid && !makeWindow())) return false;
     uint32_t wids[MAX_TILES];
-    for (int i = 0; i < count; i++) wids[i] = tiles[i].wid;
-    CGRect area;
-    CGImageRef image = capture(wids, count, &area);
-    if (!image) return false;
+    int captured = 0;
+    for (int i = 0; i < count; i++) {
+        if (!tiles[i].appear) wids[captured++] = tiles[i].wid;
+    }
+    CGRect area = CGRectNull;
+    CGImageRef image = captured ? capture(wids, captured, &area) : NULL;
+    if (captured && !image) return false;
     generation++;
     clearLayers();
     plane = nil;
@@ -643,12 +656,38 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, double du
     CGRect display = displayHolding(frame);
     Shot *wall = wallpaperFor(display);
     if (!wall) wall = takeWallpaper(display);
+    CALayer *backdrop = [CALayer layer];
+    backdrop.frame = root.bounds;
     if (wall) {
-        [root addSublayer:pictureLayer(wall, frame, CGPointZero)];
+        [backdrop addSublayer:pictureLayer(wall, frame, CGPointZero)];
     } else {
-        root.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+        backdrop.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
     }
+    // Holes where new tiles go: the backdrop is drawn everywhere else.
+    CGMutablePathRef holes = CGPathCreateMutable();
+    CGPathAddRect(holes, NULL, backdrop.bounds);
+    bool anyHole = false;
     for (int i = 0; i < count; i++) {
+        if (!tiles[i].appear) continue;
+        CGPathAddRect(holes, NULL, CGRectOffset(tiles[i].to, -frame.origin.x, -frame.origin.y));
+        anyHole = true;
+    }
+    if (anyHole) {
+        CAShapeLayer *mask = [CAShapeLayer layer];
+        mask.frame = backdrop.bounds;
+        mask.path = holes;
+        mask.fillRule = kCAFillRuleEvenOdd;
+        backdrop.mask = mask;
+    }
+    CGPathRelease(holes);
+    [root addSublayer:backdrop];
+    for (int i = 0; i < count; i++) {
+        if (!tiles[i].appear) continue;
+        CGRect to = CGRectOffset(tiles[i].to, -frame.origin.x, -frame.origin.y);
+        [root addSublayer:revealLayer(wall, frame, to, duration)];
+    }
+    for (int i = 0; i < count && image; i++) {
+        if (tiles[i].appear) continue;
         CGRect src = CGRectIntersection(tiles[i].from, area);
         if (CGRectIsNull(src) || CGRectIsEmpty(src)) continue;
         CALayer *layer = [CALayer layer];
@@ -664,15 +703,11 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, double du
         to = CGRectMake(to.origin.x + (src.origin.x - tiles[i].from.origin.x) * sx - frame.origin.x,
             to.origin.y + (src.origin.y - tiles[i].from.origin.y) * sy - frame.origin.y,
             src.size.width * sx, src.size.height * sy);
-        if (tiles[i].appear) {
-            appear(layer, to, duration);
-        } else {
-            glide(layer, from, to, duration);
-        }
+        glide(layer, from, to, duration);
         [root addSublayer:layer];
     }
     commitChanges();
-    CGImageRelease(image);
+    if (image) CGImageRelease(image);
 
     placeWindow(frame, scale);
     orderWindow(true);
@@ -837,7 +872,7 @@ static int l_finish(lua_State *L) {
 
 // retile{ frame = {x, y, w, h}, scale =, duration =, hold =, wallpaperAge =,
 // tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear = }, ... } }:
-// glides the tiles' pictures from `from` to `to` (or pops those that
+// glides the tiles' pictures from `from` to `to` (and fades those that
 // `appear` in at `to`) over `frame`, then gets out of the
 // way. Waits for the capture (about 40ms) and puts the overlay up before
 // returning, so the windows beneath can move. True if it's up.
@@ -934,7 +969,6 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         slideKey = [[NSString alloc] initWithUTF8String:"slide"];
         boundsKey = [[NSString alloc] initWithUTF8String:"bounds"];
         opacityKey = [[NSString alloc] initWithUTF8String:"opacity"];
-        scaleKey = [[NSString alloc] initWithUTF8String:"transform.scale"];
     }
     if (SLSNewConnection(0, &cid) != kCGErrorSuccess) return luaL_error(L, "hyprspoon.native.slide: no WindowServer connection");
     queue = dispatch_queue_create("hyprspoon.slide",
