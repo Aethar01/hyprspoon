@@ -9,6 +9,7 @@ local Tree = require("hyprspoon.tree")
 local Float = require("hyprspoon.float")
 local Focus = require("hyprspoon.focus")
 local Layout = require("hyprspoon.layout")
+local Anim = require("hyprspoon.anim")
 local Resize = require("hyprspoon.resize")
 local Spaces = require("hyprspoon.spaces")
 local Scroll = require("hyprspoon.scroll")
@@ -80,13 +81,13 @@ function M.toggleMaximize(fill)
     local before = unmaximizedFrames[id]
     if before and at(full) then
         unmaximizedFrames[id] = nil
-        Util.setFrame(win, before, S.cfg.tiling.animationDuration)
+        Util.setFrame(win, before, Anim.windowDuration())
     else
         -- Switching from the other kind keeps the frame to go back to.
         if not (before and at(other)) then
             unmaximizedFrames[id] = { x = f.x, y = f.y, w = f.w, h = f.h }
         end
-        Util.setFrame(win, full, S.cfg.tiling.animationDuration)
+        Util.setFrame(win, full, Anim.windowDuration())
     end
 end
 
@@ -259,7 +260,7 @@ function M.swap(direction)
     else
         local a = win:frame()
         local b = other:frame()
-        local duration = S.cfg.tiling.animationDuration
+        local duration = Anim.windowDuration()
         Util.setFrame(other, a, duration)
         Util.setFrame(win, b, duration)
     end
@@ -307,7 +308,7 @@ function M.move(direction)
             Util.warpToWindow(win)
             return
         end
-        Util.setFrame(win, f, S.cfg.tiling.animationDuration)
+        Util.setFrame(win, f, Anim.windowDuration())
         return
     end
 

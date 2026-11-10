@@ -17,6 +17,7 @@ local Restore = require("hyprspoon.restore")
 local Hooks = require("hyprspoon.hooks")
 local Groupbar = require("hyprspoon.groupbar")
 local Scroll = require("hyprspoon.scroll")
+local Anim = require("hyprspoon.anim")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -656,7 +657,7 @@ local function applyTree(node, rect, byID, full, opts)
             -- setFrame is size, position, size; one call is enough when only
             -- one of them changes. Only setFrame animates. hyprspoon.native.frames
             -- makes the same choice itself, off the main thread.
-            local duration = opts and opts.duration or S.cfg.tiling.animationDuration
+            local duration = opts and opts.duration or Anim.windowDuration()
             if S.dragState or S.instantLayout or hs.mouse.getButtons().left then duration = 0 end
             if opts and opts.dx and duration > 0 then
                 moved = true
@@ -737,8 +738,7 @@ local function captureRetile(key, screen, tree, area, byID, full)
     local before = captureTiled[key]
     captureTiled[key] = {}
     for id in pairs(byID) do captureTiled[key][id] = true end
-    local duration = S.cfg.tiling.animationDuration or 0
-    if not (S.cfg.experimental or {}).captureRetile or duration <= 0 or S.dragState
+    if not (S.cfg.experimental or {}).captureRetile or Anim.windowDuration() <= 0 or S.dragState
        or S.instantLayout or hs.mouse.getButtons().left then
         return nil
     end
@@ -764,7 +764,7 @@ local function captureRetile(key, screen, tree, area, byID, full)
         end
     end
     if not moved then return nil end
-    if not require("hyprspoon.slide").retile(screen, tiles, duration) then return nil end
+    if not require("hyprspoon.slide").retile(screen, tiles) then return nil end
     return { duration = 0 }
 end
 
@@ -847,7 +847,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
         Float.raiseFloating()
         -- Each animation step fires windowMoved too.
         S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
-            + (S.instantLayout and 0 or S.cfg.tiling.animationDuration)
+            + (S.instantLayout and 0 or Anim.windowDuration())
         Focus.invalidateWindowCache()
     end
     Groupbar.update()
@@ -1107,8 +1107,8 @@ local function toggleWorkspaceTiling(key)
         local win, frame = Util.winByID[id], S.floatingFrames[id]
         S.floatingFrames[id], S.applied[id] = nil, nil
         if frame and win and win:id() == id and not Spaces.isHidden(id) then
-            S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE + S.cfg.tiling.animationDuration
-            Util.setFrame(win, frame, S.cfg.tiling.animationDuration)
+            S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE + Anim.windowDuration()
+            Util.setFrame(win, frame, Anim.windowDuration())
         end
     end
     Tree.saveTrees()

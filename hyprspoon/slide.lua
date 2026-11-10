@@ -24,6 +24,7 @@ package.loaded["hyprspoon.slide"] = M
 
 local S = require("hyprspoon.state")
 local Util = require("hyprspoon.util")
+local Anim = require("hyprspoon.anim")
 
 -- The native module, loaded by M.start(); false if unavailable or off.
 local native = false
@@ -72,13 +73,13 @@ local function current(n, ids, screen)
     return k ~= nil and k.ids == signature(ids) and k.uuid == screen:getUUID()
 end
 
--- The slide over `screen`'s usable area, with the configured spring.
+-- The slide over `screen`'s usable area, moving as animations.workspaces says.
 local function slide(screen, t)
     local cfg = S.cfg.slide
     local mode = screen:currentMode()
     t.frame = rect(screen:frame())
     t.scale = mode and mode.scale or 1
-    t.mass, t.stiffness, t.damping = cfg.mass, cfg.stiffness, cfg.damping
+    for k, v in pairs(Anim.get("workspaces")) do t[k] = v end
     t.wallpaperAge = cfg.wallpaperRefresh or 0
     return t
 end
@@ -176,18 +177,21 @@ function M.endPan(commit, velocity)
 end
 
 -- A retile on `screen` (experimental.captureRetile): `tiles` is a list of
--- { wid =, from = rect, to = rect }. Call before the windows move: it waits
--- for the capture. True if pictures cover the retile, so the windows can
--- move at once.
-function M.retile(screen, tiles, duration)
+-- { wid =, from = rect, to = rect, appear = }, gliding as
+-- animations.windows says and appearing as animations.fadeIn does. Call
+-- before the windows move: it waits for the capture. True if pictures
+-- cover the retile, so the windows can move at once.
+function M.retile(screen, tiles)
     local mod = native or Util.native("slide")
     if not mod or not mod.retile or not screen or #tiles == 0 then return false end
     local mode = screen:currentMode()
     return mod.retile({
         frame = rect(screen:frame()),
         scale = mode and mode.scale or 1,
-        duration = duration,
-        hold = 0.05,
+        move = Anim.get("windows"),
+        fade = Anim.get("fadeIn"),
+        hold = type(S.cfg.experimental.captureRetile) == "table"
+            and S.cfg.experimental.captureRetile.hold or 0.05,
         wallpaperAge = S.cfg.slide and S.cfg.slide.wallpaperRefresh or 0,
         tiles = tiles,
     }) == true

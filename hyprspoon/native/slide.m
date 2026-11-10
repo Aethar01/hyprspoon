@@ -319,6 +319,39 @@ static unsigned generation = 0; // which slide the ordering-out belongs to
 
 static NSString *positionKey = nil, *slideKey = nil;
 
+// How something moves (the `animations` option): on a spring (Hyprland's
+// mass, stiffness and dampening), or eased over `duration` seconds,
+// quad-out like the windows' own animations.
+typedef struct {
+    bool ease;
+    double duration, mass, stiffness, damping;
+} Motion;
+
+static const Motion defaultMotion = { false, 0.2, 0.6, 800, 38 };
+
+// An animation of `key` from `from` to `to` as `m` moves, its duration how
+// long that takes. `velocity`, in distances to go per second, starts a
+// spring off.
+static CABasicAnimation *animate(Motion m, NSString *key, id from, id to, double velocity) {
+    CABasicAnimation *a;
+    if (m.ease) {
+        a = [CABasicAnimation animationWithKeyPath:key];
+        a.duration = m.duration;
+        a.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0.25f :0.46f :0.45f :0.94f];
+    } else {
+        CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:key];
+        spring.mass = m.mass;
+        spring.stiffness = m.stiffness;
+        spring.damping = m.damping;
+        spring.initialVelocity = velocity;
+        spring.duration = spring.settlingDuration;
+        a = spring;
+    }
+    a.fromValue = from;
+    a.toValue = to;
+    return a;
+}
+
 static void beginChanges(void) {
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
@@ -443,14 +476,14 @@ typedef struct {
     int still;      // a picture that stays put beneath them (0 for none)
     CGPoint toward; // unit direction the arriving one comes from, e.g. (1, 0): the right
     bool backdrop;  // over the wallpaper, hiding the windows beneath
-    double mass, stiffness, damping;
+    Motion motion;
 } Slide;
 
 // The plane both pictures ride (root holds it; nil between slides), how
-// far it travels, and the spring that moves it.
+// far it travels, and how it moves.
 static CALayer *plane = nil;
 static CGPoint travel = { 0, 0 };
-static double springMass = 1, springStiffness = 800, springDamping = 50;
+static Motion slideMotion = { false, 0.2, 0.6, 800, 38 };
 
 static void finish(void *unused) {
     (void)unused;
@@ -482,9 +515,7 @@ static bool build(Slide s, double progress) {
         orderWindow(false);
         return false;
     }
-    springMass = s.mass;
-    springStiffness = s.stiffness;
-    springDamping = s.damping;
+    slideMotion = s.motion;
 
     travel = CGPointMake(s.toward.x * s.frame.size.width, s.toward.y * s.frame.size.height);
     beginChanges();
@@ -534,17 +565,13 @@ static void settle(double to, double velocity) {
     [plane removeAllAnimations];
     plane.position = end;
     if (distance >= 1 && length > 0) {
-        CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:positionKey];
-        spring.mass = springMass;
-        spring.stiffness = springStiffness;
-        spring.damping = springDamping;
-        // In distances to go per second, as CoreAnimation takes it.
-        spring.initialVelocity = velocity * length / distance;
-        spring.fromValue = [NSValue valueWithBytes:&from objCType:@encode(CGPoint)];
-        spring.toValue = [NSValue valueWithBytes:&end objCType:@encode(CGPoint)];
-        spring.duration = spring.settlingDuration;
-        [plane addAnimation:spring forKey:slideKey];
-        duration = spring.duration;
+        // The velocity in distances to go per second, as CoreAnimation
+        // takes it (an eased slide starts as it would from rest).
+        CABasicAnimation *a = animate(slideMotion, positionKey,
+            [NSValue valueWithBytes:&from objCType:@encode(CGPoint)],
+            [NSValue valueWithBytes:&end objCType:@encode(CGPoint)], velocity * length / distance);
+        [plane addAnimation:a forKey:slideKey];
+        duration = a.duration;
     }
     commitChanges();
     settling = generation;
@@ -581,30 +608,26 @@ static NSString *boundsKey = nil, *opacityKey = nil;
 
 // A layer from `from` to `to` over `duration`, eased out; `from` and `to`
 // relative to the overlay.
-static void glide(CALayer *layer, CGRect from, CGRect to, double duration) {
+static double glide(CALayer *layer, CGRect from, CGRect to, Motion m) {
     layer.anchorPoint = CGPointZero;
     layer.position = to.origin;
     layer.bounds = (CGRect){ CGPointZero, to.size };
-    if (duration <= 0) return;
-    CAMediaTimingFunction *ease = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
-    CABasicAnimation *move = [CABasicAnimation animationWithKeyPath:positionKey];
-    move.fromValue = [NSValue valueWithBytes:&from.origin objCType:@encode(CGPoint)];
-    move.toValue = [NSValue valueWithBytes:&to.origin objCType:@encode(CGPoint)];
+    if (m.ease && m.duration <= 0) return 0;
+    CABasicAnimation *move = animate(m, positionKey, [NSValue valueWithBytes:&from.origin objCType:@encode(CGPoint)],
+        [NSValue valueWithBytes:&to.origin objCType:@encode(CGPoint)], 0);
     CGRect fromBounds = { CGPointZero, from.size }, toBounds = { CGPointZero, to.size };
-    CABasicAnimation *size = [CABasicAnimation animationWithKeyPath:boundsKey];
-    size.fromValue = [NSValue valueWithBytes:&fromBounds objCType:@encode(CGRect)];
-    size.toValue = [NSValue valueWithBytes:&toBounds objCType:@encode(CGRect)];
-    CAAnimationGroup *group = [CAAnimationGroup animation];
-    group.animations = @[ move, size ];
-    group.duration = duration;
-    group.timingFunction = ease;
-    [layer addAnimation:group forKey:slideKey];
+    CABasicAnimation *size = animate(m, boundsKey, [NSValue valueWithBytes:&fromBounds objCType:@encode(CGRect)],
+        [NSValue valueWithBytes:&toBounds objCType:@encode(CGRect)], 0);
+    [layer addAnimation:move forKey:positionKey];
+    [layer addAnimation:size forKey:boundsKey];
+    return move.duration;
 }
 
-// A patch of the backdrop over `to`, a new tile's place: it fades away over
-// `duration`, slowly at first, so the window itself (moved there at once,
-// beneath the overlay) fades in once it has had time to get there.
-static CALayer *revealLayer(Shot *wall, CGRect frame, CGRect to, double duration) {
+// A patch of the backdrop over `to`, a new tile's place: it fades away as
+// `m` moves (eased, slowly at first: quad-in, so the window itself, moved
+// there at once beneath the overlay, has had time to get there), adding
+// how long that takes to `*took`.
+static CALayer *revealLayer(Shot *wall, CGRect frame, CGRect to, Motion m, double *took) {
     CALayer *layer = [CALayer layer];
     layer.frame = to;
     if (wall) {
@@ -617,27 +640,27 @@ static CALayer *revealLayer(Shot *wall, CGRect frame, CGRect to, double duration
         layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
     }
     layer.opacity = 0;
-    if (duration > 0) {
-        CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:opacityKey];
-        fade.fromValue = @1.0;
-        fade.toValue = @0.0;
-        fade.duration = duration;
-        fade.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseIn];
+    if (!m.ease || m.duration > 0) {
+        CABasicAnimation *fade = animate(m, opacityKey, @1.0, @0.0, 0);
+        if (m.ease) fade.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0.55f :0.085f :0.68f :0.53f];
         [layer addAnimation:fade forKey:slideKey];
+        *took = fmax(*took, fade.duration);
     }
     return layer;
 }
 
 // Puts the tiles' pictures up where they are and glides them to where
-// they go over `duration`, then takes them down `hold` seconds later (the
-// apps redrawing at their new sizes). False if there was nothing to take.
+// they go as `move` moves, then takes them down `hold` seconds after the
+// last has settled (the apps redrawing at their new sizes). New tiles fade
+// in as `fade` moves. False if there was nothing to take.
 //
 // A new tile (`appear`) isn't in the capture: it opened over the others,
 // so it would be in their pictures (black, mid-way through macOS's own
 // opening animation), and has nothing worth showing of its own yet. Its
 // place is a hole in the overlay, covered by a patch of the backdrop that
 // fades away, so the window itself fades in there.
-static bool retile(CGRect frame, double scale, Tile *tiles, int count, double duration, double hold) {
+static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion move, Motion fade, double hold) {
+    double took = 0;
     if (count <= 0 || (!wid && !makeWindow())) return false;
     uint32_t wids[MAX_TILES];
     int captured = 0;
@@ -684,7 +707,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, double du
     for (int i = 0; i < count; i++) {
         if (!tiles[i].appear) continue;
         CGRect to = CGRectOffset(tiles[i].to, -frame.origin.x, -frame.origin.y);
-        [root addSublayer:revealLayer(wall, frame, to, duration)];
+        [root addSublayer:revealLayer(wall, frame, to, fade, &took)];
     }
     for (int i = 0; i < count && image; i++) {
         if (tiles[i].appear) continue;
@@ -703,7 +726,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, double du
         to = CGRectMake(to.origin.x + (src.origin.x - tiles[i].from.origin.x) * sx - frame.origin.x,
             to.origin.y + (src.origin.y - tiles[i].from.origin.y) * sy - frame.origin.y,
             src.size.width * sx, src.size.height * sy);
-        glide(layer, from, to, duration);
+        took = fmax(took, glide(layer, from, to, move));
         [root addSublayer:layer];
     }
     commitChanges();
@@ -712,7 +735,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, double du
     placeWindow(frame, scale);
     orderWindow(true);
     settling = generation;
-    dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)((duration + hold) * NSEC_PER_SEC)),
+    dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)((took + hold) * NSEC_PER_SEC)),
         DISPATCH_TIME_FOREVER, 0);
     return true;
 }
@@ -798,6 +821,22 @@ static int l_wallpaper(lua_State *L) {
     return 0;
 }
 
+// The motion in the table at `index` (curve = "spring" or "ease",
+// duration =, mass =, stiffness =, damping =), `fallback` for what it leaves out.
+static Motion readMotion(lua_State *L, int index, Motion fallback) {
+    Motion m = fallback;
+    if (lua_type(L, index) != LUA_TTABLE) return m;
+    index = lua_absindex(L, index);
+    lua_getfield(L, index, "curve");
+    if (lua_type(L, -1) == LUA_TSTRING) m.ease = strcmp(lua_tostring(L, -1), "ease") == 0;
+    lua_pop(L, 1);
+    m.duration = numberField(L, index, "duration", m.duration);
+    m.mass = numberField(L, index, "mass", m.mass);
+    m.stiffness = numberField(L, index, "stiffness", m.stiffness);
+    m.damping = numberField(L, index, "damping", m.damping);
+    return m;
+}
+
 // A slide as run() and begin() take it.
 static Slide readSlide(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -813,15 +852,14 @@ static Slide readSlide(lua_State *L) {
     lua_getfield(L, 1, "backdrop");
     s.backdrop = lua_toboolean(L, -1);
     lua_pop(L, 1);
-    s.mass = numberField(L, 1, "mass", 1);
-    s.stiffness = numberField(L, 1, "stiffness", 800);
-    s.damping = numberField(L, 1, "damping", 50);
+    s.motion = readMotion(L, 1, defaultMotion);
     wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
     return s;
 }
 
 // run{ frame = {x, y, w, h}, scale =, out = key, into = key, still = key,
-// dx =, dy =, backdrop =, mass =, stiffness =, damping =, wallpaperAge = }:
+// dx =, dy =, backdrop =, curve =, duration =, mass =, stiffness =,
+// damping =, wallpaperAge = }:
 // slides `out` away and `into` in from the side (dx, dy) over `frame`,
 // above `still`, then gets out of the way. The window is up before this
 // returns, so the windows beneath can move.
@@ -870,7 +908,9 @@ static int l_finish(lua_State *L) {
     return 0;
 }
 
-// retile{ frame = {x, y, w, h}, scale =, duration =, hold =, wallpaperAge =,
+// retile{ frame = {x, y, w, h}, scale =, move = motion, fade = motion,
+// hold =, wallpaperAge =, (a motion as run() takes it: curve =, duration =,
+// mass =, stiffness =, damping =)
 // tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear = }, ... } }:
 // glides the tiles' pictures from `from` to `to` (and fades those that
 // `appear` in at `to`) over `frame`, then gets out of the
@@ -882,7 +922,11 @@ static int l_retile(lua_State *L) {
     CGRect frame = readRect(L, -1);
     lua_pop(L, 1);
     double scale = numberField(L, 1, "scale", 1);
-    double duration = numberField(L, 1, "duration", 0.2);
+    lua_getfield(L, 1, "move");
+    Motion move = readMotion(L, -1, defaultMotion);
+    lua_getfield(L, 1, "fade");
+    Motion fade = readMotion(L, -1, move);
+    lua_pop(L, 2);
     double hold = numberField(L, 1, "hold", 0.05);
     wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
     static Tile tiles[MAX_TILES];
@@ -907,7 +951,7 @@ static int l_retile(lua_State *L) {
     lua_pop(L, 1);
     __block bool up = false;
     Tile *list = tiles;
-    if (!CGRectIsEmpty(frame) && count > 0) dispatch_sync(queue, ^{ up = retile(frame, scale, list, count, duration, hold); });
+    if (!CGRectIsEmpty(frame) && count > 0) dispatch_sync(queue, ^{ up = retile(frame, scale, list, count, move, fade, hold); });
     lua_pushboolean(L, up);
     return 1;
 }

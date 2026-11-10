@@ -62,9 +62,29 @@ S.defaults = {
     -- (Hyprland's special_scale_factor).
     scratchpadScale = 0.95,
 
-    -- Workspaces slide in and out as they switch, like Hyprland's, on a
-    -- spring (Hyprland's mass, stiffness and dampening). Set to false to
-    -- switch without. Needs hyprspoon.native.slide (make -C hyprspoon/native) and Screen
+    -- How animations move, like Hyprland's `animation` lines. These fields
+    -- set every kind; a kind's own table overrides them for it:
+    --   curve = "spring"   or "ease" (quad-out over `duration`)
+    --   mass, stiffness, damping   the spring (Hyprland's dampening)
+    --   duration           seconds an eased animation takes. Windows
+    --                      animate only while theirs is above 0
+    --                      (tiling.animationDuration by default)
+    -- The kinds:
+    --   workspaces = {}    workspace and scratchpad slides (default: the
+    --                      spring below, mass 0.6, stiffness 800, damping 38)
+    --   windows = {}       retiles (default: ease over
+    --                      tiling.animationDuration). Windows moved through
+    --                      accessibility always ease; a spring moves the
+    --                      pictures of experimental.captureRetile
+    --   fadeIn = {}        new windows fading in with captureRetile
+    --                      (default: as windows)
+    -- e.g. { curve = "spring", duration = 0.2 } springs everything, and
+    -- { windows = { curve = "ease", duration = 0.15 } } only retiles.
+    animations = {},
+
+    -- Workspaces slide in and out as they switch, like Hyprland's, moving
+    -- as animations.workspaces says (mass, stiffness and damping here are
+    -- its spring when that doesn't set one). Set to false to switch without. Needs hyprspoon.native.slide (make -C hyprspoon/native) and Screen
     -- Recording permission; costs one ~40ms capture per switch.
     slide = {
         mass = 0.6,
@@ -216,6 +236,7 @@ S.defaults = {
         minRatio = 0.20, -- how far a split can be dragged towards either side
         maxRatio = 0.80,
         -- Seconds to animate retiles over; 0 snaps. Mouse drags always snap.
+        -- animations.windows.duration (or animations.duration) overrides it.
         animationDuration = 0,
         -- Drag-and-drop landing highlight.
         dropColor = { red = 0.35, green = 0.6, blue = 1 },
@@ -309,8 +330,11 @@ S.defaults = {
         -- 40ms, before anything moves) over the wallpaper, while the
         -- windows move at once beneath. Not while dragging, nor in
         -- scrolling workspaces. Floating windows over the tiles are hidden
-        -- until it's done. Uses tiling.animationDuration. A prototype
-        -- (#19); needs hyprspoon.native.slide and Screen Recording.
+        -- until it's done. Moves as animations.windows and
+        -- animations.fadeIn say; on while windows animate. true, or a
+        -- table: hold = 0.05 (seconds the pictures stay after they settle,
+        -- while apps redraw at their new sizes). A prototype (#19); needs
+        -- hyprspoon.native.slide and Screen Recording.
         captureRetile = false,
     },
 }
