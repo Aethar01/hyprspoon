@@ -770,15 +770,34 @@ static void stripLayer(CALayer *parent, CGImageRef crop, CGRect px, CGRect frame
     CGImageRelease(strip);
 }
 
+// `crop` (a window, `pw` x `ph` points, `ix` x `iy` pixels clear of its
+// rounded corners at each edge) as a layer over `frame` with `transform`,
+// its see-through corners filled from the window just beside them: patches
+// beneath it, so a corner shows the window's own edge, not what's behind.
+static CALayer *squared(CGImageRef crop, CGFloat ix, CGFloat iy, CGFloat pw, CGFloat ph, CGRect frame,
+                        CATransform3D transform) {
+    CGFloat w = CGImageGetWidth(crop), h = CGImageGetHeight(crop);
+    CGFloat cw = ix * pw / w, ch = iy * ph / h; // a corner, in points
+    CALayer *layer = [CALayer layer];
+    layer.bounds = (CGRect){ CGPointZero, frame.size };
+    layer.position = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+    layer.transform = transform;
+    // Each corner from the pixels across from it, towards the middle.
+    CGRect from[4] = { { { ix, 0 }, { ix, iy } }, { { w - 2 * ix, 0 }, { ix, iy } },
+        { { ix, h - iy }, { ix, iy } }, { { w - 2 * ix, h - iy }, { ix, iy } } };
+    CGRect to[4] = { { { 0, 0 }, { cw, ch } }, { { pw - cw, 0 }, { cw, ch } },
+        { { 0, ph - ch }, { cw, ch } }, { { pw - cw, ph - ch }, { cw, ch } } };
+    for (int i = 0; i < 4; i++) stripLayer(layer, crop, from[i], to[i]);
+    [layer addSublayer:imageLayer(crop, CGRectMake(0, 0, pw, ph), CATransform3DIdentity)];
+    return layer;
+}
+
 // A picture of the part `src` (on screen) of `image`, which covers `area`,
 // at the top-left of its box, at its own size, the window's corners
-// `radius` round. Past its right and bottom edges, for the box to clip as
-// the tile grows: the window mirrored at that edge (a scroll bar or panel
-// there carries on), over a backing stretched from a column (row) just
-// inside its corners. The window's own corners are see-through, and a
-// strip of its last column stretched them into a band at the top and
-// bottom of the new area; there the mirror's corners show the backing.
-// Past the mirror, its far edge stretched.
+// `radius` round and filled in (see squared). Past its right and bottom
+// edges, for the box to clip as the tile grows: the window mirrored at that
+// edge, so a scroll bar or panel there carries on, and past the mirror its
+// far edge stretched.
 static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat radius) {
     double sx = CGImageGetWidth(image) / area.size.width, sy = CGImageGetHeight(image) / area.size.height;
     CGRect px = CGRectIntegral(CGRectMake((src.origin.x - area.origin.x) * sx, (src.origin.y - area.origin.y) * sy,
@@ -788,24 +807,23 @@ static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat 
     CGFloat w = CGImageGetWidth(crop), h = CGImageGetHeight(crop);
     CGFloat pw = src.size.width, ph = src.size.height, far = 1e4;
     // Columns and rows clear of the rounded corners.
-    CGFloat ix = fmin(ceil(radius * sx) + 1, floor(w / 2)), iy = fmin(ceil(radius * sy) + 1, floor(h / 2));
+    CGFloat ix = fmin(ceil(radius * sx) + 1, floor(w / 3)), iy = fmin(ceil(radius * sy) + 1, floor(h / 3));
     CALayer *pic = [CALayer layer];
     pic.anchorPoint = CGPointZero;
     pic.frame = CGRectMake(0, 0, pw, ph);
-    // Backings, beneath everything past the edges.
-    stripLayer(pic, crop, CGRectMake(w - 1 - ix, 0, 1, h), CGRectMake(pw, 0, far, ph));
-    stripLayer(pic, crop, CGRectMake(0, h - 1 - iy, w, 1), CGRectMake(0, ph, pw, far));
-    stripLayer(pic, crop, CGRectMake(w - 1 - ix, h - 1 - iy, 1, 1), CGRectMake(pw, ph, far, far));
     // Past the mirrors: their far edges (the window's left column and top
     // row, inside its corners), stretched.
     stripLayer(pic, crop, CGRectMake(ix, 0, 1, h), CGRectMake(2 * pw, 0, far, ph));
     stripLayer(pic, crop, CGRectMake(0, iy, w, 1), CGRectMake(0, 2 * ph, pw, far));
-    // The mirrors: right, below, and both at the corner.
-    [pic addSublayer:imageLayer(crop, CGRectMake(pw, 0, pw, ph), CATransform3DMakeScale(-1, 1, 1))];
-    [pic addSublayer:imageLayer(crop, CGRectMake(0, ph, pw, ph), CATransform3DMakeScale(1, -1, 1))];
-    [pic addSublayer:imageLayer(crop, CGRectMake(pw, ph, pw, ph), CATransform3DMakeScale(-1, -1, 1))];
-    // The window itself, on top.
-    [pic addSublayer:imageLayer(crop, CGRectMake(0, 0, pw, ph), CATransform3DIdentity)];
+    stripLayer(pic, crop, CGRectMake(ix, iy, 1, 1), CGRectMake(2 * pw, 2 * ph, far, far));
+    stripLayer(pic, crop, CGRectMake(ix, iy, 1, 1), CGRectMake(2 * pw, ph, far, ph));
+    stripLayer(pic, crop, CGRectMake(ix, iy, 1, 1), CGRectMake(pw, 2 * ph, pw, far));
+    // The mirrors: right, below, and both at the corner; then the window.
+    CATransform3D flips[4] = { CATransform3DMakeScale(-1, 1, 1), CATransform3DMakeScale(1, -1, 1),
+        CATransform3DMakeScale(-1, -1, 1), CATransform3DIdentity };
+    CGRect places[4] = { { { pw, 0 }, { pw, ph } }, { { 0, ph }, { pw, ph } }, { { pw, ph }, { pw, ph } },
+        { { 0, 0 }, { pw, ph } } };
+    for (int i = 0; i < 4; i++) [pic addSublayer:squared(crop, ix, iy, pw, ph, places[i], flips[i])];
     CGImageRelease(crop);
     return pic;
 }
