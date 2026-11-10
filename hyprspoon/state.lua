@@ -329,8 +329,9 @@ S.defaults = {
         -- Hyprland's windows do, instead of easing each window through
         -- accessibility moves: one capture of the display's tiles (about
         -- 40ms, before anything moves) over the wallpaper, while the
-        -- windows move at once beneath. A picture keeps its size, mirrored
-        -- at its edges where its tile outgrows it, and once it settles
+        -- windows move at once beneath. A picture keeps its size; where its
+        -- tile outgrows it, a band of its edge is mirrored and the rest
+        -- stretched from there. Once it settles
         -- the overlay fades to the real windows. New windows pop in at
         -- their tiles. Not while dragging, nor in scrolling workspaces.
         -- Floating windows over the tiles are hidden until it's done.
@@ -339,6 +340,8 @@ S.defaults = {
         --   popin = 0.8   share of their size new windows grow from (1:
         --                 they only fade in)
         --   hold = 0.05   seconds the pictures stay after they settle
+        --   mirror = 32   points of a growing window's edge mirrored before
+        --                 the rest is stretched (0: stretched only)
         --   refresh = false  capture the windows again mid-glide once they
         --                 have their new size, fading those in (an app
         --                 still redrawing then shows as an extra jump)

@@ -649,8 +649,8 @@ static void run(Slide s) {
 //
 // Each tile is a box that moves and resizes on the spring, clipping its
 // picture, which stays at its own size: when the box outgrows it, the
-// window is mirrored at its edges to fill (see edgeExtended), so it isn't
-// scaled. Once it has settled, the overlay fades to the
+// window is mirrored in a band at its edges and stretched past that (see
+// edgeExtended), so it isn't scaled. Once it has settled, the overlay fades to the
 // windows beneath, in place by then. With `refresh`, windows that have their
 // new size are captured again mid-glide and fade in over the old pictures,
 // as Hyprland shows an app's new frame; off by default, since macOS doesn't
@@ -792,13 +792,30 @@ static CALayer *squared(CGImageRef crop, CGFloat ix, CGFloat iy, CGFloat pw, CGF
     return layer;
 }
 
+// Points of a growing tile's window mirrored past its edges before the
+// rest is stretched (captureRetile.mirror).
+static double mirrorBand = 32;
+
+// Adds to `parent`, clipped to `clip`, `crop` squared off (see squared)
+// over `frame` (relative to `clip`) with `transform`.
+static void clippedMirror(CALayer *parent, CGImageRef crop, CGFloat ix, CGFloat iy, CGFloat pw, CGFloat ph,
+                          CGRect clip, CGRect frame, CATransform3D transform) {
+    if (clip.size.width <= 0 || clip.size.height <= 0) return;
+    CALayer *window = [CALayer layer];
+    window.anchorPoint = CGPointZero;
+    window.frame = clip;
+    window.masksToBounds = YES;
+    [window addSublayer:squared(crop, ix, iy, pw, ph, frame, transform)];
+    [parent addSublayer:window];
+}
+
 // A picture of the part `src` (on screen) of `image`, which covers `area`,
 // at the top-left of its box, at its own size, the window's corners
 // `radius` round and filled in (see squared). Past its right and bottom
-// edges, for the box to clip as the tile grows: the window mirrored at that
-// edge, so a scroll bar or panel there carries on, and past the mirror its
-// far edge stretched.
-static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat radius) {
+// edges, for the box to clip as the tile grows: a band `band` points wide
+// of the window mirrored at that edge, so a scroll bar or border there
+// carries on, and past the band its far edge stretched.
+static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat radius, double band) {
     double sx = CGImageGetWidth(image) / area.size.width, sy = CGImageGetHeight(image) / area.size.height;
     CGRect px = CGRectIntegral(CGRectMake((src.origin.x - area.origin.x) * sx, (src.origin.y - area.origin.y) * sy,
         src.size.width * sx, src.size.height * sy));
@@ -808,22 +825,29 @@ static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat 
     CGFloat pw = src.size.width, ph = src.size.height, far = 1e4;
     // Columns and rows clear of the rounded corners.
     CGFloat ix = fmin(ceil(radius * sx) + 1, floor(w / 3)), iy = fmin(ceil(radius * sy) + 1, floor(h / 3));
+    // The bands: clear of the corners where there's a band at all, and no
+    // more than half the window.
+    CGFloat bx = band > 0 ? fmin(fmax(band, ix / sx + 1), pw / 2) : 0;
+    CGFloat by = band > 0 ? fmin(fmax(band, iy / sy + 1), ph / 2) : 0;
+    // The columns (rows) the stretch is taken from: the bands' far edges,
+    // or without bands the window's own, inside its corners.
+    CGFloat cx = bx > 0 ? floor(w - bx * sx) : w - 1 - ix, cy = by > 0 ? floor(h - by * sy) : h - 1 - iy;
     CALayer *pic = [CALayer layer];
     pic.anchorPoint = CGPointZero;
     pic.frame = CGRectMake(0, 0, pw, ph);
-    // Past the mirrors: their far edges (the window's left column and top
-    // row, inside its corners), stretched.
-    stripLayer(pic, crop, CGRectMake(ix, 0, 1, h), CGRectMake(2 * pw, 0, far, ph));
-    stripLayer(pic, crop, CGRectMake(0, iy, w, 1), CGRectMake(0, 2 * ph, pw, far));
-    stripLayer(pic, crop, CGRectMake(ix, iy, 1, 1), CGRectMake(2 * pw, 2 * ph, far, far));
-    stripLayer(pic, crop, CGRectMake(ix, iy, 1, 1), CGRectMake(2 * pw, ph, far, ph));
-    stripLayer(pic, crop, CGRectMake(ix, iy, 1, 1), CGRectMake(pw, 2 * ph, pw, far));
-    // The mirrors: right, below, and both at the corner; then the window.
-    CATransform3D flips[4] = { CATransform3DMakeScale(-1, 1, 1), CATransform3DMakeScale(1, -1, 1),
-        CATransform3DMakeScale(-1, -1, 1), CATransform3DIdentity };
-    CGRect places[4] = { { { pw, 0 }, { pw, ph } }, { { 0, ph }, { pw, ph } }, { { pw, ph }, { pw, ph } },
-        { { 0, 0 }, { pw, ph } } };
-    for (int i = 0; i < 4; i++) [pic addSublayer:squared(crop, ix, iy, pw, ph, places[i], flips[i])];
+    stripLayer(pic, crop, CGRectMake(cx, 0, 1, h), CGRectMake(pw + bx, 0, far, ph));
+    stripLayer(pic, crop, CGRectMake(0, cy, w, 1), CGRectMake(0, ph + by, pw, far));
+    stripLayer(pic, crop, CGRectMake(cx, cy, 1, 1), CGRectMake(pw + bx, ph, far, far));
+    stripLayer(pic, crop, CGRectMake(cx, cy, 1, 1), CGRectMake(pw, ph + by, bx, far));
+    // The mirrored bands: right, below, and both at the corner. Flipped
+    // about its middle, a copy at the band's origin has the window's edge
+    // against the seam; the band shows the part of it nearest.
+    CGRect mirrored = CGRectMake(0, 0, pw, ph);
+    clippedMirror(pic, crop, ix, iy, pw, ph, CGRectMake(pw, 0, bx, ph), mirrored, CATransform3DMakeScale(-1, 1, 1));
+    clippedMirror(pic, crop, ix, iy, pw, ph, CGRectMake(0, ph, pw, by), mirrored, CATransform3DMakeScale(1, -1, 1));
+    clippedMirror(pic, crop, ix, iy, pw, ph, CGRectMake(pw, ph, bx, by), mirrored, CATransform3DMakeScale(-1, -1, 1));
+    // The window itself.
+    [pic addSublayer:squared(crop, ix, iy, pw, ph, CGRectMake(0, 0, pw, ph), CATransform3DIdentity)];
     CGImageRelease(crop);
     return pic;
 }
@@ -906,7 +930,7 @@ static void styleRing(CALayer *ring, const Tile *t) {
 // How long that takes.
 static double showPicture(int i, CGImageRef image, CGRect area, CGRect b) {
     CALayer *box = boxes[i];
-    CALayer *pic = edgeExtended(image, area, b, shownTiles[i].radius);
+    CALayer *pic = edgeExtended(image, area, b, shownTiles[i].radius, mirrorBand);
     if (!pic) return 0;
     double took = 0;
     if (box.sublayers.count == 0) {
@@ -1192,7 +1216,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
                 placeHidden(box, ring, to, w);
             } else {
                 CGRect src = image ? CGRectIntersection(t->from, area) : CGRectNull;
-                CALayer *pic = CGRectIsNull(src) || CGRectIsEmpty(src) ? nil : edgeExtended(image, area, src, t->radius);
+                CALayer *pic = CGRectIsNull(src) || CGRectIsEmpty(src) ? nil : edgeExtended(image, area, src, t->radius, mirrorBand);
                 if (pic) [box addSublayer:pic];
                 CGRect from = pic ? CGRectOffset(src, -frame.origin.x, -frame.origin.y) : to;
                 box.anchorPoint = CGPointZero;
@@ -1447,7 +1471,9 @@ static int l_finish(lua_State *L) {
 
 // retile{ frame = {x, y, w, h}, scale =, move = motion, fade = motion,
 // hold =, popin = (0.8: new tiles grow from that share of their size; 1
-// only fades them in), refresh = (capture windows again mid-glide once
+// only fades them in), mirror = (32: points of a growing window mirrored
+// past its edges before the rest is stretched; 0 stretches only),
+// refresh = (capture windows again mid-glide once
 // they have their new size), wallpaperAge =, beneath = {wid, ...} (over a
 // scratchpad, the windows it covers: the backdrop over the wallpaper), (a motion as run() takes it: curve =, duration =,
 // mass =, stiffness =, damping =)
@@ -1472,6 +1498,7 @@ static int l_retile(lua_State *L) {
     lua_pop(L, 2);
     double hold = numberField(L, 1, "hold", 0.05);
     double pop = numberField(L, 1, "popin", 0.8);
+    double band = fmax(0, numberField(L, 1, "mirror", 32));
     lua_getfield(L, 1, "refresh");
     bool refresh = lua_toboolean(L, -1);
     lua_pop(L, 1);
@@ -1525,6 +1552,7 @@ static int l_retile(lua_State *L) {
     static int lastToken = 0;
     int token = ++lastToken;
     dispatch_async(queue, ^{
+        mirrorBand = band;
         bool up = retile(frame, scale, list, count, move, fade, hold, pop, refresh, under, underCount);
         free(list);
         postReady(token, up);
