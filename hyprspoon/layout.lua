@@ -754,15 +754,21 @@ local function captureRetile(key, screen, tree, area, byID, full)
         return false
     end
     applyTree(tree, area, {}, full)
-    local screenFrame = screen:frame()
+    local sf = screen:frame()
     local now = hs.timer.secondsSinceEpoch()
     local tiles, moved = {}, now - (retileAt[key] or 0) < RETILE_SHOWN_FOR
-    for _, leaf in ipairs(Tree.leaves(tree)) do
+    local leaves, ids = Tree.leaves(tree), {}
+    for i, leaf in ipairs(leaves) do ids[i] = leaf.windowID end
+    -- Where the windows are, from WindowServer: asking each app (win:frame())
+    -- held every key up by a round trip per tile.
+    local Slide = require("hyprspoon.slide")
+    local bounds = Slide.bounds(ids) or {}
+    for _, leaf in ipairs(leaves) do
         local win, to = byID[leaf.windowID], leaf.windowRect
         if win and to then
-            local f = win:frame()
+            local f = bounds[leaf.windowID] or win:frame()
             -- Only windows on show: a parked one has no picture to take.
-            if f:intersect(screenFrame).area > 0 then
+            if f.x < sf.x + sf.w and f.x + f.w > sf.x and f.y < sf.y + sf.h and f.y + f.h > sf.y then
                 -- After a reload nothing counts as new.
                 local new = before ~= nil and not before[leaf.windowID]
                 if new or not framesMatch(f, to) then moved = true end
@@ -778,7 +784,7 @@ local function captureRetile(key, screen, tree, area, byID, full)
         end
     end
     if not moved then return false end
-    local started = require("hyprspoon.slide").retile(screen, tiles, function(up)
+    local started = Slide.retile(screen, tiles, function(up)
         if retileSerial[key] ~= serial then return end
         local was = S.applyingLayout
         S.applyingLayout = true

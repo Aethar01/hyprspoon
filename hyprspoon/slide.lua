@@ -176,6 +176,13 @@ function M.endPan(commit, velocity)
     if commit then panShownUntil = hs.timer.secondsSinceEpoch() + 0.5 end
 end
 
+-- Windows `ids`' frames as WindowServer has them ({[id] = rect}), without
+-- asking their apps; nil without the native module.
+function M.bounds(ids)
+    local mod = native or Util.native("slide")
+    return mod and mod.bounds and mod.bounds(ids) or nil
+end
+
 -- Retiles asked for, by token: called once their overlay is up (or not).
 local pending = {}
 local readyHooked = nil

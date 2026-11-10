@@ -44,6 +44,7 @@
 
 #define SL_FUNCS(X)                                                                    \
     X(CGError, SLSNewConnection, (int, int *))                                         \
+    X(int, SLSMainConnectionID, (void))                                                \
     X(CGError, SLSReleaseConnection, (int))                                            \
     X(CGError, SLSGetEventPort, (int, mach_port_t *))                                  \
     X(CGEventRef, SLEventCreateNextEvent, (int))                                       \
@@ -516,6 +517,8 @@ static CALayer *plane = nil;
 static CGPoint travel = { 0, 0 };
 static Motion slideMotion = { false, 0.2, 0.6, 800, 38 };
 
+static void dropBeneath(void);
+
 static void finish(void *unused) {
     (void)unused;
     if (settling != generation) return;
@@ -538,6 +541,7 @@ static void finish(void *unused) {
     clearLayers();
     plane = nil;
     orderWindow(false);
+    dropBeneath();
     beginChanges();
     [root removeAnimationForKey:opacityKey];
     root.opacity = 1;
@@ -753,31 +757,43 @@ static double fadeIn(CALayer *layer, Motion m) {
     return fade.duration;
 }
 
-// A layer showing `image` stretched over `frame` (in its parent).
-static CALayer *imageLayer(CGImageRef image, CGRect frame, CATransform3D transform) {
+// The parts of a picture all show the one capture: each layer has the whole
+// image as its contents and shows its part through contentsRect, so
+// CoreAnimation uploads the capture once. (A cropped copy per layer, about
+// 30 a picture, was uploaded on its own each time, and cost Hammerspoon
+// most of its CPU time in a retile with live refresh.)
+typedef struct {
+    CGImageRef image;
+    CGFloat iw, ih; // its size in pixels
+    CGFloat ox, oy; // where the window starts in it, in pixels
+    CGFloat w, h;   // the window's size in it, in pixels
+} Source;
+
+// A layer showing pixels `px` (relative to the window in `s`) over `frame`
+// (in its parent), with `transform`; `sharp` for a strip stretched out, so
+// it isn't blended with the pixels beside it.
+static CALayer *partLayer(const Source *s, CGRect px, CGRect frame, CATransform3D transform, bool sharp) {
     CALayer *layer = [CALayer layer];
     layer.bounds = (CGRect){ CGPointZero, frame.size };
     layer.position = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
     layer.transform = transform;
-    layer.contents = (id)image;
+    layer.contents = (id)s->image;
+    layer.contentsRect = CGRectMake((s->ox + px.origin.x) / s->iw, (s->oy + px.origin.y) / s->ih,
+        px.size.width / s->iw, px.size.height / s->ih);
+    if (sharp) {
+        layer.magnificationFilter = kCAFilterNearest;
+        layer.minificationFilter = kCAFilterNearest;
+    }
     return layer;
 }
 
-// Adds to `parent` a strip of `crop` (pixel rect `px`) stretched over `frame`.
-static void stripLayer(CALayer *parent, CGImageRef crop, CGRect px, CGRect frame) {
-    CGImageRef strip = CGImageCreateWithImageInRect(crop, px);
-    if (!strip) return;
-    [parent addSublayer:imageLayer(strip, frame, CATransform3DIdentity)];
-    CGImageRelease(strip);
-}
-
-// `crop` (a window, `pw` x `ph` points, `ix` x `iy` pixels clear of its
+// The window in `s` (`pw` x `ph` points, `ix` x `iy` pixels clear of its
 // rounded corners at each edge) as a layer over `frame` with `transform`,
 // its see-through corners filled from the window just beside them: patches
 // beneath it, so a corner shows the window's own edge, not what's behind.
-static CALayer *squared(CGImageRef crop, CGFloat ix, CGFloat iy, CGFloat pw, CGFloat ph, CGRect frame,
+static CALayer *squared(const Source *s, CGFloat ix, CGFloat iy, CGFloat pw, CGFloat ph, CGRect frame,
                         CATransform3D transform) {
-    CGFloat w = CGImageGetWidth(crop), h = CGImageGetHeight(crop);
+    CGFloat w = s->w, h = s->h;
     CGFloat cw = ix * pw / w, ch = iy * ph / h; // a corner, in points
     CALayer *layer = [CALayer layer];
     layer.bounds = (CGRect){ CGPointZero, frame.size };
@@ -788,8 +804,8 @@ static CALayer *squared(CGImageRef crop, CGFloat ix, CGFloat iy, CGFloat pw, CGF
         { { ix, h - iy }, { ix, iy } }, { { w - 2 * ix, h - iy }, { ix, iy } } };
     CGRect to[4] = { { { 0, 0 }, { cw, ch } }, { { pw - cw, 0 }, { cw, ch } },
         { { 0, ph - ch }, { cw, ch } }, { { pw - cw, ph - ch }, { cw, ch } } };
-    for (int i = 0; i < 4; i++) stripLayer(layer, crop, from[i], to[i]);
-    [layer addSublayer:imageLayer(crop, CGRectMake(0, 0, pw, ph), CATransform3DIdentity)];
+    for (int i = 0; i < 4; i++) [layer addSublayer:partLayer(s, from[i], to[i], CATransform3DIdentity, false)];
+    [layer addSublayer:partLayer(s, CGRectMake(0, 0, w, h), CGRectMake(0, 0, pw, ph), CATransform3DIdentity, false)];
     return layer;
 }
 
@@ -797,16 +813,16 @@ static CALayer *squared(CGImageRef crop, CGFloat ix, CGFloat iy, CGFloat pw, CGF
 // rest is stretched (captureRetile.mirror).
 static double mirrorBand = 32;
 
-// Adds to `parent`, clipped to `clip`, `crop` squared off (see squared)
+// Adds to `parent`, clipped to `clip`, the window squared off (see squared)
 // over `frame` (relative to `clip`) with `transform`.
-static void clippedMirror(CALayer *parent, CGImageRef crop, CGFloat ix, CGFloat iy, CGFloat pw, CGFloat ph,
+static void clippedMirror(CALayer *parent, const Source *s, CGFloat ix, CGFloat iy, CGFloat pw, CGFloat ph,
                           CGRect clip, CGRect frame, CATransform3D transform) {
     if (clip.size.width <= 0 || clip.size.height <= 0) return;
     CALayer *window = [CALayer layer];
     window.anchorPoint = CGPointZero;
     window.frame = clip;
     window.masksToBounds = YES;
-    [window addSublayer:squared(crop, ix, iy, pw, ph, frame, transform)];
+    [window addSublayer:squared(s, ix, iy, pw, ph, frame, transform)];
     [parent addSublayer:window];
 }
 
@@ -820,9 +836,10 @@ static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat 
     double sx = CGImageGetWidth(image) / area.size.width, sy = CGImageGetHeight(image) / area.size.height;
     CGRect px = CGRectIntegral(CGRectMake((src.origin.x - area.origin.x) * sx, (src.origin.y - area.origin.y) * sy,
         src.size.width * sx, src.size.height * sy));
-    CGImageRef crop = CGImageCreateWithImageInRect(image, px);
-    if (!crop) return nil;
-    CGFloat w = CGImageGetWidth(crop), h = CGImageGetHeight(crop);
+    Source s = { image, CGImageGetWidth(image), CGImageGetHeight(image), px.origin.x, px.origin.y,
+        px.size.width, px.size.height };
+    if (s.w < 3 || s.h < 3) return nil;
+    CGFloat w = s.w, h = s.h;
     CGFloat pw = src.size.width, ph = src.size.height, far = 1e4;
     // Columns and rows clear of the rounded corners.
     CGFloat ix = fmin(ceil(radius * sx) + 1, floor(w / 3)), iy = fmin(ceil(radius * sy) + 1, floor(h / 3));
@@ -836,25 +853,51 @@ static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat 
     CALayer *pic = [CALayer layer];
     pic.anchorPoint = CGPointZero;
     pic.frame = CGRectMake(0, 0, pw, ph);
-    stripLayer(pic, crop, CGRectMake(cx, 0, 1, h), CGRectMake(pw + bx, 0, far, ph));
-    stripLayer(pic, crop, CGRectMake(0, cy, w, 1), CGRectMake(0, ph + by, pw, far));
-    stripLayer(pic, crop, CGRectMake(cx, cy, 1, 1), CGRectMake(pw + bx, ph, far, far));
-    stripLayer(pic, crop, CGRectMake(cx, cy, 1, 1), CGRectMake(pw, ph + by, bx, far));
+    CATransform3D none = CATransform3DIdentity;
+    [pic addSublayer:partLayer(&s, CGRectMake(cx, 0, 1, h), CGRectMake(pw + bx, 0, far, ph), none, true)];
+    [pic addSublayer:partLayer(&s, CGRectMake(0, cy, w, 1), CGRectMake(0, ph + by, pw, far), none, true)];
+    [pic addSublayer:partLayer(&s, CGRectMake(cx, cy, 1, 1), CGRectMake(pw + bx, ph, far, far), none, true)];
+    [pic addSublayer:partLayer(&s, CGRectMake(cx, cy, 1, 1), CGRectMake(pw, ph + by, bx, far), none, true)];
     // The mirrored bands: right, below, and both at the corner. Flipped
     // about its middle, a copy at the band's origin has the window's edge
     // against the seam; the band shows the part of it nearest.
     CGRect mirrored = CGRectMake(0, 0, pw, ph);
-    clippedMirror(pic, crop, ix, iy, pw, ph, CGRectMake(pw, 0, bx, ph), mirrored, CATransform3DMakeScale(-1, 1, 1));
-    clippedMirror(pic, crop, ix, iy, pw, ph, CGRectMake(0, ph, pw, by), mirrored, CATransform3DMakeScale(1, -1, 1));
-    clippedMirror(pic, crop, ix, iy, pw, ph, CGRectMake(pw, ph, bx, by), mirrored, CATransform3DMakeScale(-1, -1, 1));
+    clippedMirror(pic, &s, ix, iy, pw, ph, CGRectMake(pw, 0, bx, ph), mirrored, CATransform3DMakeScale(-1, 1, 1));
+    clippedMirror(pic, &s, ix, iy, pw, ph, CGRectMake(0, ph, pw, by), mirrored, CATransform3DMakeScale(1, -1, 1));
+    clippedMirror(pic, &s, ix, iy, pw, ph, CGRectMake(pw, ph, bx, by), mirrored, CATransform3DMakeScale(-1, -1, 1));
     // The window itself.
-    [pic addSublayer:squared(crop, ix, iy, pw, ph, CGRectMake(0, 0, pw, ph), CATransform3DIdentity)];
-    CGImageRelease(crop);
+    [pic addSublayer:squared(&s, ix, iy, pw, ph, CGRectMake(0, 0, pw, ph), none)];
     return pic;
 }
 
+// Corner radii looked up lately, by window: a window's doesn't change, and
+// asking WindowServer for each tile's on every retile held its overlay up.
+#define MAX_RADII 64
+#define RADIUS_MAX_AGE 10.0
+static struct {
+    uint32_t wid;
+    CGFloat radius;
+    double at;
+} radii[MAX_RADII];
+static int nextRadius = 0;
+
+static CGFloat lookUpRadius(uint32_t wid, CGFloat fallback);
+
 // Window `wid`'s corner radius as WindowServer has it, else `fallback`.
 static CGFloat cornerRadius(uint32_t wid, CGFloat fallback) {
+    double now = CFAbsoluteTimeGetCurrent();
+    for (int i = 0; i < MAX_RADII; i++) {
+        if (radii[i].wid == wid && now - radii[i].at < RADIUS_MAX_AGE) return radii[i].radius > 0 ? radii[i].radius : fallback;
+    }
+    CGFloat radius = lookUpRadius(wid, 0);
+    radii[nextRadius].wid = wid;
+    radii[nextRadius].radius = radius;
+    radii[nextRadius].at = now;
+    nextRadius = (nextRadius + 1) % MAX_RADII;
+    return radius > 0 ? radius : fallback;
+}
+
+static CGFloat lookUpRadius(uint32_t wid, CGFloat fallback) {
     CGFloat radius = 0;
     if (SLSWindowQueryWindows && SLSWindowQueryResultCopyWindows && SLSWindowIteratorAdvance
         && SLSWindowIteratorGetCornerRadii) {
@@ -1080,6 +1123,13 @@ static int beneathCount = 0;
 static int compareIds(const void *a, const void *b) {
     uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
     return x < y ? -1 : x > y;
+}
+
+// Lets the picture of the windows beneath go (the overlay is down: it's
+// soon out of date, and as big as the display).
+static void dropBeneath(void) {
+    dropPicture(&beneath);
+    beneathCount = 0;
 }
 
 // A picture of windows `ids` (stacked as on screen), current or taken
@@ -1592,6 +1642,32 @@ static int l_retile(lua_State *L) {
     return 1;
 }
 
+// bounds({wid, ...}): {[wid] = {x =, y =, w =, h =}} as WindowServer has
+// the windows now, for those it knows. No accessibility calls: the main
+// thread doesn't wait on any app for them.
+static int l_bounds(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    uint32_t wids[MAX_TILES * 4];
+    int count = luaWindowIds(L, 1, wids, MAX_TILES * 4);
+    int connection = SLSMainConnectionID();
+    lua_createtable(L, 0, count);
+    for (int i = 0; i < count; i++) {
+        CGRect b;
+        if (SLSGetWindowBounds(connection, wids[i], &b) != kCGErrorSuccess) continue;
+        lua_createtable(L, 0, 4);
+        lua_pushnumber(L, b.origin.x);
+        lua_setfield(L, -2, "x");
+        lua_pushnumber(L, b.origin.y);
+        lua_setfield(L, -2, "y");
+        lua_pushnumber(L, b.size.width);
+        lua_setfield(L, -2, "w");
+        lua_pushnumber(L, b.size.height);
+        lua_setfield(L, -2, "h");
+        lua_rawseti(L, -2, wids[i]);
+    }
+    return 1;
+}
+
 // onReady(fn): fn(token, up) on the main thread once retile `token`'s
 // overlay is up (`up`), or couldn't be put up.
 static int l_onReady(lua_State *L) {
@@ -1729,6 +1805,7 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         { "finish", l_finish },
         { "retile", l_retile },
         { "onReady", l_onReady },
+        { "bounds", l_bounds },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);
