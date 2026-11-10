@@ -718,6 +718,7 @@ local function focusLeaf(key, leaf)
     if not win then return false end
     local view = views[key]
     if view then view.focusID = leaf.windowID end
+    Border.focusing(win)
     Layout.tileNow(false, Tree.keyUUID(key))
     Focus.focus(win)
     Util.warpToWindow(win)
@@ -1154,8 +1155,9 @@ function M.panEnd(key, v)
     local leaf = activeIn(view.cols[best])
     view.focusID, view.active, view.rel = leaf.windowID, leaf.windowID, view.x - view.starts[best]
     view.pointer = nil
-    Layout.tileNow(false, Tree.keyUUID(key))
     local win = Util.winByID[leaf.windowID]
+    if win then Border.focusing(win) end
+    Layout.tileNow(false, Tree.keyUUID(key))
     if win then Focus.focus(win) end
 end
 

@@ -144,6 +144,16 @@ function M.focused(win)
     native.focus(id, fade(), barFade())
 end
 
+-- We're about to focus `win`, after a retile that may show it in pictures
+-- (a scroll to its column): its ring goes active now, so the pictures'
+-- rings (M.ringFor) have the colours they'll end with, rather than
+-- switching once the overlay is down. Even while it's still out of sight;
+-- its focus event confirms it.
+function M.focusing(win)
+    local id = native and win and win:id()
+    if id then native.focus(id, fade(), barFade()) end
+end
+
 -- Focus leaving for something we don't manage (an ignored app, a helper
 -- window, the desktop) brings us no focus event: check just after the
 -- focused window loses focus.

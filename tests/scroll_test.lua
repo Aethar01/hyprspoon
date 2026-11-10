@@ -90,6 +90,7 @@ package.loaded["hyprspoon.layout"] = {
 package.loaded["hyprspoon.border"] = {
     forget = function(id) forgotten[#forgotten + 1] = id end,
     sync = function() end,
+    focusing = function() end,
 }
 package.loaded["hyprspoon.discover"] = { cancelLayoutCheck = function() end }
 package.loaded["hyprspoon.focus"] = { focus = function(w) focused[#focused + 1] = w:id() end }

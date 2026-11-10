@@ -25,6 +25,9 @@
   columns going out of sight glide off the display's edge, and come back
   in with the picture they went with, or pop in once their window is back
   when there's none. Rebuild `slide.so`.
+- Scrolling to another column with `experimental.captureRetile` on: the
+  pictures' borders show the new focus as they glide, instead of changing
+  once the scroll is over.
 
 ## 0.6.0 (2026-11-10)
 
