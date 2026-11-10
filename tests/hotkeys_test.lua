@@ -18,6 +18,7 @@ local function mods(spec) return table.concat(spec[1], "+") end
 local expected = {
     closeWindow = { "alt", "w" },
     toggleMaximize = { "alt+shift", "f" },
+    cycleLayout = { "alt+shift", "y" },
     toggleOverview = { "alt", "tab" },
     previousWorkspace = { "ctrl+alt", "h" },
     focusLeft = { "alt", "h" },
@@ -45,7 +46,7 @@ for name, want in pairs(expected) do
 end
 local count = 0
 for _ in pairs(M.defaultHotkeys) do count = count + 1 end
-assert(count == 87, "defaultHotkeys has " .. count .. " bindings")
+assert(count == 88, "defaultHotkeys has " .. count .. " bindings")
 
 -- The Ctrl+Option+Cmd map changes modifiers and avoids system shortcuts.
 local function sorted(list)

@@ -46,6 +46,7 @@
 --   group     window groups and the group-bar API
 --   groupbar  clickable title strips for grouped tiles
 --   scroll    columns that scroll sideways, niri-style
+--   layouts   which layout each workspace uses, and cycling through them
 --   actions   the hotkey actions
 --   init      (this file) the Spoon: the public API, start and stop
 --
@@ -140,6 +141,11 @@ local M = {
     swap = Actions.swap,
     move = Actions.move,
     toggleFloat = Actions.toggleFloat,
+    -- cycleLayout(): the focused workspace's next layout ("bsp", "scrolling").
+    -- setLayout(name): that layout for it. Kept with the workspace over a
+    -- reload (see `workspaces` in hyprspoon/state.lua).
+    cycleLayout = Actions.cycleLayout,
+    setLayout = Actions.setLayout,
     -- With `scrolling`: niri's column actions.
     -- Unbound by default. focus, swap, move, resize and toggleMaximize act
     -- on columns too (see `scrolling` in hyprspoon/state.lua).
@@ -190,7 +196,7 @@ local function hotkeyActions()
     local actions = {}
     for _, name in ipairs({ "closeWindow", "toggleFill", "toggleMaximize", "toggleTiling",
         "toggleWorkspaceTiling", "toggleFloat", "togglePin", "focusFloat", "toggleSplit", "balance",
-        "rotate", "mirror", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo",
+        "rotate", "mirror", "cycleLayout", "toggleOverview", "gotoPreviousWorkspace", "togglePseudo",
         "toggleGroup", "groupNext", "groupPrev", "moveOutOfGroup", "consumeIntoColumn",
         "expelFromColumn", "centerColumn", "centerVisibleColumns", "expandColumn" }) do
         actions[name] = M[name]
@@ -287,6 +293,7 @@ function M.hotkeysFor(super, ctrlSuper)
         balance = { super, "=" },
         rotate = { super, "r" },
         mirror = { superShift, "r" },
+        cycleLayout = { superShift, "y" },
         toggleOverview = { super, "tab" },
         gotoPreviousWorkspace = { super, "`" },
         previousWorkspace = { ctrlSuper, "h" },

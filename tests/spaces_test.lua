@@ -73,6 +73,7 @@ S.cfg = {
     },
 }
 S.trees, S.maximized, S.untiled, S.windowInfo, S.applied = {}, {}, {}, {}, {}
+S.layouts = {}
 S.autoFloat = {}
 S.settleUntil = 0
 
@@ -144,8 +145,10 @@ Spaces.claim(win(44), "LAPTOP")
 assert(moved[44] == nil and Spaces.hasWindows(2), "until a window takes focus")
 
 -- Its windows join the primary display's workspace when it goes.
+S.layouts["ws" .. tv] = "scrolling"
 screens = { LAPTOP, DELL }
 Spaces.screensChanged()
+assert(S.layouts["ws" .. tv] == nil, "a forgotten workspace's layout goes with it")
 assert(Spaces.hasWindows(2) and not Spaces.hasWindows(tv), "the projector's windows join the primary's")
 for _, ws in ipairs(Spaces.workspaces()) do assert(ws.n > 0, "its workspace is forgotten") end
 

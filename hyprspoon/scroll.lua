@@ -43,6 +43,7 @@ local M = {}
 package.loaded["hyprspoon.scroll"] = M
 
 local S = require("hyprspoon.state")
+local Layouts = require("hyprspoon.layouts")
 
 -- Required on first use: the modules that ask M.isAway are loaded (alone,
 -- in the unit tests) without the layout around them.
@@ -58,7 +59,7 @@ local Discover = lazy("discover")
 local Focus = lazy("focus")
 
 local DEFAULTS = {
-    workspaces = true,              -- true for all, or a list such as { 3, "A" }
+    -- (`workspaces`, which of them scroll, is read by hyprspoon/layouts.lua)
     width = 0.5,                    -- a new column's share of the area (default-column-width)
     presets = { 1 / 3, 1 / 2, 2 / 3 }, -- what cycleColumnWidth goes through (preset-column-widths)
     fill = false,                   -- columns of `width` share the area while they fit
@@ -87,35 +88,26 @@ local views = {}
 -- corner, timer = the park after its slide out }.
 local away = {}
 
+-- The options, or the defaults when `scrolling` is off: a workspace can
+-- still be switched to columns while running (hyprspoon/layouts.lua).
 local function cfg()
     local c = S.cfg and S.cfg.scrolling
     -- Where it was while it was experimental.
     if not c then c = S.cfg and S.cfg.experimental and S.cfg.experimental.scrolling end
-    if not c then return nil end
+    if not c then return {} end
     return c == true and {} or c
 end
 
 local function opt(name)
-    local c = cfg()
-    local v = c and c[name]
+    local v = cfg()[name]
     if v == nil then return DEFAULTS[name] end
     return v
 end
 
--- Whether workspace `key` ("ws<n>") is laid out in columns. Never for
--- scratchpads, which are laid out smaller over the workspace beneath.
+-- Whether workspace `key` ("ws<n>") is laid out in columns, by its layout
+-- (hyprspoon/layouts.lua; never a scratchpad).
 function M.enabled(key)
-    local c = cfg()
-    if not c or not key or Spaces.layoutScale(key) then return false end
-    local list = opt("workspaces")
-    if list == true then return true end
-    local n = tonumber(key:match("^ws(%-?%d+)$"))
-    if not n then return false end
-    local label = Spaces.label(n)
-    for _, w in ipairs(list) do
-        if tostring(w) == label or w == n then return true end
-    end
-    return false
+    return key ~= nil and Layouts.of(key) == "scrolling"
 end
 
 -- ---------------------------------------------------------------------------
@@ -592,7 +584,7 @@ end
 
 -- Focus went to `id`: scroll its column into view.
 function M.reveal(id)
-    if not cfg() or not S.tilingEnabled or not id then return end
+    if not S.tilingEnabled or not id then return end
     local _, _, key = Tree.findByID(id)
     if not key or not M.enabled(key) then return end
     local view = views[key]
@@ -662,7 +654,7 @@ end
 -- The focused window's workspace, columns, column and place in it, and leaf,
 -- if it's a tile of a workspace laid out in columns.
 local function context(win)
-    if not win or not cfg() or not S.tilingEnabled then return nil end
+    if not win or not S.tilingEnabled then return nil end
     local id = win:id()
     local _, leaf, key = Tree.findByID(id)
     if not leaf or not M.enabled(key) then return nil end
@@ -1029,7 +1021,7 @@ end
 -- scroll the view further than `ffmMaxScroll` of its width.
 function M.pointerMayFocus(id)
     local most = opt("ffmMaxScroll")
-    if not most or not cfg() or not S.tilingEnabled then return true end
+    if not most or not S.tilingEnabled then return true end
     local _, _, key = Tree.findByID(id)
     local view = key and M.enabled(key) and views[key]
     local ci = view and view.cols and locate(view.cols, id)
@@ -1057,14 +1049,14 @@ end
 
 -- The fingers that scroll the view, or nil.
 function M.swipeFingers()
-    local n = cfg() and opt("swipe")
+    local n = Layouts.configured("scrolling") and opt("swipe")
     return type(n) == "number" and n or nil
 end
 
 -- A swipe starts on the display `screen`: the key of its workspace if that
 -- scrolls, to pan.
 function M.panBegin(screen)
-    if not cfg() or not S.tilingEnabled or not screen then return nil end
+    if not S.tilingEnabled or not screen then return nil end
     local key = Tree.keyForScreen(screen)
     local view = key and M.enabled(key) and views[key]
     if not view or not view.cols or #view.cols == 0 then return nil end
@@ -1136,7 +1128,7 @@ local wheelPan = nil
 local wheelReady = 0
 
 local function wheelMods()
-    local mods = cfg() and opt("wheel")
+    local mods = Layouts.configured("scrolling") and opt("wheel")
     return type(mods) == "table" and #mods > 0 and mods or nil
 end
 M.wheelMods = wheelMods

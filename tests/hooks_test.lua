@@ -57,6 +57,7 @@ package.loaded["hyprspoon.spaces"] = {
     displayOf = function() return "LAPTOP" end,
     isHidden = function(id) return id == 13 end,
     isScratchpad = function(n) return n > 100 end,
+    layoutScale = function(key) return tonumber(key:match("%d+")) > 100 and 0.95 or nil end,
     overview = function()
         return {
             { n = 1, display = "LAPTOP", showing = true, windows = {
@@ -176,7 +177,11 @@ assert(#q.workspaces == 3)
 local w1, w2, wa = q.workspaces[1], q.workspaces[2], q.workspaces[3]
 assert(w1.name == "1" and w1.number == 1 and w1.display == "LAPTOP" and w1.showing == true
     and w1.focused == true and w1.scratchpad == false)
+assert(w1.layout == "bsp" and wa.layout == "bsp")
 assert(#w1.windows == 2 and w1.windows[1] == 11 and w1.windows[2] == 12)
+S.layouts = { ws2 = "scrolling" }
+assert(Hooks.query().workspaces[2].layout == "scrolling", "the layout it has now")
+S.layouts = {}
 assert(w2.focused == false and w2.showing == false and #w2.windows == 1)
 assert(wa.name == "A" and wa.number == 101 and wa.scratchpad == true and #wa.windows == 0)
 assert(#q.windows == 3)

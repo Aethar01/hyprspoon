@@ -13,6 +13,7 @@ local Anim = require("hyprspoon.anim")
 local Resize = require("hyprspoon.resize")
 local Spaces = require("hyprspoon.spaces")
 local Scroll = require("hyprspoon.scroll")
+local Layouts = require("hyprspoon.layouts")
 
 -- ---------------------------------------------------------------------------
 -- Actions (bind these to hotkeys)
@@ -634,6 +635,43 @@ function M.mirror()
     if Scroll.enabled(key) then return Scroll.cycleWidth(Focus.currentWindow(), true) end
     Tree.mirror(S.trees[key])
     Layout.tileNow(false, Tree.keyUUID(key))
+end
+
+-- Lays out the workspace `key` in layout `name` from now on, kept with the
+-- workspace.
+local function applyLayout(key, name)
+    local before = Layouts.set(key, name)
+    if not before then
+        hs.alert.show("Scratchpads keep the bsp layout")
+        return
+    end
+    local label = Spaces.label(tonumber(key:match("^ws(%-?%d+)$")))
+    if before ~= name then
+        -- Columns scrolled out of sight are parked; they come back before
+        -- the new layout places everything.
+        if before == "scrolling" then Scroll.bringBack(key) end
+        Tree.saveTrees()
+        Layout.tileNow(false, Tree.keyUUID(key))
+    end
+    hs.alert.show(string.format("Workspace %s layout: %s", label, name))
+end
+
+-- The focused workspace's layout, `name` ("bsp" or "scrolling"; see
+-- hyprspoon/layouts.lua) from now on. Raises an error for another name.
+function M.setLayout(name)
+    local known = Layouts.known(name)
+    if not known then
+        error(string.format("hyprspoon: unknown layout %q (have %s)", tostring(name),
+            table.concat(Layouts.names, ", ")), 2)
+    end
+    local key = currentKey()
+    if key then applyLayout(key, known) end
+end
+
+-- The focused workspace's next layout, and back to the first after the last.
+function M.cycleLayout()
+    local key = currentKey()
+    if key then applyLayout(key, Layouts.next(key)) end
 end
 
 -- Tiling on or off for the workspace showing where the focused window (or

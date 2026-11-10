@@ -17,6 +17,7 @@ package.loaded["hyprspoon.util"] = { windowFor = function(id) return wins[id] en
 package.loaded["hyprspoon.focus"] = { invalidateWindowCache = noop, focus = function(w) focus = w:id() end }
 package.loaded["hyprspoon.spaces"] = {
     workspaceOf = function() return 1 end,
+    layoutScale = function() return nil end,
     park = function(w) parked[w:id()] = true end,
     unpark = function(w) parked[w:id()] = nil end,
 }
