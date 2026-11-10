@@ -323,7 +323,8 @@ The first of these names the layout:
 2. `workspaces[n].layout`
 3. `layout`
 
-Scratchpads are always `"bsp"`. Switching keeps the windows and the tree
+Scratchpads work the same way, by name (`A = { layout = "scrolling" }`),
+laid out in their `scratchpadScale` area. Switching keeps the windows and the tree
 they're in, so the splits that made columns are the BSP tiles' splits again
 on the way back. `scrolling.wheel` and `scrolling.swipe` run
 when `layout`, `workspaces` or a kept `cycleLayout` choice has a workspace

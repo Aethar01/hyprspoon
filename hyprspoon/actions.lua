@@ -641,10 +641,7 @@ end
 -- workspace.
 local function applyLayout(key, name)
     local before = Layouts.set(key, name)
-    if not before then
-        hs.alert.show("Scratchpads keep the bsp layout")
-        return
-    end
+    if not before then return end
     local label = Spaces.label(tonumber(key:match("^ws(%-?%d+)$")))
     if before ~= name then
         -- Columns scrolled out of sight are parked; they come back before

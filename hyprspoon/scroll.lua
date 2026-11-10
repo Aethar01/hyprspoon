@@ -105,7 +105,7 @@ local function opt(name)
 end
 
 -- Whether workspace `key` ("ws<n>") is laid out in columns, by its layout
--- (hyprspoon/layouts.lua; never a scratchpad).
+-- (hyprspoon/layouts.lua).
 function M.enabled(key)
     return key ~= nil and Layouts.of(key) == "scrolling"
 end

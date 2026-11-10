@@ -7,8 +7,8 @@
 --   2. `workspaces[n].layout`, n the number or name of the workspace
 --   3. `layout`, the default for every workspace
 --   4. "bsp"
--- Scratchpads are always "bsp": they're laid out smaller over the workspace
--- beneath. A layout is registered by adding its name to M.names (cycleLayout
+-- Scratchpads choose theirs the same way, by name (`workspaces.A`), and are
+-- laid out in the smaller, centred area over the workspace beneath. A layout is registered by adding its name to M.names (cycleLayout
 -- goes through them in order) and handling it where windows are laid out.
 
 local M = {}
@@ -69,7 +69,7 @@ end
 
 -- The layout of workspace `key` ("ws<n>"): a name from M.names.
 function M.of(key)
-    if not key or spaces().layoutScale(key) then return "bsp" end
+    if not key then return "bsp" end
     local saved = S.layouts and S.layouts[key]
     if saved and M.known(saved) then return M.known(saved) end
     local n = tonumber(key:match("^ws(%-?%d+)$"))
@@ -95,11 +95,11 @@ function M.configured(name)
 end
 
 -- Workspace `key` laid out in `name` from now on, kept with the workspace.
--- Nil for a name we don't have, and for a scratchpad; otherwise the name
+-- Nil for a name we don't have; otherwise the name
 -- the workspace had before (the caller retiles if it changed).
 function M.set(key, name)
     name = M.known(name)
-    if not name or not key or spaces().layoutScale(key) then return nil end
+    if not name or not key then return nil end
     local before = M.of(key)
     S.layouts = S.layouts or {}
     S.layouts[key] = name

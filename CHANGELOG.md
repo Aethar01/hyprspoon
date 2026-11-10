@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2 (2026-11-10)
+
+- Scratchpads can use any layout: `workspaces = { A = { layout = "scrolling" } }`,
+  `layout`, and `cycleLayout`/`setLayout` now apply to them as to numbered
+  workspaces, laid out in their `scratchpadScale` area. They were always
+  `"bsp"` before.
+
 ## 0.6.1 (2026-11-10)
 
 - New `layout` and `workspaces` options (#17): the layout every workspace
