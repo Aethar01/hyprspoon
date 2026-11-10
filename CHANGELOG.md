@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 (2026-11-10)
 
 - New `layout` and `workspaces` options (#17): the layout every workspace
   is tiled in, and the layout of particular ones by number or name, e.g.
