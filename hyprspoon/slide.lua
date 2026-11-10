@@ -24,6 +24,7 @@ package.loaded["hyprspoon.slide"] = M
 
 local S = require("hyprspoon.state")
 local Util = require("hyprspoon.util")
+local Anim = require("hyprspoon.anim")
 
 -- The native module, loaded by M.start(); false if unavailable or off.
 local native = false
@@ -72,13 +73,13 @@ local function current(n, ids, screen)
     return k ~= nil and k.ids == signature(ids) and k.uuid == screen:getUUID()
 end
 
--- The slide over `screen`'s usable area, with the configured spring.
+-- The slide over `screen`'s usable area, moving as animations.workspaces says.
 local function slide(screen, t)
     local cfg = S.cfg.slide
     local mode = screen:currentMode()
     t.frame = rect(screen:frame())
     t.scale = mode and mode.scale or 1
-    t.mass, t.stiffness, t.damping = cfg.mass, cfg.stiffness, cfg.damping
+    for k, v in pairs(Anim.get("workspaces")) do t[k] = v end
     t.wallpaperAge = cfg.wallpaperRefresh or 0
     return t
 end
@@ -173,6 +174,60 @@ function M.endPan(commit, velocity)
     pan = nil
     native.finish(commit and 1 or 0, velocity or 0)
     if commit then panShownUntil = hs.timer.secondsSinceEpoch() + 0.5 end
+end
+
+-- Windows `ids`' frames as WindowServer has them ({[id] = rect}), without
+-- asking their apps; nil without the native module.
+function M.bounds(ids)
+    local mod = native or Util.native("slide")
+    return mod and mod.bounds and mod.bounds(ids) or nil
+end
+
+-- Retiles asked for, by token: called once their overlay is up (or not).
+local pending = {}
+local readyHooked = nil
+
+local function ready(token, up)
+    local done = pending[token]
+    pending[token] = nil
+    if done then done(up) end
+end
+
+-- A retile on `screen` (experimental.captureRetile): `tiles` is a list of
+-- { wid =, from = rect, to = rect, appear =, ring = }, gliding (and new
+-- ones growing) as animations.windows says, fading as animations.fadeIn
+-- does, over the wallpaper, or over a scratchpad the workspace it covers.
+-- Returns at once, true if asked for: the capture runs off the main
+-- thread, and `done(up)` is called once pictures cover the windows (`up`)
+-- or can't, for the windows to move then. A retile still on show is
+-- carried on from where its tiles are drawn.
+function M.retile(screen, tiles, done)
+    -- Over a scratchpad, the workspace it covers is the backdrop.
+    local beneath = require("hyprspoon.spaces").beneath(screen:getUUID())
+    local mod = native or Util.native("slide")
+    if not mod or not mod.retile or not mod.onReady or not screen or #tiles == 0 then return false end
+    if readyHooked ~= mod then
+        mod.onReady(ready)
+        readyHooked = mod
+    end
+    local mode = screen:currentMode()
+    local retile = type(S.cfg.experimental.captureRetile) == "table" and S.cfg.experimental.captureRetile or {}
+    local token = mod.retile({
+        frame = rect(screen:frame()),
+        scale = mode and mode.scale or 1,
+        move = Anim.get("windows"),
+        fade = Anim.get("fadeIn"),
+        hold = retile.hold or 0.05,
+        popin = retile.popin or 0.8,
+        mirror = retile.mirror or 32,
+        refresh = retile.refresh == nil and "live" or retile.refresh,
+        wallpaperAge = S.cfg.slide and S.cfg.slide.wallpaperRefresh or 0,
+        beneath = beneath,
+        tiles = tiles,
+    })
+    if not token then return false end
+    pending[token] = done
+    return true
 end
 
 -- Workspace `n` is gone: its picture with it.

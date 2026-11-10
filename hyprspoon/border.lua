@@ -171,6 +171,24 @@ local function rgba(color)
     return { rgb.red, rgb.green, rgb.blue, rgb.alpha or 1 }
 end
 
+-- The ring window `win` has now, for pictures of it that hide the real one
+-- (experimental.captureRetile, hyprspoon/slide.lua): { color = {r, g, b, a},
+-- width =, radius = } (radius the configured one: the native side reads the
+-- window's own where macOS reports it), or nil for none.
+function M.ringFor(win)
+    if not native or suspended or not S.cfg.border then return nil end
+    local id = win and win:id()
+    if not id or S.fullscreen[id] or Spaces.isHidden(id) or Scroll.isAway(id)
+       or Tree.behindMaximized(id) or Tree.filling(id) or Util.rulesFor(win, true).noborder then
+        return nil
+    end
+    local cfg = style()
+    local active = native.active and native.active() == id
+    local color = active and cfg.active or cfg.inactive
+    if not color then return nil end
+    return { color = rgba(color), width = cfg.width or 0, radius = cfg.radius or 0 }
+end
+
 -- Loads the native module with the configured style and rings the windows.
 function M.start()
     local group = S.cfg.group

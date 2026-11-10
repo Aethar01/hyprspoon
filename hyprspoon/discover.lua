@@ -120,7 +120,11 @@ local function requestSnapshot(frames)
         snapshot = result
         -- A normal coalesced pass is safe during Space arrivals. It does not
         -- lay out the old filter list synchronously inside an arrival event.
-        if changed then require("hyprspoon.layout").scheduleRetile(false) end
+        if changed then
+            local Layout = require("hyprspoon.layout")
+            Layout.scheduleRetile(false)
+            Layout.snapshotChanged(result)
+        end
     end)
 end
 

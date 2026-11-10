@@ -101,7 +101,7 @@ local Scroll = require("hyprspoon.scroll")
 -- handed straight to hs.hotkey.bind; start and stop are Spoon methods.
 local M = {
     name = "hyprspoon",
-    version = "0.5.2",
+    version = "0.6.0",
     author = "Aethar",
     homepage = "https://github.com/Aethar01/hyprspoon",
     license = "MIT - https://opensource.org/licenses/MIT",
@@ -614,6 +614,8 @@ function M:start(opts)
                 end
             end
         end)
+        -- New windows are placed the moment WindowServer has them.
+        if events.created then events.created(Layout.windowCreated) end
         S.running.events = events
     else
         filter:subscribe(hs.window.filter.windowMoved, onWindowMoved)
@@ -747,6 +749,7 @@ function M:start(opts)
             end
         else
             Layout.scheduleRetile(false, true)
+            if event == hs.window.filter.windowDestroyed then Layout.windowGone(win) end
         end
         Layout.scheduleRecheck()
     end)

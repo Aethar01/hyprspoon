@@ -82,7 +82,7 @@ package.loaded["hyprspoon.border"] = { sync = function() end, syncNow = function
 hs = { application = { applicationForPID = function() return app end },
     timer = { secondsSinceEpoch = function() return clock end,
         doAfter = function() return { stop = function() end } end } }
-package.loaded["hyprspoon.layout"] = { scheduleRetile = function() end }
+package.loaded["hyprspoon.layout"] = { scheduleRetile = function() end, snapshotChanged = function() end }
 local Discover = require("hyprspoon.discover")
 -- Reload: a saved set already confirms its background identities. AXWindows
 -- exposes only the shown tab, and a remote repair must not be needed to

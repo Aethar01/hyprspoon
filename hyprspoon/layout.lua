@@ -17,6 +17,7 @@ local Restore = require("hyprspoon.restore")
 local Hooks = require("hyprspoon.hooks")
 local Groupbar = require("hyprspoon.groupbar")
 local Scroll = require("hyprspoon.scroll")
+local Anim = require("hyprspoon.anim")
 
 -- ---------------------------------------------------------------------------
 -- BSP tiling: layout
@@ -656,7 +657,7 @@ local function applyTree(node, rect, byID, full, opts)
             -- setFrame is size, position, size; one call is enough when only
             -- one of them changes. Only setFrame animates. hyprspoon.native.frames
             -- makes the same choice itself, off the main thread.
-            local duration = opts and opts.duration or S.cfg.tiling.animationDuration
+            local duration = opts and opts.duration or Anim.windowDuration()
             if S.dragState or S.instantLayout or hs.mouse.getButtons().left then duration = 0 end
             if opts and opts.dx and duration > 0 then
                 moved = true
@@ -724,6 +725,78 @@ local function layOut(tree, rect)
     applyTree(tree, rect, {})
 end
 
+-- Per workspace, the windows its last pass tiled (experimental.captureRetile):
+-- one not among them is new there, and fades in at its tile rather than
+-- gliding from where it opened.
+local captureTiled = {}
+
+-- Per workspace, the latest pass (a counter), so only its windows move once
+-- its pictures are up, and when its retile was asked for: while one may
+-- still be on show, every pass goes to it, so its tiles glide on to where
+-- this one puts them even if the windows themselves are there already.
+local retileSerial, retileAt = {}, {}
+local RETILE_SHOWN_FOR = 0.6
+
+-- experimental.captureRetile: when the pass about to apply `tree` in
+-- `area` moves tiles on `screen`, pictures of them glide there instead of
+-- the windows easing. The capture runs off the main thread; the windows
+-- move at once when it's done, unless a later pass has come since. True
+-- if it took the pass over; false to apply it as usual.
+local function captureRetile(key, screen, tree, area, byID, full)
+    local before = captureTiled[key]
+    captureTiled[key] = {}
+    for id in pairs(byID) do captureTiled[key][id] = true end
+    -- Any pass supersedes the ones still waiting for their pictures.
+    local serial = (retileSerial[key] or 0) + 1
+    retileSerial[key] = serial
+    if not (S.cfg.experimental or {}).captureRetile or Anim.windowDuration() <= 0 or S.dragState
+       or S.instantLayout or hs.mouse.getButtons().left then
+        return false
+    end
+    applyTree(tree, area, {}, full)
+    local sf = screen:frame()
+    local now = hs.timer.secondsSinceEpoch()
+    local tiles, moved = {}, now - (retileAt[key] or 0) < RETILE_SHOWN_FOR
+    local leaves, ids = Tree.leaves(tree), {}
+    for i, leaf in ipairs(leaves) do ids[i] = leaf.windowID end
+    -- Where the windows are, from WindowServer: asking each app (win:frame())
+    -- held every key up by a round trip per tile.
+    local Slide = require("hyprspoon.slide")
+    local bounds = Slide.bounds(ids) or {}
+    for _, leaf in ipairs(leaves) do
+        local win, to = byID[leaf.windowID], leaf.windowRect
+        if win and to then
+            local f = bounds[leaf.windowID] or win:frame()
+            -- Only windows on show: a parked one has no picture to take.
+            if f.x < sf.x + sf.w and f.x + f.w > sf.x and f.y < sf.y + sf.h and f.y + f.h > sf.y then
+                -- After a reload nothing counts as new.
+                local new = before ~= nil and not before[leaf.windowID]
+                if new or not framesMatch(f, to) then moved = true end
+                tiles[#tiles + 1] = {
+                    wid = leaf.windowID,
+                    from = { x = f.x, y = f.y, w = f.w, h = f.h },
+                    to = { x = to.x, y = to.y, w = to.w, h = to.h },
+                    appear = new,
+                    -- The overlay hides the real ring: drawn with the picture.
+                    ring = Border.ringFor(win),
+                }
+            end
+        end
+    end
+    if not moved then return false end
+    local started = Slide.retile(screen, tiles, function(up)
+        if retileSerial[key] ~= serial then return end
+        local was = S.applyingLayout
+        S.applyingLayout = true
+        local ok, err = xpcall(applyTree, debug.traceback, tree, area, byID, full,
+            up and { duration = 0 } or nil)
+        S.applyingLayout = was
+        if not ok then print("hyprspoon: retile failed: " .. tostring(err)) end
+    end)
+    if started then retileAt[key] = now end
+    return started
+end
+
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
 -- flips only ever affect the layout of the window's own screen).
 local function tileNow(onlyIfChanged, onlyScreenUUID)
@@ -781,7 +854,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                     Scroll.arrange(key, tree, usableFrame, screen, byID, full)
                     -- As scrolled to: new windows can move the view.
                     signatures[key] = base .. Scroll.signature(key)
-                else
+                elseif not captureRetile(key, screen, tree, usableFrame, byID, full) then
                     applyTree(tree, usableFrame, byID, full)
                 end
             end
@@ -802,7 +875,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
         Float.raiseFloating()
         -- Each animation step fires windowMoved too.
         S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE
-            + (S.instantLayout and 0 or S.cfg.tiling.animationDuration)
+            + (S.instantLayout and 0 or Anim.windowDuration())
         Focus.invalidateWindowCache()
     end
     Groupbar.update()
@@ -894,6 +967,57 @@ local function scheduleRetile(force, immediate, delay)
 end
 
 -- The Space showing changed: the filter has caught up with every window.
+-- Windows WindowServer has just created (hyprspoon.native.events), of ours
+-- and not maybe native tabs: id -> { pid =, at = }. Discovery tiles a new
+-- window only once the native-tab snapshot shows it, and the window filter
+-- takes it in as allowed, as a Space switch does too: both retile behind
+-- the usual delay, while the window sits where the app opened it.
+local justCreated = {}
+local CREATED_FOR = 1
+
+local function flushRetile()
+    if not (retileTimer and retilePending) then return end
+    retileTimer:stop()
+    retileTimer = nil
+    retileFlush()
+end
+
+-- Any window being created (menus, tooltips) lands here, so only a pending
+-- retile looks it up.
+local function windowCreated(id)
+    if not (retileTimer and retilePending) then return end
+    local win = Util.windowFor(id)
+    if not win or mayBeTab(win) then return end
+    justCreated[id] = { pid = win:pid(), at = hs.timer.secondsSinceEpoch() }
+    flushRetile()
+end
+
+-- Window `win` was destroyed. Its first event, leaving the Space, held the
+-- retile back for a tab swap's new tab, and later requests never bring it
+-- forward: a window with no tabs beside it has none coming, so the tiles
+-- left close up now instead of a fifth of a second later.
+local function windowGone(win)
+    if not win then return end
+    local id = win:id()
+    local set = id and Tree.setOf(id)
+    if (set and #set.members > 1) or Discover.nativePeer(win) then return end
+    flushRetile()
+end
+
+-- The native-tab snapshot changed (`snapshot`: pid -> { id -> state }) and
+-- asked for a retile: done now if it shows a window just created.
+local function snapshotChanged(snapshot)
+    local now, shown = hs.timer.secondsSinceEpoch(), false
+    for id, c in pairs(justCreated) do
+        if now - c.at > CREATED_FOR then
+            justCreated[id] = nil
+        elseif snapshot[c.pid] and snapshot[c.pid][id] == "shown" then
+            justCreated[id], shown = nil, true
+        end
+    end
+    if shown then flushRetile() end
+end
+
 local function spaceChanged()
     if spaceMoveTimer then spaceMoveTimer:stop() spaceMoveTimer = nil end
     scheduleRetile(true)
@@ -1023,8 +1147,8 @@ local function toggleWorkspaceTiling(key)
         local win, frame = Util.winByID[id], S.floatingFrames[id]
         S.floatingFrames[id], S.applied[id] = nil, nil
         if frame and win and win:id() == id and not Spaces.isHidden(id) then
-            S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE + S.cfg.tiling.animationDuration
-            Util.setFrame(win, frame, S.cfg.tiling.animationDuration)
+            S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE + Anim.windowDuration()
+            Util.setFrame(win, frame, Anim.windowDuration())
         end
     end
     Tree.saveTrees()
@@ -1068,6 +1192,9 @@ M.handFocusBack = handFocusBack
 M.BSP_TAB_SETTLE = BSP_TAB_SETTLE
 M.BSP_SETTLE = BSP_SETTLE
 M.scheduleRetile = scheduleRetile
+M.windowCreated = windowCreated
+M.snapshotChanged = snapshotChanged
+M.windowGone = windowGone
 M.scheduleRecheck = scheduleRecheck
 M.spaceChanged = spaceChanged
 M.holdForSpaceMove = holdForSpaceMove

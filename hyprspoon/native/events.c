@@ -3,7 +3,7 @@
 // Loaded by hyprspoon/init.lua as hyprspoon.native.events (build: make -C hyprspoon/native).
 //
 // Lua functions: start(onMoved), watch(ids), filter(on), mute(idOrNil),
-// stop(). filter limits delivery to watch(ids) while border masking adds
+// created(fn), stop(). filter limits delivery to watch(ids) while border masking adds
 // occluders on the shared connection. Without this module, init.lua uses
 // hs.window.filter move notifications, which arrive later.
 //
@@ -30,7 +30,9 @@
     X(int, SLSMainConnectionID, (void))                                   \
     X(CGError, SLSRegisterNotifyProc, (void *, uint32_t, void *))         \
     X(CGError, SLSRemoveNotifyProc, (void *, uint32_t, void *))           \
-    X(CGError, SLSRequestNotificationsForWindows, (int, uint32_t *, int))
+    X(CGError, SLSRequestNotificationsForWindows, (int, uint32_t *, int)) \
+    X(CGError, SLSRegisterConnectionNotifyProc, (int, void *, uint32_t, void *)) \
+    X(CGError, SLSRemoveConnectionNotifyProc, (int, void *, uint32_t, void *))
 
 SL_FUNCS(SL_DECLARE)
 
@@ -166,7 +168,66 @@ static void registerEvents(bool on) {
     }
 }
 
+// New windows, anywhere (SL_EVENT_WINDOW_CREATE): handed to Lua a run loop
+// pass later, so a window the window filter has just taken in can be placed
+// at once instead of behind the coalescing delay. The filter reports most
+// new windows as allowed, which a Space switch also does, so it can't tell.
+#define MAX_CREATED 32
+static LuaCallback onCreated = LUA_CALLBACK_NONE;
+static uint32_t created[MAX_CREATED];
+static int createdCount = 0;
+static dispatch_source_t createdDelivery = NULL;
+static bool createRegistered = false;
+
+static void deliverCreated(void *unused) {
+    (void)unused;
+    uint32_t list[MAX_CREATED];
+    int count = createdCount;
+    memcpy(list, created, sizeof(uint32_t) * count);
+    createdCount = 0;
+    for (int i = 0; i < count; i++) {
+        if (!luaCallbackPush(&onCreated)) break;
+        lua_pushinteger(onCreated.L, list[i]);
+        luaCallbackCall(&onCreated, 1);
+    }
+}
+
+// Carries { uint64_t space; uint32_t window; } (see skylight.h).
+static void onWindowCreated(uint32_t event, void *data, size_t length, int connection) {
+    (void)event;
+    (void)connection;
+    if (!data || length < 12 || !pthread_main_np()) return;
+    uint32_t wid;
+    memcpy(&wid, (char *)data + 8, sizeof(uint32_t));
+    if (createdCount < MAX_CREATED) created[createdCount++] = wid;
+    if (createdDelivery) dispatch_source_merge_data(createdDelivery, 1);
+}
+
+// Only what was registered may be removed: SkyLight aborts otherwise.
+static void registerCreated(bool on) {
+    if (on == createRegistered) return;
+    if (on) {
+        createRegistered = SLSRegisterConnectionNotifyProc(cid, (void *)onWindowCreated,
+            SL_EVENT_WINDOW_CREATE, NULL) == kCGErrorSuccess;
+    } else {
+        SLSRemoveConnectionNotifyProc(cid, (void *)onWindowCreated, SL_EVENT_WINDOW_CREATE, NULL);
+        createRegistered = false;
+    }
+}
+
+static void stopCreated(void) {
+    registerCreated(false);
+    if (createdDelivery) {
+        dispatch_source_cancel(createdDelivery);
+        dispatch_release(createdDelivery);
+        createdDelivery = NULL;
+    }
+    luaCallbackClear(&onCreated);
+    createdCount = 0;
+}
+
 static void stop(void) {
+    stopCreated();
     registerEvents(false);
     if (delivery) {
         dispatch_source_cancel(delivery);
@@ -234,6 +295,19 @@ static int l_mute(lua_State *L) {
     return 0;
 }
 
+// created(fn or nil): calls fn(windowId) for each window created anywhere
+// (menus and tooltips too), until stop() or created(nil).
+static int l_created(lua_State *L) {
+    stopCreated();
+    if (lua_type(L, 1) != LUA_TFUNCTION) return 0;
+    luaCallbackSet(&onCreated, L, 1);
+    createdDelivery = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_OR, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler_f(createdDelivery, deliverCreated);
+    dispatch_resume(createdDelivery);
+    registerCreated(true);
+    return 0;
+}
+
 static int l_stop(lua_State *L) {
     (void)L;
     stop();
@@ -259,6 +333,7 @@ int luaopen_hyprspoon_native_events(lua_State *L) {
         { "watch", l_watch },
         { "filter", l_filter },
         { "mute", l_mute },
+        { "created", l_created },
         { "stop", l_stop },
         { NULL, NULL },
     };

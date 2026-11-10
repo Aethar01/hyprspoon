@@ -25,6 +25,7 @@
 #import <QuartzCore/QuartzCore.h>
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
+#include <os/lock.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -43,6 +44,7 @@
 
 #define SL_FUNCS(X)                                                                    \
     X(CGError, SLSNewConnection, (int, int *))                                         \
+    X(int, SLSMainConnectionID, (void))                                                \
     X(CGError, SLSReleaseConnection, (int))                                            \
     X(CGError, SLSGetEventPort, (int, mach_port_t *))                                  \
     X(CGEventRef, SLEventCreateNextEvent, (int))                                       \
@@ -68,9 +70,20 @@
 
 SL_FUNCS(SL_DECLARE)
 
+// Optional: each window's corner radius (macOS 26 and later), as border.m
+// reads it. Without it, the radius Lua gives.
+static CFTypeRef (*SLSWindowQueryWindows)(int, CFArrayRef, uint32_t);
+static CFTypeRef (*SLSWindowQueryResultCopyWindows)(CFTypeRef);
+static bool (*SLSWindowIteratorAdvance)(CFTypeRef);
+static CFArrayRef (*SLSWindowIteratorGetCornerRadii)(CFTypeRef);
+
 static const char *loadSymbols(void) {
     slOpen();
     SL_FUNCS(SL_LOAD)
+    SLSWindowQueryWindows = dlsym(RTLD_DEFAULT, "SLSWindowQueryWindows");
+    SLSWindowQueryResultCopyWindows = dlsym(RTLD_DEFAULT, "SLSWindowQueryResultCopyWindows");
+    SLSWindowIteratorAdvance = dlsym(RTLD_DEFAULT, "SLSWindowIteratorAdvance");
+    SLSWindowIteratorGetCornerRadii = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetCornerRadii");
     return NULL;
 }
 
@@ -211,25 +224,31 @@ static void sortByStacking(uint32_t *wids, int count) {
     }
 }
 
-// One capture of `wids` together, as they're stacked on screen, and where
-// it covers (retained; NULL if there's nothing to see).
-static CGImageRef capture(uint32_t *wids, int count, CGRect *bounds) {
-    sortByStacking(wids, count);
+// One capture of `wids` together on `connection`, and where it covers
+// (retained; NULL if there's nothing to see). With `stacked`, put in their
+// on-screen order first; windows that don't overlap (tiles) needn't be.
+static CGImageRef captureOn(int connection, uint32_t *wids, int count, CGRect *bounds, bool stacked) {
+    if (stacked) sortByStacking(wids, count);
     CGRect screen = displaysBounds(), area = CGRectNull;
     for (int i = 0; i < count; i++) {
         CGRect b;
-        if (SLSGetWindowBounds(cid, wids[i], &b) != kCGErrorSuccess) continue;
+        if (SLSGetWindowBounds(connection, wids[i], &b) != kCGErrorSuccess) continue;
         b = CGRectIntersection(b, screen);
         if (!CGRectIsNull(b)) area = CGRectUnion(area, b);
     }
     if (CGRectIsNull(area) || CGRectIsEmpty(area)) return NULL;
-    CFArrayRef list = SLSHWCaptureWindowList(cid, wids, count, CAPTURE_NOMINAL);
+    CFArrayRef list = SLSHWCaptureWindowList(connection, wids, count, CAPTURE_NOMINAL);
     if (!list) return NULL;
     CGImageRef image = NULL;
     if (CFArrayGetCount(list) > 0) image = CGImageRetain((CGImageRef)CFArrayGetValueAtIndex(list, 0));
     CFRelease(list);
     *bounds = area;
     return image;
+}
+
+// A capture of `wids` as they're stacked on screen, on the slide's connection.
+static CGImageRef capture(uint32_t *wids, int count, CGRect *bounds) {
+    return captureOn(cid, wids, count, bounds, true);
 }
 
 // The windows drawing the desktop of the display at `bounds`: the
@@ -316,8 +335,54 @@ static CGRect placed = { { 0, 0 }, { 0, 0 } }; // where the window is
 static double placedScale = 0;
 static bool shown = false;
 static unsigned generation = 0; // which slide the ordering-out belongs to
+// Tiles in the retile on show (see Retiles below); none once it's down.
+static int shownCount = 0;
 
 static NSString *positionKey = nil, *slideKey = nil;
+
+// How something moves (the `animations` option): on a spring (Hyprland's
+// mass, stiffness and dampening), or eased over `duration` seconds,
+// quad-out like the windows' own animations.
+typedef struct {
+    bool ease;
+    double duration, mass, stiffness, damping;
+} Motion;
+
+static const Motion defaultMotion = { false, 0.2, 0.6, 800, 38 };
+
+// The retile on show (see Retiles below) while the overlay's generation is
+// retileGeneration: how its tiles move, and how new ones and its handover
+// fade, and how it refreshes its pictures mid-glide (retileRefresh).
+static unsigned retileGeneration = 0;
+static Motion retileMove, retileFade;
+enum { REFRESH_OFF, REFRESH_ONCE, REFRESH_LIVE };
+static int retileRefresh = REFRESH_OFF;
+static double glideEnds = 0; // when its last glide settles (CFAbsoluteTime)
+static bool fadingOut = false; // the overlay fading to the windows beneath
+static NSString *boundsKey = nil, *sizeKey = nil, *opacityKey = nil, *scaleKey = nil;
+
+// An animation of `key` from `from` to `to` as `m` moves, its duration how
+// long that takes. `velocity`, in distances to go per second, starts a
+// spring off.
+static CABasicAnimation *animate(Motion m, NSString *key, id from, id to, double velocity) {
+    CABasicAnimation *a;
+    if (m.ease) {
+        a = [CABasicAnimation animationWithKeyPath:key];
+        a.duration = m.duration;
+        a.timingFunction = [CAMediaTimingFunction functionWithControlPoints:0.25f :0.46f :0.45f :0.94f];
+    } else {
+        CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:key];
+        spring.mass = m.mass;
+        spring.stiffness = m.stiffness;
+        spring.damping = m.damping;
+        spring.initialVelocity = velocity;
+        spring.duration = spring.settlingDuration;
+        a = spring;
+    }
+    a.fromValue = from;
+    a.toValue = to;
+    return a;
+}
 
 static void beginChanges(void) {
     [CATransaction begin];
@@ -443,21 +508,44 @@ typedef struct {
     int still;      // a picture that stays put beneath them (0 for none)
     CGPoint toward; // unit direction the arriving one comes from, e.g. (1, 0): the right
     bool backdrop;  // over the wallpaper, hiding the windows beneath
-    double mass, stiffness, damping;
+    Motion motion;
 } Slide;
 
 // The plane both pictures ride (root holds it; nil between slides), how
-// far it travels, and the spring that moves it.
+// far it travels, and how it moves.
 static CALayer *plane = nil;
 static CGPoint travel = { 0, 0 };
-static double springMass = 1, springStiffness = 800, springDamping = 50;
+static Motion slideMotion = { false, 0.2, 0.6, 800, 38 };
+
+static void dropBeneath(void);
 
 static void finish(void *unused) {
     (void)unused;
     if (settling != generation) return;
+    // A retile hands over by fading to the windows beneath, in place by
+    // now: the stretched pictures turn into the real windows in one change.
+    if (shownCount > 0 && retileGeneration == generation && !fadingOut
+        && !(retileFade.ease && retileFade.duration <= 0)) {
+        fadingOut = true;
+        beginChanges();
+        CABasicAnimation *fade = animate(retileFade, opacityKey, @1.0, @0.0, 0);
+        root.opacity = 0;
+        [root addAnimation:fade forKey:opacityKey];
+        commitChanges();
+        dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(fade.duration * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER, 0);
+        return;
+    }
+    fadingOut = false;
+    shownCount = 0;
     clearLayers();
     plane = nil;
     orderWindow(false);
+    dropBeneath();
+    beginChanges();
+    [root removeAnimationForKey:opacityKey];
+    root.opacity = 1;
+    commitChanges();
     // A stale wallpaper is taken again now, between slides.
     if (wallpaperMaxAge <= 0) return;
     for (int i = 0; i < wallpaperCount; i++) {
@@ -482,12 +570,14 @@ static bool build(Slide s, double progress) {
         orderWindow(false);
         return false;
     }
-    springMass = s.mass;
-    springStiffness = s.stiffness;
-    springDamping = s.damping;
+    slideMotion = s.motion;
 
     travel = CGPointMake(s.toward.x * s.frame.size.width, s.toward.y * s.frame.size.height);
     beginChanges();
+    // Not faded, as a retile handing over leaves it.
+    fadingOut = false;
+    [root removeAnimationForKey:opacityKey];
+    root.opacity = 1;
     root.frame = (CGRect){ CGPointZero, s.frame.size };
     root.backgroundColor = NULL;
     if (s.backdrop) {
@@ -534,17 +624,13 @@ static void settle(double to, double velocity) {
     [plane removeAllAnimations];
     plane.position = end;
     if (distance >= 1 && length > 0) {
-        CASpringAnimation *spring = [CASpringAnimation animationWithKeyPath:positionKey];
-        spring.mass = springMass;
-        spring.stiffness = springStiffness;
-        spring.damping = springDamping;
-        // In distances to go per second, as CoreAnimation takes it.
-        spring.initialVelocity = velocity * length / distance;
-        spring.fromValue = [NSValue valueWithBytes:&from objCType:@encode(CGPoint)];
-        spring.toValue = [NSValue valueWithBytes:&end objCType:@encode(CGPoint)];
-        spring.duration = spring.settlingDuration;
-        [plane addAnimation:spring forKey:slideKey];
-        duration = spring.duration;
+        // The velocity in distances to go per second, as CoreAnimation
+        // takes it (an eased slide starts as it would from rest).
+        CABasicAnimation *a = animate(slideMotion, positionKey,
+            [NSValue valueWithBytes:&from objCType:@encode(CGPoint)],
+            [NSValue valueWithBytes:&end objCType:@encode(CGPoint)], velocity * length / distance);
+        [plane addAnimation:a forKey:slideKey];
+        duration = a.duration;
     }
     commitChanges();
     settling = generation;
@@ -554,6 +640,742 @@ static void settle(double to, double velocity) {
 
 static void run(Slide s) {
     if (build(s, 0)) settle(1, 0);
+}
+
+
+// ---------------------------------------------------------------------------
+// Retiles (#19, experimental.captureRetile; a prototype)
+// ---------------------------------------------------------------------------
+
+// A retile glides pictures of the tiles from where they were to where they
+// go, over the wallpaper, while the windows themselves move at once beneath,
+// as Hyprland draws a window's last frame while its tile animates and the
+// app catches up with the new size.
+//
+// Each tile is a box that moves and resizes on the spring, clipping its
+// picture, which stays at its own size: when the box outgrows it, the
+// window is mirrored in a band at its edges and stretched past that (see
+// edgeExtended), so it isn't scaled. Once it has settled, the overlay fades to the
+// windows beneath, in place by then. With `refresh`, windows that have their
+// new size are captured again mid-glide and fade in over the old pictures,
+// as Hyprland shows an app's new frame; off by default, since macOS doesn't
+// say when an app has finished drawing at its new size, and a picture taken
+// mid-redraw shows as an extra jump. New windows pop in at their tiles,
+// growing from `popin` of their size as they fade in.
+//
+// Tiles don't overlap, so one capture of them all (about 40ms, as for one
+// window) is cut into a picture of each: capturing each window on its own
+// costs the 40ms each, and WindowServer takes captures one at a time, from
+// one connection or several (measured: 4 windows, ~45ms together, ~160ms
+// apart, ~160ms in parallel on four connections). A new window isn't in the
+// first: it opened over the others, mid-way through macOS's own opening
+// animation (drawn black in their pictures). It has a capture of its own
+// straight after, once the overlay is up.
+
+#define MAX_TILES 64
+
+// When the windows are first captured again, and again after that for those
+// not at their new size yet, up to MAX_REFRESHES times.
+#define REFRESH_AFTER 0.08
+#define REFRESH_AGAIN 0.05
+#define MAX_REFRESHES 4
+
+typedef struct {
+    uint32_t wid;
+    CGRect from, to; // on screen
+    bool appear;     // new to the layout: pops in at `to`
+    bool ring;       // drawn with its border ring (the real one is beneath)
+    CGFloat color[4], width, radius;
+} Tile;
+
+
+// The retile on show (while retileGeneration is the overlay's generation):
+// its tiles, the box each is drawn in, and whether that shows a picture of
+// the window at its new size yet.
+static Tile shownTiles[MAX_TILES];
+static CALayer *boxes[MAX_TILES];
+static CALayer *rings[MAX_TILES]; // nil for a tile without one
+static bool live[MAX_TILES];
+static CGRect retileFrame;
+static double popScale = 0.8, retileHold = 0.05;
+static double retileEnds = 0; // when it's taken down (CFAbsoluteTime)
+static int refreshes = 0;
+static dispatch_source_t refresher = NULL;
+
+// Takes the retile down no sooner than `seconds` from now.
+static void endNoSooner(double seconds) {
+    double at = CFAbsoluteTimeGetCurrent() + seconds;
+    if (at <= retileEnds) return;
+    retileEnds = at;
+    settling = generation;
+    dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)),
+        DISPATCH_TIME_FOREVER, 0);
+}
+
+// Where `layer`'s anchor point is when its frame is `r`.
+static CGPoint anchorAt(CALayer *layer, CGRect r) {
+    return CGPointMake(r.origin.x + r.size.width * layer.anchorPoint.x,
+        r.origin.y + r.size.height * layer.anchorPoint.y);
+}
+
+// Moves `layer` from `from` to `to` as `m` moves; how long that takes.
+//
+// Additively: the layer is put at `to` and drawn offset by `from - to`, an
+// offset that goes to nothing. A retile carried on (`from` the frame the
+// last one was taking it to) adds its own offset over the one still
+// running, so the tile turns towards its new place without stopping: its
+// speed carries on, as Hyprland's windows do when their target changes.
+static double glide(CALayer *layer, CGRect from, CGRect to, Motion m) {
+    CGPoint p0 = anchorAt(layer, from), p1 = anchorAt(layer, to);
+    layer.position = p1;
+    layer.bounds = (CGRect){ CGPointZero, to.size };
+    if (m.ease && m.duration <= 0) return 0;
+    if (CGPointEqualToPoint(p0, p1) && CGSizeEqualToSize(from.size, to.size)) return 0;
+    CGPoint offset = CGPointMake(p0.x - p1.x, p0.y - p1.y), none = CGPointZero;
+    // The size alone: an offset with a negative width (a tile growing) as
+    // a whole bounds rect is standardized by CoreAnimation into a shifted
+    // origin, which slid the picture over by the width it was to grow.
+    CGSize grow = { from.size.width - to.size.width, from.size.height - to.size.height }, still = CGSizeZero;
+    CABasicAnimation *move = animate(m, positionKey, [NSValue valueWithBytes:&offset objCType:@encode(CGPoint)],
+        [NSValue valueWithBytes:&none objCType:@encode(CGPoint)], 0);
+    CABasicAnimation *size = animate(m, sizeKey, [NSValue valueWithBytes:&grow objCType:@encode(CGSize)],
+        [NSValue valueWithBytes:&still objCType:@encode(CGSize)], 0);
+    move.additive = YES;
+    size.additive = YES;
+    // Unnamed, so each adds to those still running instead of replacing them.
+    [layer addAnimation:move forKey:nil];
+    [layer addAnimation:size forKey:nil];
+    return move.duration;
+}
+
+// Fades `layer` in as `m` moves; how long that takes.
+static double fadeIn(CALayer *layer, Motion m) {
+    layer.opacity = 1;
+    if (m.ease && m.duration <= 0) return 0;
+    CABasicAnimation *fade = animate(m, opacityKey, @0.0, @1.0, 0);
+    [layer addAnimation:fade forKey:opacityKey];
+    return fade.duration;
+}
+
+// The parts of a picture all show the one capture: each layer has the whole
+// image as its contents and shows its part through contentsRect, so
+// CoreAnimation uploads the capture once. (A cropped copy per layer, about
+// 30 a picture, was uploaded on its own each time, and cost Hammerspoon
+// most of its CPU time in a retile with live refresh.)
+typedef struct {
+    CGImageRef image;
+    CGFloat iw, ih; // its size in pixels
+    CGFloat ox, oy; // where the window starts in it, in pixels
+    CGFloat w, h;   // the window's size in it, in pixels
+} Source;
+
+// A layer showing pixels `px` (relative to the window in `s`) over `frame`
+// (in its parent), with `transform`; `sharp` for a strip stretched out, so
+// it isn't blended with the pixels beside it.
+static CALayer *partLayer(const Source *s, CGRect px, CGRect frame, CATransform3D transform, bool sharp) {
+    CALayer *layer = [CALayer layer];
+    layer.bounds = (CGRect){ CGPointZero, frame.size };
+    layer.position = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+    layer.transform = transform;
+    layer.contents = (id)s->image;
+    layer.contentsRect = CGRectMake((s->ox + px.origin.x) / s->iw, (s->oy + px.origin.y) / s->ih,
+        px.size.width / s->iw, px.size.height / s->ih);
+    if (sharp) {
+        layer.magnificationFilter = kCAFilterNearest;
+        layer.minificationFilter = kCAFilterNearest;
+    }
+    return layer;
+}
+
+// The window in `s` (`pw` x `ph` points, `ix` x `iy` pixels clear of its
+// rounded corners at each edge) as a layer over `frame` with `transform`,
+// its see-through corners filled from the window just beside them: patches
+// beneath it, so a corner shows the window's own edge, not what's behind.
+static CALayer *squared(const Source *s, CGFloat ix, CGFloat iy, CGFloat pw, CGFloat ph, CGRect frame,
+                        CATransform3D transform) {
+    CGFloat w = s->w, h = s->h;
+    CGFloat cw = ix * pw / w, ch = iy * ph / h; // a corner, in points
+    CALayer *layer = [CALayer layer];
+    layer.bounds = (CGRect){ CGPointZero, frame.size };
+    layer.position = CGPointMake(CGRectGetMidX(frame), CGRectGetMidY(frame));
+    layer.transform = transform;
+    // Each corner from the pixels across from it, towards the middle.
+    CGRect from[4] = { { { ix, 0 }, { ix, iy } }, { { w - 2 * ix, 0 }, { ix, iy } },
+        { { ix, h - iy }, { ix, iy } }, { { w - 2 * ix, h - iy }, { ix, iy } } };
+    CGRect to[4] = { { { 0, 0 }, { cw, ch } }, { { pw - cw, 0 }, { cw, ch } },
+        { { 0, ph - ch }, { cw, ch } }, { { pw - cw, ph - ch }, { cw, ch } } };
+    for (int i = 0; i < 4; i++) [layer addSublayer:partLayer(s, from[i], to[i], CATransform3DIdentity, false)];
+    [layer addSublayer:partLayer(s, CGRectMake(0, 0, w, h), CGRectMake(0, 0, pw, ph), CATransform3DIdentity, false)];
+    return layer;
+}
+
+// Points of a growing tile's window mirrored past its edges before the
+// rest is stretched (captureRetile.mirror).
+static double mirrorBand = 32;
+
+// Adds to `parent`, clipped to `clip`, the window squared off (see squared)
+// over `frame` (relative to `clip`) with `transform`.
+static void clippedMirror(CALayer *parent, const Source *s, CGFloat ix, CGFloat iy, CGFloat pw, CGFloat ph,
+                          CGRect clip, CGRect frame, CATransform3D transform) {
+    if (clip.size.width <= 0 || clip.size.height <= 0) return;
+    CALayer *window = [CALayer layer];
+    window.anchorPoint = CGPointZero;
+    window.frame = clip;
+    window.masksToBounds = YES;
+    [window addSublayer:squared(s, ix, iy, pw, ph, frame, transform)];
+    [parent addSublayer:window];
+}
+
+// A picture of the part `src` (on screen) of `image`, which covers `area`,
+// at the top-left of its box, at its own size, the window's corners
+// `radius` round and filled in (see squared). Past its right and bottom
+// edges, for the box to clip as the tile grows: a band `band` points wide
+// of the window mirrored at that edge, so a scroll bar or border there
+// carries on, and past the band its far edge stretched.
+static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat radius, double band) {
+    double sx = CGImageGetWidth(image) / area.size.width, sy = CGImageGetHeight(image) / area.size.height;
+    CGRect px = CGRectIntegral(CGRectMake((src.origin.x - area.origin.x) * sx, (src.origin.y - area.origin.y) * sy,
+        src.size.width * sx, src.size.height * sy));
+    Source s = { image, CGImageGetWidth(image), CGImageGetHeight(image), px.origin.x, px.origin.y,
+        px.size.width, px.size.height };
+    if (s.w < 3 || s.h < 3) return nil;
+    CGFloat w = s.w, h = s.h;
+    CGFloat pw = src.size.width, ph = src.size.height, far = 1e4;
+    // Columns and rows clear of the rounded corners.
+    CGFloat ix = fmin(ceil(radius * sx) + 1, floor(w / 3)), iy = fmin(ceil(radius * sy) + 1, floor(h / 3));
+    // The bands: clear of the corners where there's a band at all, and no
+    // more than half the window.
+    CGFloat bx = band > 0 ? fmin(fmax(band, ix / sx + 1), pw / 2) : 0;
+    CGFloat by = band > 0 ? fmin(fmax(band, iy / sy + 1), ph / 2) : 0;
+    // The columns (rows) the stretch is taken from: the bands' far edges,
+    // or without bands the window's own, inside its corners.
+    CGFloat cx = bx > 0 ? floor(w - bx * sx) : w - 1 - ix, cy = by > 0 ? floor(h - by * sy) : h - 1 - iy;
+    CALayer *pic = [CALayer layer];
+    pic.anchorPoint = CGPointZero;
+    pic.frame = CGRectMake(0, 0, pw, ph);
+    CATransform3D none = CATransform3DIdentity;
+    [pic addSublayer:partLayer(&s, CGRectMake(cx, 0, 1, h), CGRectMake(pw + bx, 0, far, ph), none, true)];
+    [pic addSublayer:partLayer(&s, CGRectMake(0, cy, w, 1), CGRectMake(0, ph + by, pw, far), none, true)];
+    [pic addSublayer:partLayer(&s, CGRectMake(cx, cy, 1, 1), CGRectMake(pw + bx, ph, far, far), none, true)];
+    [pic addSublayer:partLayer(&s, CGRectMake(cx, cy, 1, 1), CGRectMake(pw, ph + by, bx, far), none, true)];
+    // The mirrored bands: right, below, and both at the corner. Flipped
+    // about its middle, a copy at the band's origin has the window's edge
+    // against the seam; the band shows the part of it nearest.
+    CGRect mirrored = CGRectMake(0, 0, pw, ph);
+    clippedMirror(pic, &s, ix, iy, pw, ph, CGRectMake(pw, 0, bx, ph), mirrored, CATransform3DMakeScale(-1, 1, 1));
+    clippedMirror(pic, &s, ix, iy, pw, ph, CGRectMake(0, ph, pw, by), mirrored, CATransform3DMakeScale(1, -1, 1));
+    clippedMirror(pic, &s, ix, iy, pw, ph, CGRectMake(pw, ph, bx, by), mirrored, CATransform3DMakeScale(-1, -1, 1));
+    // The window itself.
+    [pic addSublayer:squared(&s, ix, iy, pw, ph, CGRectMake(0, 0, pw, ph), none)];
+    return pic;
+}
+
+// Corner radii looked up lately, by window: a window's doesn't change, and
+// asking WindowServer for each tile's on every retile held its overlay up.
+#define MAX_RADII 64
+#define RADIUS_MAX_AGE 10.0
+static struct {
+    uint32_t wid;
+    CGFloat radius;
+    double at;
+} radii[MAX_RADII];
+static int nextRadius = 0;
+
+static CGFloat lookUpRadius(uint32_t wid, CGFloat fallback);
+
+// Window `wid`'s corner radius as WindowServer has it, else `fallback`.
+static CGFloat cornerRadius(uint32_t wid, CGFloat fallback) {
+    double now = CFAbsoluteTimeGetCurrent();
+    for (int i = 0; i < MAX_RADII; i++) {
+        if (radii[i].wid == wid && now - radii[i].at < RADIUS_MAX_AGE) return radii[i].radius > 0 ? radii[i].radius : fallback;
+    }
+    CGFloat radius = lookUpRadius(wid, 0);
+    radii[nextRadius].wid = wid;
+    radii[nextRadius].radius = radius;
+    radii[nextRadius].at = now;
+    nextRadius = (nextRadius + 1) % MAX_RADII;
+    return radius > 0 ? radius : fallback;
+}
+
+static CGFloat lookUpRadius(uint32_t wid, CGFloat fallback) {
+    CGFloat radius = 0;
+    if (SLSWindowQueryWindows && SLSWindowQueryResultCopyWindows && SLSWindowIteratorAdvance
+        && SLSWindowIteratorGetCornerRadii) {
+        CFArrayRef list = slWindowList(wid);
+        CFTypeRef query = SLSWindowQueryWindows(cid, list, 0);
+        CFTypeRef iterator = query ? SLSWindowQueryResultCopyWindows(query) : NULL;
+        if (iterator && SLSWindowIteratorAdvance(iterator)) {
+            CFArrayRef radii = SLSWindowIteratorGetCornerRadii(iterator);
+            if (radii && CFArrayGetCount(radii) > 0) {
+                double value = 0;
+                CFNumberGetValue(CFArrayGetValueAtIndex(radii, 0), kCFNumberDoubleType, &value);
+                radius = value;
+            }
+            if (radii) CFRelease(radii);
+        }
+        if (iterator) CFRelease(iterator);
+        if (query) CFRelease(query);
+        CFRelease(list);
+    }
+    return radius > 0 ? radius : fallback;
+}
+
+// `r` grown by `by` on every side.
+static CGRect outset(CGRect r, CGFloat by) {
+    return CGRectInset(r, -by, -by);
+}
+
+// Tile `t`'s ring, as border.m draws it: `width` wide just outside the
+// window, its inside following the window's corners.
+static CALayer *ringLayer(const Tile *t) {
+    CALayer *ring = [CALayer layer];
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGColorRef color = CGColorCreate(space, t->color);
+    CGColorSpaceRelease(space);
+    ring.borderColor = color;
+    CGColorRelease(color);
+    ring.borderWidth = t->width;
+    ring.cornerRadius = t->radius + t->width;
+    return ring;
+}
+
+static bool near2(CGFloat a, CGFloat b) {
+    return fabs(a - b) <= 2;
+}
+
+// Whether a window at `b` is where its tile `to` puts it, at its size.
+static bool arrived(CGRect b, CGRect to) {
+    return near2(b.origin.x, to.origin.x) && near2(b.origin.y, to.origin.y)
+        && near2(b.size.width, to.size.width) && near2(b.size.height, to.size.height);
+}
+
+// The tile showing window `target`, or -1.
+static int tileOf(uint32_t target) {
+    for (int i = 0; i < shownCount; i++) {
+        if (shownTiles[i].wid == target) return i;
+    }
+    return -1;
+}
+
+// Gives ring `ring` tile `t`'s colour and width.
+static void styleRing(CALayer *ring, const Tile *t) {
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGColorRef color = CGColorCreate(space, t->color);
+    CGColorSpaceRelease(space);
+    ring.borderColor = color;
+    CGColorRelease(color);
+    ring.borderWidth = t->width;
+    ring.cornerRadius = t->radius + t->width;
+}
+
+// Puts a picture of tile `i`, from `image` (covering `area`), in its box:
+// a new tile with nothing shown yet pops in with it; otherwise it fades in
+// over what's there (the one beneath kept for that, older ones dropped).
+// How long that takes.
+static double showPicture(int i, CGImageRef image, CGRect area, CGRect b) {
+    CALayer *box = boxes[i];
+    CALayer *pic = edgeExtended(image, area, b, shownTiles[i].radius, mirrorBand);
+    if (!pic) return 0;
+    double took = 0;
+    if (box.sublayers.count == 0) {
+        [box addSublayer:pic];
+        // The box and its ring pop in together.
+        CALayer *parts[2] = { box, rings[i] };
+        for (int k = 0; k < 2 && parts[k]; k++) {
+            took = fmax(took, fadeIn(parts[k], retileFade));
+            if (popScale < 1 && !(retileMove.ease && retileMove.duration <= 0)) {
+                CABasicAnimation *grow = animate(retileMove, scaleKey, @(popScale), @1.0, 0);
+                [parts[k] addAnimation:grow forKey:scaleKey];
+                took = fmax(took, grow.duration);
+            }
+        }
+    } else {
+        NSArray *old = box.sublayers;
+        for (NSUInteger k = 0; k + 1 < old.count; k++) [old[k] removeFromSuperlayer];
+        [box addSublayer:pic];
+        took = fadeIn(pic, retileFade);
+    }
+    return took;
+}
+
+// Captures for refreshes and new windows run on a queue and connection of
+// their own: WindowServer takes about 40ms over each, and a retile asked for
+// meanwhile must not wait behind it. The pictures come back to `queue`. One
+// at a time; a refresh that finds one running comes again.
+static dispatch_queue_t captureQueue = NULL;
+static int captureCid = 0;
+static bool capturing = false; // belongs to `queue`
+static atomic_bool stopping = false;
+
+typedef struct {
+    int count;
+    uint32_t wids[MAX_TILES];
+    CGRect bounds[MAX_TILES]; // where each was as the capture was asked for
+    bool newOnly;
+    bool every; // live: every tile, each new picture in place of the last
+    unsigned generation;
+} Wanted;
+
+// Shows the pictures of `w` (in `image`, covering `area`): each of a window
+// at its new place and size counts as live; a new tile shows whatever its
+// window has. Tiles are found by window: a retarget may have reordered them.
+static void showCaptured(const Wanted *w, CGImageRef image, CGRect area) {
+    double took = 0;
+    beginChanges();
+    for (int k = 0; k < w->count; k++) {
+        int i = tileOf(w->wids[k]);
+        if (i < 0 || (live[i] && !w->every)) continue;
+        CGRect b = CGRectIntersection(w->bounds[k], area);
+        if (CGRectIsNull(b) || CGRectIsEmpty(b)) continue;
+        bool pictured = boxes[i].sublayers.count > 0;
+        if (w->every && pictured) {
+            // Live: the window's latest frame in place of the last, as an
+            // app's new frame shows, whatever size it has got to.
+            CALayer *pic = edgeExtended(image, area, b, shownTiles[i].radius, mirrorBand);
+            if (!pic) continue;
+            for (CALayer *old in [[boxes[i].sublayers copy] autorelease]) [old removeFromSuperlayer];
+            [boxes[i] addSublayer:pic];
+            continue;
+        }
+        bool there = arrived(w->bounds[k], shownTiles[i].to);
+        if (pictured && (w->newOnly || !there)) continue;
+        took = fmax(took, showPicture(i, image, area, b));
+        live[i] = there;
+    }
+    commitChanges();
+    endNoSooner(took + retileHold);
+}
+
+// Captures the tiles not live yet (with `newOnly`, the new ones with nothing
+// shown) as they are now, off the queue, and shows them when it's back.
+static void recapture(bool newOnly, bool every) {
+    if (retileGeneration != generation || shownCount == 0 || capturing) return;
+    Wanted *w = calloc(1, sizeof(Wanted));
+    if (!w) return;
+    w->newOnly = newOnly;
+    w->every = every;
+    w->generation = generation;
+    for (int i = 0; i < shownCount; i++) {
+        if (live[i] && !every) continue;
+        if (newOnly && (!shownTiles[i].appear || boxes[i].sublayers.count)) continue;
+        if (SLSGetWindowBounds(cid, shownTiles[i].wid, &w->bounds[w->count]) != kCGErrorSuccess) continue;
+        w->wids[w->count++] = shownTiles[i].wid;
+    }
+    if (w->count == 0) {
+        free(w);
+        return;
+    }
+    capturing = true;
+    dispatch_async(captureQueue, ^{
+        uint32_t wids[MAX_TILES];
+        memcpy(wids, w->wids, sizeof(uint32_t) * w->count);
+        CGRect area = CGRectNull;
+        CGImageRef image = atomic_load(&stopping) ? NULL : captureOn(captureCid, wids, w->count, &area, false);
+        dispatch_async(queue, ^{
+            capturing = false;
+            if (image && w->generation == generation && retileGeneration == generation && shownCount > 0) {
+                showCaptured(w, image, area);
+            }
+            if (image) CGImageRelease(image);
+            free(w);
+        });
+    });
+}
+
+static void popInNew(void *context) {
+    if ((unsigned)(uintptr_t)context != generation) return;
+    recapture(true, false);
+}
+
+// Live, the tiles are captured back to back while they glide: the capture
+// queue takes one at a time, so this looks again this often for the next.
+#define LIVE_START 0.04
+#define LIVE_POLL 0.01
+
+static void refresh(void *unused) {
+    (void)unused;
+    if (retileGeneration != generation || shownCount == 0 || retileRefresh == REFRESH_OFF) return;
+    if (retileRefresh == REFRESH_LIVE) {
+        if (CFAbsoluteTimeGetCurrent() >= glideEnds) return;
+        recapture(false, true);
+        dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(LIVE_POLL * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER, 0);
+        return;
+    }
+    recapture(false, false);
+    bool waiting = false;
+    for (int i = 0; i < shownCount; i++) waiting |= !live[i];
+    if (waiting && ++refreshes < MAX_REFRESHES) {
+        dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(REFRESH_AGAIN * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER, 0);
+        endNoSooner(REFRESH_AGAIN + 0.1 + retileHold);
+    }
+}
+
+// The windows a scratchpad covers, captured as the backdrop of its
+// retiles: kept for BENEATH_MAX_AGE seconds while the same windows are
+// beneath, so a burst of keys takes it once.
+#define BENEATH_MAX_AGE 1.0
+static Shot beneath;
+static uint32_t beneathIds[MAX_TILES];
+static int beneathCount = 0;
+
+static int compareIds(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+// Lets the picture of the windows beneath go (the overlay is down: it's
+// soon out of date, and as big as the display).
+static void dropBeneath(void) {
+    dropPicture(&beneath);
+    beneathCount = 0;
+}
+
+// A picture of windows `ids` (stacked as on screen), current or taken
+// again. NULL if there's nothing to see.
+static Shot *beneathPicture(const uint32_t *ids, int count) {
+    uint32_t sorted[MAX_TILES];
+    if (count > MAX_TILES) count = MAX_TILES;
+    memcpy(sorted, ids, sizeof(uint32_t) * count);
+    qsort(sorted, count, sizeof(uint32_t), compareIds);
+    bool same = beneath.image && count == beneathCount && memcmp(sorted, beneathIds, sizeof(uint32_t) * count) == 0
+        && CFAbsoluteTimeGetCurrent() - beneath.taken < BENEATH_MAX_AGE;
+    if (same) return &beneath;
+    dropPicture(&beneath);
+    uint32_t stacked[MAX_TILES];
+    memcpy(stacked, ids, sizeof(uint32_t) * count);
+    CGRect bounds;
+    CGImageRef image = captureOn(cid, stacked, count, &bounds, true);
+    if (!image) return NULL;
+    beneath = (Shot){ -1, image, bounds, CFAbsoluteTimeGetCurrent() };
+    memcpy(beneathIds, sorted, sizeof(uint32_t) * count);
+    beneathCount = count;
+    return &beneath;
+}
+
+// A box (and ring) for new tile `t`, placed at `to`, unseen until its
+// picture pops in.
+static void placeHidden(CALayer *box, CALayer *ring, CGRect to, CGFloat w) {
+    CGPoint middle = CGPointMake(CGRectGetMidX(to), CGRectGetMidY(to));
+    box.anchorPoint = CGPointMake(0.5, 0.5);
+    box.bounds = (CGRect){ CGPointZero, to.size };
+    box.position = middle;
+    box.opacity = 0;
+    ring.anchorPoint = CGPointMake(0.5, 0.5);
+    ring.bounds = (CGRect){ CGPointZero, outset(to, w).size };
+    ring.position = middle;
+    ring.opacity = 0;
+}
+
+// Where `layer` is drawn now, mid-animation or not.
+static CGRect drawnFrame(CALayer *layer) {
+    return ((CALayer *)layer.presentationLayer ?: layer).frame;
+}
+
+// Puts the tiles' pictures up where they are and glides them to where
+// they go as `move` moves, then takes them down `hold` seconds after the
+// last has settled (the apps redrawing at their new sizes). New tiles pop
+// in from `pop` of their size, fading in as `fade` moves.
+//
+// While a retile on the same display is still on show, this one carries
+// it on: each tile it has glides on from where it's drawn now to its new
+// place, with the picture it has (no capture), so keys pressed in quick
+// succession merge into one motion. Only windows it hasn't got are
+// captured. False if there was nothing to show.
+static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion move, Motion fade, double hold,
+                   double pop, int refresh, const uint32_t *under, int underCount) {
+    if (count <= 0 || count > MAX_TILES || (!wid && !makeWindow())) return false;
+    bool carry = shown && retileGeneration == generation && shownCount > 0
+        && CGRectEqualToRect(frame, retileFrame);
+    int was[MAX_TILES];
+    uint32_t wids[MAX_TILES];
+    int captured = 0;
+    for (int i = 0; i < count; i++) {
+        was[i] = carry ? tileOf(tiles[i].wid) : -1;
+        if (was[i] < 0 && !tiles[i].appear) wids[captured++] = tiles[i].wid;
+    }
+    CGRect area = CGRectNull;
+    CGImageRef image = captured ? captureOn(cid, wids, captured, &area, false) : NULL;
+    if (captured && !image && !carry) return false;
+    Shot *covered = !carry && underCount > 0 ? beneathPicture(under, underCount) : NULL;
+
+    if (!carry) {
+        generation++;
+        clearLayers();
+        plane = nil;
+        retileEnds = 0;
+        glideEnds = 0;
+    }
+    retileGeneration = generation;
+    retileFrame = frame;
+    retileMove = move;
+    retileFade = fade;
+    retileHold = hold;
+    retileRefresh = refresh;
+    popScale = pop;
+    refreshes = 0;
+
+    double took = 0;
+    CALayer *nextBoxes[MAX_TILES], *nextRings[MAX_TILES];
+    bool used[MAX_TILES] = { false };
+    bool nextLive[MAX_TILES] = { false };
+    beginChanges();
+    // Back from fading out, if it was handing over.
+    fadingOut = false;
+    [root removeAnimationForKey:opacityKey];
+    root.opacity = 1;
+    if (!carry) {
+        root.frame = (CGRect){ CGPointZero, frame.size };
+        root.backgroundColor = NULL;
+        CGRect display = displayHolding(frame);
+        Shot *wall = wallpaperFor(display);
+        if (!wall) wall = takeWallpaper(display);
+        if (wall) {
+            [root addSublayer:pictureLayer(wall, frame, CGPointZero)];
+        } else {
+            root.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+        }
+        // Over a scratchpad, the workspace it covers, as it shows around it.
+        if (covered) [root addSublayer:pictureLayer(covered, frame, CGPointZero)];
+    }
+    for (int i = 0; i < count; i++) {
+        Tile *t = &tiles[i];
+        CGRect to = CGRectOffset(t->to, -frame.origin.x, -frame.origin.y);
+        int j = was[i];
+        CALayer *box, *ring;
+        if (j >= 0) {
+            used[j] = true;
+            t->radius = shownTiles[j].radius;
+            // Its fresh picture still holds where its tile stays put.
+            nextLive[i] = live[j] && CGRectEqualToRect(shownTiles[j].to, t->to);
+            box = boxes[j];
+            ring = rings[j];
+            // Where the last retile was taking them: the glides still
+            // running carry on beneath the new ones.
+            CGRect was = box.frame;
+            CGRect ringWas = ring ? ring.frame : CGRectNull;
+            if (ring && !(t->ring && t->width > 0)) {
+                [ring removeFromSuperlayer];
+                ring = nil;
+            } else if (!ring && t->ring && t->width > 0) {
+                // A ring it didn't have: from where the box is drawn now.
+                ring = ringLayer(t);
+                ring.anchorPoint = box.anchorPoint;
+                ringWas = outset(drawnFrame(box), t->width);
+                [root addSublayer:ring];
+            }
+            if (ring) styleRing(ring, t);
+            CGFloat w = ring ? t->width : 0;
+            if (box.sublayers.count == 0) {
+                // Still waiting for its picture: it pops in at the new place.
+                t->appear = true;
+                [box removeAllAnimations];
+                [ring removeAllAnimations];
+                placeHidden(box, ring, to, w);
+            } else {
+                t->appear = false;
+                took = fmax(took, glide(box, was, to, move));
+                if (ring) glide(ring, ringWas, outset(to, w), move);
+            }
+        } else {
+            t->radius = cornerRadius(t->wid, t->radius);
+            box = [CALayer layer];
+            box.masksToBounds = YES;
+            // The window's own corners: the picture's stretched edges are square.
+            box.cornerRadius = t->radius;
+            ring = t->ring && t->width > 0 ? ringLayer(t) : nil;
+            CGFloat w = ring ? t->width : 0;
+            if (t->appear) {
+                // Empty and unseen until its own capture (popInNew).
+                placeHidden(box, ring, to, w);
+            } else {
+                CGRect src = image ? CGRectIntersection(t->from, area) : CGRectNull;
+                CALayer *pic = CGRectIsNull(src) || CGRectIsEmpty(src) ? nil : edgeExtended(image, area, src, t->radius, mirrorBand);
+                if (pic) [box addSublayer:pic];
+                CGRect from = pic ? CGRectOffset(src, -frame.origin.x, -frame.origin.y) : to;
+                box.anchorPoint = CGPointZero;
+                ring.anchorPoint = CGPointZero;
+                took = fmax(took, glide(box, from, to, move));
+                if (ring) glide(ring, outset(from, w), outset(to, w), move);
+            }
+            [root addSublayer:box];
+            if (ring) [root addSublayer:ring];
+        }
+        nextBoxes[i] = box;
+        nextRings[i] = ring;
+    }
+    // Tiles gone from the display since (closed, moved away).
+    for (int j = 0; j < shownCount && carry; j++) {
+        if (used[j]) continue;
+        [boxes[j] removeFromSuperlayer];
+        [rings[j] removeFromSuperlayer];
+    }
+    commitChanges();
+    if (image) CGImageRelease(image);
+
+    shownCount = count;
+    memcpy(shownTiles, tiles, sizeof(Tile) * count);
+    for (int i = 0; i < count; i++) {
+        boxes[i] = nextBoxes[i];
+        rings[i] = nextRings[i];
+        live[i] = nextLive[i];
+    }
+
+    placeWindow(frame, scale);
+    orderWindow(true);
+    glideEnds = fmax(glideEnds, CFAbsoluteTimeGetCurrent() + took);
+    endNoSooner((refresh == REFRESH_ONCE ? fmax(took, REFRESH_AFTER + 0.1) : took) + hold);
+    dispatch_async_f(queue, (void *)(uintptr_t)generation, popInNew);
+    if (refresh != REFRESH_OFF) {
+        double after = refresh == REFRESH_LIVE ? LIVE_START : REFRESH_AFTER;
+        dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(after * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER, 0);
+    }
+    return true;
+}
+
+// Retiles are asked for from the main thread and answered there, once
+// their overlay is up (or isn't): Lua moves the windows then, and isn't
+// held up meanwhile by the capture.
+static LuaCallback onReady = LUA_CALLBACK_NONE;
+static dispatch_source_t readySource = NULL;
+#define MAX_READY 64
+static struct {
+    int token;
+    bool up;
+} ready[MAX_READY];
+static int readyCount = 0;
+static os_unfair_lock readyLock = OS_UNFAIR_LOCK_INIT;
+
+static void postReady(int token, bool up) {
+    os_unfair_lock_lock(&readyLock);
+    if (readyCount < MAX_READY) {
+        ready[readyCount].token = token;
+        ready[readyCount++].up = up;
+    }
+    os_unfair_lock_unlock(&readyLock);
+    if (readySource) dispatch_source_merge_data(readySource, 1);
+}
+
+static void deliverReady(void *unused) {
+    (void)unused;
+    os_unfair_lock_lock(&readyLock);
+    int count = readyCount;
+    int tokens[MAX_READY];
+    bool ups[MAX_READY];
+    for (int i = 0; i < count; i++) {
+        tokens[i] = ready[i].token;
+        ups[i] = ready[i].up;
+    }
+    readyCount = 0;
+    os_unfair_lock_unlock(&readyLock);
+    for (int i = 0; i < count; i++) {
+        if (!luaCallbackPush(&onReady)) break;
+        lua_pushinteger(onReady.L, tokens[i]);
+        lua_pushboolean(onReady.L, ups[i]);
+        luaCallbackCall(&onReady, 2);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -637,6 +1459,22 @@ static int l_wallpaper(lua_State *L) {
     return 0;
 }
 
+// The motion in the table at `index` (curve = "spring" or "ease",
+// duration =, mass =, stiffness =, damping =), `fallback` for what it leaves out.
+static Motion readMotion(lua_State *L, int index, Motion fallback) {
+    Motion m = fallback;
+    if (lua_type(L, index) != LUA_TTABLE) return m;
+    index = lua_absindex(L, index);
+    lua_getfield(L, index, "curve");
+    if (lua_type(L, -1) == LUA_TSTRING) m.ease = strcmp(lua_tostring(L, -1), "ease") == 0;
+    lua_pop(L, 1);
+    m.duration = numberField(L, index, "duration", m.duration);
+    m.mass = numberField(L, index, "mass", m.mass);
+    m.stiffness = numberField(L, index, "stiffness", m.stiffness);
+    m.damping = numberField(L, index, "damping", m.damping);
+    return m;
+}
+
 // A slide as run() and begin() take it.
 static Slide readSlide(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
@@ -652,15 +1490,14 @@ static Slide readSlide(lua_State *L) {
     lua_getfield(L, 1, "backdrop");
     s.backdrop = lua_toboolean(L, -1);
     lua_pop(L, 1);
-    s.mass = numberField(L, 1, "mass", 1);
-    s.stiffness = numberField(L, 1, "stiffness", 800);
-    s.damping = numberField(L, 1, "damping", 50);
+    s.motion = readMotion(L, 1, defaultMotion);
     wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
     return s;
 }
 
 // run{ frame = {x, y, w, h}, scale =, out = key, into = key, still = key,
-// dx =, dy =, backdrop =, mass =, stiffness =, damping =, wallpaperAge = }:
+// dx =, dy =, backdrop =, curve =, duration =, mass =, stiffness =,
+// damping =, wallpaperAge = }:
 // slides `out` away and `into` in from the side (dx, dy) over `frame`,
 // above `still`, then gets out of the way. The window is up before this
 // returns, so the windows beneath can move.
@@ -709,6 +1546,135 @@ static int l_finish(lua_State *L) {
     return 0;
 }
 
+// retile{ frame = {x, y, w, h}, scale =, move = motion, fade = motion,
+//   hold =, popin =, mirror =, refresh =, wallpaperAge =, beneath =,
+//   tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear =,
+//               ring = { color = {r, g, b, a}, width =, radius = } }, ... } }
+// glides the tiles' pictures from `from` to `to` (popping those that
+// `appear` in at `to`) over `frame`, then fades to the windows beneath.
+//   move, fade   motions as run() takes them (curve =, duration =, mass =,
+//                stiffness =, damping =)
+//   hold         seconds the pictures stay once settled (0.05)
+//   popin        share of their size new tiles grow from (0.8; 1 only fades)
+//   mirror       points of a growing window mirrored past its edges before
+//                the rest is stretched (32; 0 stretches only)
+//   refresh      "live": the windows captured back to back while they
+//                glide, each frame in place of the last; true: once each
+//                has its new size, faded in; false: never
+//   beneath      over a scratchpad, the windows it covers: the backdrop
+// Returns a token at once; the capture (about 40ms) and the overlay are
+// done on the queue, and onReady's fn(token, up) says when the windows
+// beneath can move.
+static int l_retile(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    lua_getfield(L, 1, "frame");
+    CGRect frame = readRect(L, -1);
+    lua_pop(L, 1);
+    double scale = numberField(L, 1, "scale", 1);
+    lua_getfield(L, 1, "move");
+    Motion move = readMotion(L, -1, defaultMotion);
+    lua_getfield(L, 1, "fade");
+    Motion fade = readMotion(L, -1, move);
+    lua_pop(L, 2);
+    double hold = numberField(L, 1, "hold", 0.05);
+    double pop = numberField(L, 1, "popin", 0.8);
+    double band = fmax(0, numberField(L, 1, "mirror", 32));
+    lua_getfield(L, 1, "refresh");
+    int refresh = lua_type(L, -1) == LUA_TSTRING && strcmp(lua_tostring(L, -1), "live") == 0 ? REFRESH_LIVE
+        : lua_toboolean(L, -1) ? REFRESH_ONCE : REFRESH_OFF;
+    lua_pop(L, 1);
+    wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
+    static Tile tiles[MAX_TILES];
+    int count = 0;
+    lua_getfield(L, 1, "tiles");
+    if (lua_type(L, -1) == LUA_TTABLE) {
+        lua_Integer n = luaL_len(L, -1);
+        for (lua_Integer i = 1; i <= n && count < MAX_TILES; i++) {
+            lua_rawgeti(L, -1, i);
+            uint32_t w = (uint32_t)numberField(L, -1, "wid", 0);
+            lua_getfield(L, -1, "appear");
+            bool popIn = lua_toboolean(L, -1);
+            lua_pop(L, 1);
+            lua_getfield(L, -1, "from");
+            CGRect from = readRect(L, -1);
+            lua_getfield(L, -2, "to");
+            CGRect to = readRect(L, -1);
+            lua_pop(L, 2);
+            Tile t = { w, from, to, popIn, false, { 0, 0, 0, 0 }, 0, 0 };
+            lua_getfield(L, -1, "ring");
+            if (lua_type(L, -1) == LUA_TTABLE) {
+                t.ring = true;
+                t.width = numberField(L, -1, "width", 0);
+                t.radius = numberField(L, -1, "radius", 0);
+                lua_getfield(L, -1, "color");
+                for (int c = 0; c < 4; c++) {
+                    lua_rawgeti(L, -1, c + 1);
+                    t.color[c] = luaL_optnumber(L, -1, c == 3 ? 1 : 0);
+                    lua_pop(L, 1);
+                }
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 2); // the ring and the tile
+            if (w && !CGRectIsEmpty(from) && !CGRectIsEmpty(to)) tiles[count++] = t;
+        }
+    }
+    lua_pop(L, 1);
+    if (CGRectIsEmpty(frame) || count == 0) return 0;
+    uint32_t underList[MAX_TILES];
+    int underCount = 0;
+    lua_getfield(L, 1, "beneath");
+    if (lua_type(L, -1) == LUA_TTABLE) underCount = luaWindowIds(L, -1, underList, MAX_TILES);
+    lua_pop(L, 1);
+    Tile *list = malloc(sizeof(Tile) * count + sizeof(uint32_t) * MAX_TILES);
+    if (!list) return 0;
+    memcpy(list, tiles, sizeof(Tile) * count);
+    uint32_t *under = (uint32_t *)(list + count);
+    memcpy(under, underList, sizeof(uint32_t) * underCount);
+    static int lastToken = 0;
+    int token = ++lastToken;
+    dispatch_async(queue, ^{
+        mirrorBand = band;
+        bool up = retile(frame, scale, list, count, move, fade, hold, pop, refresh, under, underCount);
+        free(list);
+        postReady(token, up);
+    });
+    lua_pushinteger(L, token);
+    return 1;
+}
+
+// bounds({wid, ...}): {[wid] = {x =, y =, w =, h =}} as WindowServer has
+// the windows now, for those it knows. No accessibility calls: the main
+// thread doesn't wait on any app for them.
+static int l_bounds(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    uint32_t wids[MAX_TILES * 4];
+    int count = luaWindowIds(L, 1, wids, MAX_TILES * 4);
+    int connection = SLSMainConnectionID();
+    lua_createtable(L, 0, count);
+    for (int i = 0; i < count; i++) {
+        CGRect b;
+        if (SLSGetWindowBounds(connection, wids[i], &b) != kCGErrorSuccess) continue;
+        lua_createtable(L, 0, 4);
+        lua_pushnumber(L, b.origin.x);
+        lua_setfield(L, -2, "x");
+        lua_pushnumber(L, b.origin.y);
+        lua_setfield(L, -2, "y");
+        lua_pushnumber(L, b.size.width);
+        lua_setfield(L, -2, "w");
+        lua_pushnumber(L, b.size.height);
+        lua_setfield(L, -2, "h");
+        lua_rawseti(L, -2, wids[i]);
+    }
+    return 1;
+}
+
+// onReady(fn): fn(token, up) on the main thread once retile `token`'s
+// overlay is up (`up`), or couldn't be put up.
+static int l_onReady(lua_State *L) {
+    luaCallbackSet(&onReady, L, 1);
+    return 0;
+}
+
 static void releaseAll(void) {
     generation++;
     plane = nil;
@@ -731,6 +1697,8 @@ static void releaseAll(void) {
     for (int i = 0; i < MAX_PICTURES; i++) dropPicture(&pictures[i]);
     for (int i = 0; i < wallpaperCount; i++) dropPicture(&wallpapers[i]);
     wallpaperCount = 0;
+    dropPicture(&beneath);
+    beneathCount = 0;
 }
 
 // Collected with the Lua state (reload, quit), before Lua unloads the
@@ -738,10 +1706,18 @@ static void releaseAll(void) {
 static int l_gc(lua_State *L) {
     (void)L;
     luaCallbackClear(&onChange);
+    luaCallbackClear(&onReady);
+    // Captures still running hand their pictures to `queue`: let them
+    // finish first, so the queue's own drain below takes those too.
+    atomic_store(&stopping, true);
+    dispatch_sync(captureQueue, ^{});
     dispatch_sync(queue, ^{
         dispatch_source_cancel(settled);
         dispatch_release(settled);
         settled = NULL;
+        dispatch_source_cancel(refresher);
+        dispatch_release(refresher);
+        refresher = NULL;
         releaseAll();
         if (drain) {
             dispatch_source_cancel(drain);
@@ -752,9 +1728,15 @@ static int l_gc(lua_State *L) {
     dispatch_source_cancel(visibility);
     dispatch_release(visibility);
     visibility = NULL;
+    dispatch_source_cancel(readySource);
+    dispatch_release(readySource);
+    readySource = NULL;
     dispatch_release(queue);
     queue = NULL;
+    dispatch_release(captureQueue);
+    captureQueue = NULL;
     SLSReleaseConnection(cid);
+    SLSReleaseConnection(captureCid);
     return 0;
 }
 
@@ -764,8 +1746,24 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
     if (!positionKey) {
         positionKey = [[NSString alloc] initWithUTF8String:"position"];
         slideKey = [[NSString alloc] initWithUTF8String:"slide"];
+        boundsKey = [[NSString alloc] initWithUTF8String:"bounds"];
+        sizeKey = [[NSString alloc] initWithUTF8String:"bounds.size"];
+        opacityKey = [[NSString alloc] initWithUTF8String:"opacity"];
+        scaleKey = [[NSString alloc] initWithUTF8String:"transform.scale"];
     }
     if (SLSNewConnection(0, &cid) != kCGErrorSuccess) return luaL_error(L, "hyprspoon.native.slide: no WindowServer connection");
+    if (SLSNewConnection(0, &captureCid) != kCGErrorSuccess) {
+        SLSReleaseConnection(cid);
+        return luaL_error(L, "hyprspoon.native.slide: no WindowServer connection");
+    }
+    captureQueue = dispatch_queue_create("hyprspoon.slide.capture",
+        dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
+    atomic_store(&stopping, false);
+    capturing = false;
+    readySource = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler_f(readySource, deliverReady);
+    dispatch_resume(readySource);
+    readyCount = 0;
     queue = dispatch_queue_create("hyprspoon.slide",
         dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
     drainPort = MACH_PORT_NULL;
@@ -783,6 +1781,12 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
     dispatch_source_set_timer(settled, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
     dispatch_source_set_event_handler_f(settled, finish);
     dispatch_resume(settled);
+    refresher = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    dispatch_source_set_timer(refresher, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler_f(refresher, refresh);
+    dispatch_resume(refresher);
+    shownCount = 0;
+    retileGeneration = 0;
     memset(pictures, 0, sizeof(pictures));
     wallpaperCount = 0;
     wid = 0;
@@ -799,6 +1803,9 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         { "begin", l_begin },
         { "track", l_track },
         { "finish", l_finish },
+        { "retile", l_retile },
+        { "onReady", l_onReady },
+        { "bounds", l_bounds },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);

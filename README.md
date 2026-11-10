@@ -126,8 +126,33 @@ Defaults are in [`hyprspoon/state.lua`](hyprspoon/state.lua).
 | `tiling.outerGap` | `10` | Gap between tiles and the screen edge, in points |
 | `tiling.innerGap` | `5` | Gap between tiles, in points |
 | `tiling.minRatio` / `tiling.maxRatio` | `0.20` / `0.80` | How far a split can be moved towards either side |
-| `tiling.animationDuration` | `0` | Seconds to animate retiles over; `0` snaps. Mouse drags always snap |
+| `tiling.animationDuration` | `0` | Seconds to animate retiles over; `0` snaps. Mouse drags always snap. [`animations`](#animations-animations) overrides it |
 | `tiling.dropColor` | `{ red = 0.35, green = 0.6, blue = 1 }` | Colour of the highlight where a dragged tile will land |
+
+### Animations (`animations`)
+
+How animations move, like Hyprland's `animation` lines. The top-level
+fields set every kind at once; a kind's own table overrides them for that
+kind. `fadeIn` follows `windows` before the top level.
+
+| Field | Default | Description |
+|---|---|---|
+| `curve` | `"spring"` for workspaces, `"ease"` for windows | `"spring"`, or `"ease"`: quad-out over `duration` |
+| `mass` / `stiffness` / `damping` | `0.6` / `800` / `38` | The spring, as Hyprland's mass, stiffness and dampening (`slide.mass`, `slide.stiffness` and `slide.damping` for workspaces when unset) |
+| `duration` | `tiling.animationDuration` for windows | Seconds an eased animation takes. Windows animate only while theirs is above `0` |
+
+| Kind | Animates |
+|---|---|
+| `animations.workspaces` | Workspace and scratchpad slides |
+| `animations.windows` | Retiles. Windows moved through accessibility always ease over `duration`; a spring moves the pictures of [`experimental.captureRetile`](#experimental-options) |
+| `animations.fadeIn` | With `experimental.captureRetile`: new windows fading in as they pop in, and the pictures fading to the real windows once settled |
+
+```lua
+-- Everything on one spring, retiles over 0.2s:
+animations = { curve = "spring", stiffness = 600, duration = 0.2 },
+-- Or only retiles eased, workspaces as they were:
+animations = { windows = { curve = "ease", duration = 0.15 } },
+```
 
 ### Pseudotiling
 
@@ -230,7 +255,8 @@ over windows covering their target unless
 
 ### Slides (`slide`)
 
-Workspaces slide in and out on a spring as they switch. Set `slide = false`
+Workspaces slide in and out as they switch, moving as
+[`animations.workspaces`](#animations-animations) says. Set `slide = false`
 to switch without. Needs the native `slide` module and Screen Recording
 permission, and costs one ~40ms capture per switch.
 
@@ -238,7 +264,7 @@ permission, and costs one ~40ms capture per switch.
 |---|---|---|
 | `slide.workspaces` | `"horizontal"` | Numbered workspaces: `"horizontal"` (the next comes from the right), `"vertical"` (from below), or `false` |
 | `slide.scratchpads` | `"bottom"` | Edge scratchpads come from and go back to: `"bottom"`, `"top"`, `"left"`, `"right"`, or `false` |
-| `slide.mass` / `slide.stiffness` / `slide.damping` | `0.6` / `800` / `38` | The spring, as Hyprland's mass, stiffness and dampening |
+| `slide.mass` / `slide.stiffness` / `slide.damping` | `0.6` / `800` / `38` | The spring, as Hyprland's mass, stiffness and dampening, where `animations` doesn't set one |
 | `slide.wallpaperRefresh` | `false` | Seconds before the wallpaper slid over is taken again, for wallpapers that change; `false` only on reload and display changes |
 
 ### Swipe (`swipe`)
@@ -429,6 +455,7 @@ may change or go before they graduate to options of their own.
 |---|---|---|
 | `experimental.borderMask` | `false` | Hide the parts of a ring that windows above its own cover; `true` for the defaults below, or a table |
 | `experimental.borderMask.drags` | `"mask"` | While a native drag preview is active: `"mask"` keeps the rings masked as windows move; `"show"` draws them on top, as without masks, and masks them again on drop |
+| `experimental.captureRetile` | `false` | Retiles glide pictures of the tiles, as Hyprland's windows do, with the windows moved at once beneath. A picture keeps its size; where the tile outgrows it, a band of its edge is mirrored and the rest stretched from there, and once settled the overlay fades to the real windows; new windows pop in at their tiles. One ~40ms capture per retile; floating windows over the tiles hide until it's done. Moves as `animations.windows` and `animations.fadeIn` say. `true`, or a table: `popin = 0.8` (share of their size new windows grow from; `1` only fades), `hold = 0.05` (seconds the pictures stay after settling), `mirror = 32` (points of a growing window's edge mirrored before the rest is stretched; `0` stretches only), `refresh = "live"` (capture the windows back to back while they glide, about every 40ms, so the pictures show the apps' latest frames; `true` once each is resized, faded in; `false` never). A prototype (#19) |
 
 Rings are drawn above every window, so without masks a ring shows over a
 float, a panel or Spotlight covering its window. With `borderMask`, each
