@@ -941,6 +941,41 @@ static void refresh(void *unused) {
     }
 }
 
+// The windows a scratchpad covers, captured as the backdrop of its
+// retiles: kept for BENEATH_MAX_AGE seconds while the same windows are
+// beneath, so a burst of keys takes it once.
+#define BENEATH_MAX_AGE 1.0
+static Shot beneath;
+static uint32_t beneathIds[MAX_TILES];
+static int beneathCount = 0;
+
+static int compareIds(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return x < y ? -1 : x > y;
+}
+
+// A picture of windows `ids` (stacked as on screen), current or taken
+// again. NULL if there's nothing to see.
+static Shot *beneathPicture(const uint32_t *ids, int count) {
+    uint32_t sorted[MAX_TILES];
+    if (count > MAX_TILES) count = MAX_TILES;
+    memcpy(sorted, ids, sizeof(uint32_t) * count);
+    qsort(sorted, count, sizeof(uint32_t), compareIds);
+    bool same = beneath.image && count == beneathCount && memcmp(sorted, beneathIds, sizeof(uint32_t) * count) == 0
+        && CFAbsoluteTimeGetCurrent() - beneath.taken < BENEATH_MAX_AGE;
+    if (same) return &beneath;
+    dropPicture(&beneath);
+    uint32_t stacked[MAX_TILES];
+    memcpy(stacked, ids, sizeof(uint32_t) * count);
+    CGRect bounds;
+    CGImageRef image = captureOn(cid, stacked, count, &bounds, true);
+    if (!image) return NULL;
+    beneath = (Shot){ -1, image, bounds, CFAbsoluteTimeGetCurrent() };
+    memcpy(beneathIds, sorted, sizeof(uint32_t) * count);
+    beneathCount = count;
+    return &beneath;
+}
+
 // A box (and ring) for new tile `t`, placed at `to`, unseen until its
 // picture pops in.
 static void placeHidden(CALayer *box, CALayer *ring, CGRect to, CGFloat w) {
@@ -971,7 +1006,7 @@ static CGRect drawnFrame(CALayer *layer) {
 // succession merge into one motion. Only windows it hasn't got are
 // captured. False if there was nothing to show.
 static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion move, Motion fade, double hold,
-                   double pop) {
+                   double pop, const uint32_t *under, int underCount) {
     if (count <= 0 || count > MAX_TILES || (!wid && !makeWindow())) return false;
     bool carry = shown && retileGeneration == generation && shownCount > 0
         && CGRectEqualToRect(frame, retileFrame);
@@ -985,6 +1020,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     CGRect area = CGRectNull;
     CGImageRef image = captured ? captureOn(cid, wids, captured, &area, false) : NULL;
     if (captured && !image && !carry) return false;
+    Shot *covered = !carry && underCount > 0 ? beneathPicture(under, underCount) : NULL;
 
     if (!carry) {
         generation++;
@@ -1015,6 +1051,8 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
         } else {
             root.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         }
+        // Over a scratchpad, the workspace it covers, as it shows around it.
+        if (covered) [root addSublayer:pictureLayer(covered, frame, CGPointZero)];
     }
     for (int i = 0; i < count; i++) {
         Tile *t = &tiles[i];
@@ -1319,7 +1357,8 @@ static int l_finish(lua_State *L) {
 
 // retile{ frame = {x, y, w, h}, scale =, move = motion, fade = motion,
 // hold =, popin = (0.8: new tiles grow from that share of their size; 1
-// only fades them in), wallpaperAge =, (a motion as run() takes it: curve =, duration =,
+// only fades them in), wallpaperAge =, beneath = {wid, ...} (over a
+// scratchpad, the windows it covers: the backdrop over the wallpaper), (a motion as run() takes it: curve =, duration =,
 // mass =, stiffness =, damping =)
 // tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear =, ring = { color =
 // {r, g, b, a}, width =, radius = } }, ... } }:
@@ -1379,13 +1418,20 @@ static int l_retile(lua_State *L) {
     }
     lua_pop(L, 1);
     if (CGRectIsEmpty(frame) || count == 0) return 0;
-    Tile *list = malloc(sizeof(Tile) * count);
+    uint32_t underList[MAX_TILES];
+    int underCount = 0;
+    lua_getfield(L, 1, "beneath");
+    if (lua_type(L, -1) == LUA_TTABLE) underCount = luaWindowIds(L, -1, underList, MAX_TILES);
+    lua_pop(L, 1);
+    Tile *list = malloc(sizeof(Tile) * count + sizeof(uint32_t) * MAX_TILES);
     if (!list) return 0;
     memcpy(list, tiles, sizeof(Tile) * count);
+    uint32_t *under = (uint32_t *)(list + count);
+    memcpy(under, underList, sizeof(uint32_t) * underCount);
     static int lastToken = 0;
     int token = ++lastToken;
     dispatch_async(queue, ^{
-        bool up = retile(frame, scale, list, count, move, fade, hold, pop);
+        bool up = retile(frame, scale, list, count, move, fade, hold, pop, under, underCount);
         free(list);
         postReady(token, up);
     });
@@ -1422,6 +1468,8 @@ static void releaseAll(void) {
     for (int i = 0; i < MAX_PICTURES; i++) dropPicture(&pictures[i]);
     for (int i = 0; i < wallpaperCount; i++) dropPicture(&wallpapers[i]);
     wallpaperCount = 0;
+    dropPicture(&beneath);
+    beneathCount = 0;
 }
 
 // Collected with the Lua state (reload, quit), before Lua unloads the

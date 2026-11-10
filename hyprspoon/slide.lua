@@ -189,11 +189,14 @@ end
 -- A retile on `screen` (experimental.captureRetile): `tiles` is a list of
 -- { wid =, from = rect, to = rect, appear =, ring = }, gliding (and new
 -- ones growing) as animations.windows says, fading as animations.fadeIn
--- does. Returns at once, true if asked for: the capture runs off the main
+-- does, over the wallpaper, or over a scratchpad the workspace it covers.
+-- Returns at once, true if asked for: the capture runs off the main
 -- thread, and `done(up)` is called once pictures cover the windows (`up`)
 -- or can't, for the windows to move then. A retile still on show is
 -- carried on from where its tiles are drawn.
 function M.retile(screen, tiles, done)
+    -- Over a scratchpad, the workspace it covers is the backdrop.
+    local beneath = require("hyprspoon.spaces").beneath(screen:getUUID())
     local mod = native or Util.native("slide")
     if not mod or not mod.retile or not mod.onReady or not screen or #tiles == 0 then return false end
     if readyHooked ~= mod then
@@ -210,6 +213,7 @@ function M.retile(screen, tiles, done)
         hold = retile.hold or 0.05,
         popin = retile.popin or 0.8,
         wallpaperAge = S.cfg.slide and S.cfg.slide.wallpaperRefresh or 0,
+        beneath = beneath,
         tiles = tiles,
     })
     if not token then return false end

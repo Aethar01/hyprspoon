@@ -1454,6 +1454,14 @@ function M.isScratchpad(n)
     return n > NAMED_BASE
 end
 
+-- The windows of the workspace a scratchpad showing on display `uuid`
+-- covers (they show around it), or nil when no scratchpad is showing there.
+function M.beneath(uuid)
+    local n, base = active[uuid], under[uuid]
+    if not (n and n > NAMED_BASE and base) then return nil end
+    return windowsOf(base)
+end
+
 -- Pins window `win` to every workspace of its display, or unpins it.
 function M.setPinned(win, pin)
     local id = win:id()
