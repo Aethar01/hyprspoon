@@ -531,6 +531,7 @@ static CGPoint travel = { 0, 0 };
 static Motion slideMotion = { false, 0.2, 0.6, 800, 38 };
 
 static void dropBeneath(void);
+static void keepGone(void);
 
 static void finish(void *unused) {
     (void)unused;
@@ -550,6 +551,7 @@ static void finish(void *unused) {
         return;
     }
     fadingOut = false;
+    keepGone();
     shownCount = 0;
     clearLayers();
     plane = nil;
@@ -684,6 +686,12 @@ static void run(Slide s) {
 // first: it opened over the others, mid-way through macOS's own opening
 // animation (drawn black in their pictures). It has a capture of its own
 // straight after, once the overlay is up.
+//
+// Scrolling columns (hyprspoon/scroll.lua) go out of sight and come back:
+// a tile whose window is parked out of sight (`away`) has no picture to
+// take. The picture of a tile that glided off the display is kept a while
+// (MAX_KEPT, KEPT_MAX_AGE) for when it comes back, and glides in with
+// that; without one it pops in at its tile once its window is there.
 
 #define MAX_TILES 64
 
@@ -697,6 +705,7 @@ typedef struct {
     uint32_t wid;
     CGRect from, to; // on screen
     bool appear;     // new to the layout: pops in at `to`
+    bool away;       // its window is out of sight: no picture to take
     bool ring;       // drawn with its border ring (the real one is beneath)
     CGFloat color[4], width, radius;
 } Tile;
@@ -981,6 +990,72 @@ static void styleRing(CALayer *ring, const Tile *t) {
     ring.cornerRadius = t->radius + t->width;
 }
 
+// Whether `r` shows less than a sliver of `frame` (a parked window, a tile
+// gone off the display).
+static bool offFrame(CGRect r, CGRect frame) {
+    CGRect i = CGRectIntersection(r, frame);
+    return CGRectIsNull(i) || i.size.width < 8 || i.size.height < 8;
+}
+
+// Pictures of tiles that glided off the display, by window, for when they
+// come back (see above). Each holds the capture it was cut from.
+#define MAX_KEPT 8
+#define KEPT_MAX_AGE 60.0
+static struct {
+    uint32_t wid;
+    CALayer *pic;
+    double at;
+} kept[MAX_KEPT];
+
+static void dropKept(int i) {
+    [kept[i].pic release];
+    kept[i].pic = nil;
+    kept[i].wid = 0;
+}
+
+static void dropAllKept(void) {
+    for (int i = 0; i < MAX_KEPT; i++) dropKept(i);
+}
+
+// Keeps `pic` for window `w`, in place of one it had, else of the oldest.
+static void keepPicture(uint32_t w, CALayer *pic) {
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < MAX_KEPT && slot < 0; i++) {
+        if (kept[i].pic && kept[i].wid == w) slot = i;
+    }
+    for (int i = 0; i < MAX_KEPT && slot < 0; i++) {
+        if (!kept[i].pic) slot = i;
+        else if (kept[i].at < kept[oldest].at) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    [pic retain];
+    dropKept(slot);
+    kept[slot].wid = w;
+    kept[slot].pic = pic;
+    kept[slot].at = CFAbsoluteTimeGetCurrent();
+}
+
+// Window `w`'s kept picture, retained, no longer kept; nil if none or stale.
+static CALayer *takeKept(uint32_t w) {
+    for (int i = 0; i < MAX_KEPT; i++) {
+        if (!kept[i].pic || kept[i].wid != w) continue;
+        CALayer *pic = CFAbsoluteTimeGetCurrent() - kept[i].at < KEPT_MAX_AGE ? [kept[i].pic retain] : nil;
+        dropKept(i);
+        return pic;
+    }
+    return nil;
+}
+
+// Keeps the pictures of the tiles of the retile on show that went off the
+// display, as it's taken down.
+static void keepGone(void) {
+    if (retileGeneration != generation) return;
+    for (int i = 0; i < shownCount; i++) {
+        CALayer *pic = boxes[i].sublayers.lastObject;
+        if (pic && offFrame(shownTiles[i].to, retileFrame)) keepPicture(shownTiles[i].wid, pic);
+    }
+}
+
 // Puts a picture of tile `i`, from `image` (covering `area`), in its box:
 // a new tile with nothing shown yet pops in with it; otherwise it fades in
 // over what's there (the one beneath kept for that, older ones dropped).
@@ -1061,22 +1136,37 @@ static void showCaptured(const Wanted *w, CGImageRef image, CGRect area) {
 
 // Captures the tiles not live yet (with `newOnly`, the new ones with nothing
 // shown) as they are now, off the queue, and shows them when it's back.
-static void recapture(bool newOnly, bool every) {
-    if (retileGeneration != generation || shownCount == 0 || capturing) return;
+// Windows out of sight (parked, not back yet) are left for later. True if
+// a tile with nothing shown is still waiting for its window.
+static bool recapture(bool newOnly, bool every) {
+    if (retileGeneration != generation || shownCount == 0) return false;
+    bool waiting = false;
+    if (capturing) {
+        // Its turn comes after: say whether there's a new tile to wait for.
+        for (int i = 0; i < shownCount && newOnly; i++) {
+            waiting |= shownTiles[i].appear && boxes[i].sublayers.count == 0;
+        }
+        return waiting;
+    }
     Wanted *w = calloc(1, sizeof(Wanted));
-    if (!w) return;
+    if (!w) return false;
     w->newOnly = newOnly;
     w->every = every;
     w->generation = generation;
     for (int i = 0; i < shownCount; i++) {
         if (live[i] && !every) continue;
-        if (newOnly && (!shownTiles[i].appear || boxes[i].sublayers.count)) continue;
+        bool empty = boxes[i].sublayers.count == 0;
+        if (newOnly && (!shownTiles[i].appear || !empty)) continue;
         if (SLSGetWindowBounds(cid, shownTiles[i].wid, &w->bounds[w->count]) != kCGErrorSuccess) continue;
+        if (offFrame(w->bounds[w->count], retileFrame)) {
+            waiting |= empty && !offFrame(shownTiles[i].to, retileFrame);
+            continue;
+        }
         w->wids[w->count++] = shownTiles[i].wid;
     }
     if (w->count == 0) {
         free(w);
-        return;
+        return waiting;
     }
     capturing = true;
     dispatch_async(captureQueue, ^{
@@ -1093,11 +1183,24 @@ static void recapture(bool newOnly, bool every) {
             free(w);
         });
     });
+    return waiting;
 }
+
+// New tiles, and those back in view without a picture, pop in once their
+// windows are there to capture (Lua moves them once the overlay is up):
+// looked for again this often, up to POP_IN_TRIES times, the overlay kept
+// up meanwhile.
+#define POP_IN_AGAIN 0.02
+#define POP_IN_TRIES 15
+static int popTries = 0;
 
 static void popInNew(void *context) {
     if ((unsigned)(uintptr_t)context != generation) return;
-    recapture(true, false);
+    if (recapture(true, false) && ++popTries < POP_IN_TRIES) {
+        endNoSooner(POP_IN_AGAIN + 0.1 + retileHold);
+        dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(POP_IN_AGAIN * NSEC_PER_SEC)), queue,
+            context, popInNew);
+    }
 }
 
 // Live, the tiles are captured back to back while they glide: the capture
@@ -1206,7 +1309,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     int captured = 0;
     for (int i = 0; i < count; i++) {
         was[i] = carry ? tileOf(tiles[i].wid) : -1;
-        if (was[i] < 0 && !tiles[i].appear) wids[captured++] = tiles[i].wid;
+        if (was[i] < 0 && !tiles[i].appear && !tiles[i].away) wids[captured++] = tiles[i].wid;
     }
     CGRect area = CGRectNull;
     CGImageRef image = captured ? captureOn(cid, wids, captured, &area, false) : NULL;
@@ -1214,6 +1317,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     Shot *covered = !carry && underCount > 0 ? beneathPicture(under, underCount) : NULL;
 
     if (!carry) {
+        keepGone();
         generation++;
         clearLayers();
         plane = nil;
@@ -1228,6 +1332,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     retileRefresh = refresh;
     popScale = pop;
     refreshes = 0;
+    popTries = 0;
 
     double took = 0;
     CALayer *nextBoxes[MAX_TILES], *nextRings[MAX_TILES];
@@ -1299,7 +1404,18 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
             box.cornerRadius = t->radius;
             ring = t->ring && t->width > 0 ? ringLayer(t) : nil;
             CGFloat w = ring ? t->width : 0;
-            if (t->appear) {
+            CALayer *back = t->away && !t->appear ? takeKept(t->wid) : nil;
+            if (back) {
+                // Back in view: in with the picture it went with.
+                [box addSublayer:back];
+                [back release];
+                CGRect from = CGRectOffset(t->from, -frame.origin.x, -frame.origin.y);
+                box.anchorPoint = CGPointZero;
+                ring.anchorPoint = CGPointZero;
+                took = fmax(took, glide(box, from, to, move));
+                if (ring) glide(ring, outset(from, w), outset(to, w), move);
+            } else if (t->appear || t->away) {
+                t->appear = true;
                 // Empty and unseen until its own capture (popInNew).
                 placeHidden(box, ring, to, w);
             } else {
@@ -1911,13 +2027,15 @@ static int l_retile(lua_State *L) {
             uint32_t w = (uint32_t)numberField(L, -1, "wid", 0);
             lua_getfield(L, -1, "appear");
             bool popIn = lua_toboolean(L, -1);
-            lua_pop(L, 1);
+            lua_getfield(L, -2, "away");
+            bool gone = lua_toboolean(L, -1);
+            lua_pop(L, 2);
             lua_getfield(L, -1, "from");
             CGRect from = readRect(L, -1);
             lua_getfield(L, -2, "to");
             CGRect to = readRect(L, -1);
             lua_pop(L, 2);
-            Tile t = { w, from, to, popIn, false, { 0, 0, 0, 0 }, 0, 0 };
+            Tile t = { w, from, to, popIn, gone, false, { 0, 0, 0, 0 }, 0, 0 };
             lua_getfield(L, -1, "ring");
             if (lua_type(L, -1) == LUA_TTABLE) {
                 t.ring = true;
@@ -2072,6 +2190,7 @@ static void releaseAll(void) {
     wallpaperCount = 0;
     dropPicture(&beneath);
     beneathCount = 0;
+    dropAllKept();
 }
 
 // Collected with the Lua state (reload, quit), before Lua unloads the

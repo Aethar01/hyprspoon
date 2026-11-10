@@ -70,10 +70,18 @@ package.loaded["hyprspoon.spaces"] = {
 }
 local retiles = 0
 local focused = {}
+-- experimental.captureRetile: while `captureOn`, passes that animate are
+-- taken over, their plan kept in `captured` with the windows' move.
+local captureOn, captured = false, nil
 package.loaded["hyprspoon.layout"] = {
+    captureRetile = function(_, _, _, animates, makePlan, apply)
+        if not captureOn or not animates then return false end
+        captured = { plan = makePlan(), apply = apply }
+        return true
+    end,
     BSP_SETTLE = 0.35,
     applyTree = function(leaf, rect, _, _, opts)
-        leaf.rect = rect
+        leaf.rect, leaf.windowRect = rect, rect
         applied[#applied + 1] = { id = leaf.windowID, rect = rect, opts = opts }
     end,
     tileNow = function() retiles = retiles + 1 end,
@@ -580,6 +588,34 @@ assert(rectOf(1) and rectOf(1).x + rectOf(1).w == 50, "1 shows at the left")
 assert(rectOf(3) and rectOf(3).x == 950, "3 shows at the right")
 Scroll.toggleFullWidth(byID[2])
 S.cfg.scrolling.peek = nil
+
+-- With experimental.captureRetile, pictures scroll and the windows move
+-- once they're up: 1 goes off the left on its strip place, 3 comes in from
+-- where it was on the strip, out of sight.
+do
+    local fresh = {}
+    for id = 1, 5 do fresh[id] = { L(id) } end
+    S.trees.ws1 = Scroll.build(fresh)
+end
+focus(1)
+for _, tm in ipairs(timers) do tm.fn() end
+timers = {}
+captureOn = true
+focus(3)
+assert(#moves == 0, "nothing moves before the pictures are up")
+local plan = {}
+for _, p in ipairs(captured.plan) do plan[p.id] = p end
+assert(not plan[1].away and plan[1].to.x == -485, "1's picture goes to its place on the strip")
+assert(plan[3].away and plan[3].to.x == 505 and plan[3].from.x == 1000, "3 comes in from out of sight")
+assert(plan[4].away and plan[4].to.x == 1000, "4 stays out of sight")
+moves, applied = {}, {}
+captured.apply(true)
+assert(Scroll.isAway(1) and not Scroll.isAway(3), "then 1 is away and 3 back")
+assert(#timers == 0 and moves[1].id == 1 and moves[1].duration == 0 and moves[1].rect.y == 799,
+    "1 parked at once")
+assert(appliedIDs() == "2,3" and applied[2].opts.duration == 0 and not applied[2].opts.dx,
+    "2 and 3 put in place at once")
+captureOn, captured = false, nil
 
 -- Snapping, and a display beyond the edge: straight to the corner.
 S.instantLayout = true

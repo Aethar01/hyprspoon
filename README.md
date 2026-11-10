@@ -147,7 +147,7 @@ kind. `fadeIn` follows `windows` before the top level.
 | Kind | Animates |
 |---|---|
 | `animations.workspaces` | Workspace and scratchpad slides |
-| `animations.windows` | Retiles. Windows moved through accessibility always ease over `duration`; a spring moves the pictures of [`experimental.captureRetile`](#experimental-options) |
+| `animations.windows` | Retiles. Windows moved through accessibility always ease over `duration`; a spring moves the pictures of [`experimental.captureRetile`](#experimental-options), in every layout (scrolling columns' scrolls too) |
 | `animations.fadeIn` | With `experimental.captureRetile`: new windows fading in as they pop in, and the pictures fading to the real windows once settled |
 
 ```lua
@@ -353,7 +353,7 @@ workspace's windows. `scrolling` holds its options:
 | `scrolling.centerSingle` | `false` | Centre a column that's on its own |
 | `scrolling.peek` | `0` | Points kept free at each side, where the columns beside always show (niri's struts) |
 | `scrolling.fill` | `false` | Columns of `width` share the area while they fit (not niri's) |
-| `scrolling.duration` | `0.2` | Seconds a scroll takes; `0` snaps |
+| `scrolling.duration` | `0.2` | Seconds a scroll takes; `0` snaps. With `experimental.captureRetile`, scrolls glide pictures as `animations.windows` says, like every other retile, and this only turns them off at `0` |
 | `scrolling.moveConsumes` | `false` | Move left/right takes the window into the column that way, or out of its own into a new one, instead of moving the column; two moves pass a column (not niri's) |
 | `scrolling.edgeToDisplay` | `true` | Past the first or last column, focus and move go on to the display that way; `false` stops there, as niri does |
 | `scrolling.ffmMaxScroll` | `nil` | Focus follows mouse only focuses a column if that scrolls the view at most this share of its width; `0` for only columns in view |
@@ -504,7 +504,7 @@ may change or go before they graduate to options of their own.
 |---|---|---|
 | `experimental.borderMask` | `false` | Hide the parts of a ring that windows above its own cover; `true` for the defaults below, or a table |
 | `experimental.borderMask.drags` | `"mask"` | While a native drag preview is active: `"mask"` keeps the rings masked as windows move; `"show"` draws them on top, as without masks, and masks them again on drop |
-| `experimental.captureRetile` | `false` | Retiles glide pictures of the tiles, as Hyprland's windows do, with the windows moved at once beneath. A picture keeps its size; where the tile outgrows it, a band of its edge is mirrored and the rest stretched from there, and once settled the overlay fades to the real windows; new windows pop in at their tiles. One ~40ms capture per retile; floating windows over the tiles hide until it's done. Moves as `animations.windows` and `animations.fadeIn` say. `true`, or a table: `popin = 0.8` (share of their size new windows grow from; `1` only fades), `hold = 0.05` (seconds the pictures stay after settling), `mirror = 32` (points of a growing window's edge mirrored before the rest is stretched; `0` stretches only), `refresh = "live"` (capture the windows back to back while they glide, about every 40ms, so the pictures show the apps' latest frames; `true` once each is resized, faded in; `false` never). A prototype (#19) |
+| `experimental.captureRetile` | `false` | Retiles glide pictures of the tiles, as Hyprland's windows do, with the windows moved at once beneath. A picture keeps its size; where the tile outgrows it, a band of its edge is mirrored and the rest stretched from there, and once settled the overlay fades to the real windows; new windows pop in at their tiles. Scrolling columns scroll the same way: columns going out of sight glide off the display's edge, and come back in with the picture they went with (kept a minute), or pop in without one. One ~40ms capture per retile; floating windows over the tiles hide until it's done. Moves as `animations.windows` and `animations.fadeIn` say. `true`, or a table: `popin = 0.8` (share of their size new windows grow from; `1` only fades), `hold = 0.05` (seconds the pictures stay after settling), `mirror = 32` (points of a growing window's edge mirrored before the rest is stretched; `0` stretches only), `refresh = "live"` (capture the windows back to back while they glide, about every 40ms, so the pictures show the apps' latest frames; `true` once each is resized, faded in; `false` never). A prototype (#19) |
 
 Rings are drawn above every window, so without masks a ring shows over a
 float, a panel or Spotlight covering its window. With `borderMask`, each

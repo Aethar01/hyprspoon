@@ -19,6 +19,13 @@
   A drop that changes nothing glides it back to the tile. Needs Screen
   Recording permission; rebuild the native modules (`slide.so`, `frames.so`).
 
+- `experimental.captureRetile` covers scrolling columns too: every retile
+  goes through the same pictures, whatever the layout. Scrolls glide the
+  columns as `animations.windows` says instead of easing the windows;
+  columns going out of sight glide off the display's edge, and come back
+  in with the picture they went with, or pop in once their window is back
+  when there's none. Rebuild `slide.so`.
+
 ## 0.6.0 (2026-11-10)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:

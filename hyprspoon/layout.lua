@@ -737,49 +737,77 @@ local captureTiled = {}
 local retileSerial, retileAt = {}, {}
 local RETILE_SHOWN_FOR = 0.6
 
--- experimental.captureRetile: when the pass about to apply `tree` in
--- `area` moves tiles on `screen`, pictures of them glide there instead of
--- the windows easing. The capture runs off the main thread; the windows
--- move at once when it's done, unless a later pass has come since. True
--- if it took the pass over; false to apply it as usual.
-local function captureRetile(key, screen, tree, area, byID, full)
+local function overlapsRect(a, b)
+    return a.x < b.x + b.w and a.x + a.w > b.x and a.y < b.y + b.h and a.y + a.h > b.y
+end
+
+local function plain(r)
+    return { x = r.x, y = r.y, w = r.w, h = r.h }
+end
+
+-- experimental.captureRetile, for every layout: when a pass on `screen`
+-- moves tiles of workspace `key`, pictures of them glide there instead of
+-- the windows easing. `plan` lists the workspace's tiles, each { id =,
+-- win =, to = the window's new frame }, and for a window out of sight
+-- (scrolled away and parked) `away = true` with `from`, where its picture
+-- starts: it has none to take, so it glides in with the one kept as it
+-- went, or pops in once its window is there. `byID` is the workspace's
+-- windows, `animates` whether the pass would animate at all, and
+-- `makePlan()` returns `plan` (only called when pictures are on). The
+-- capture runs off the main thread;
+-- `apply(up)` moves the windows when it's done (at once if `up`, else as
+-- without pictures), unless a later pass has come since. True if it took
+-- the pass over; false to apply it as usual.
+local function captureRetile(key, screen, byID, animates, makePlan, apply)
     local before = captureTiled[key]
     captureTiled[key] = {}
     for id in pairs(byID) do captureTiled[key][id] = true end
     -- Any pass supersedes the ones still waiting for their pictures.
     local serial = (retileSerial[key] or 0) + 1
     retileSerial[key] = serial
-    if not (S.cfg.experimental or {}).captureRetile or Anim.windowDuration() <= 0 or S.dragState
+    if not (S.cfg.experimental or {}).captureRetile or not animates or S.dragState
        or S.instantLayout or hs.mouse.getButtons().left then
         return false
     end
-    applyTree(tree, area, {}, full)
+    local plan = makePlan()
     local sf = screen:frame()
     local now = hs.timer.secondsSinceEpoch()
     local tiles, moved = {}, now - (retileAt[key] or 0) < RETILE_SHOWN_FOR
-    local leaves, ids = Tree.leaves(tree), {}
-    for i, leaf in ipairs(leaves) do ids[i] = leaf.windowID end
+    local ids = {}
+    for i, p in ipairs(plan) do ids[i] = p.id end
     -- Where the windows are, from WindowServer: asking each app (win:frame())
     -- held every key up by a round trip per tile.
     local Slide = require("hyprspoon.slide")
     local bounds = Slide.bounds(ids) or {}
-    for _, leaf in ipairs(leaves) do
-        local win, to = byID[leaf.windowID], leaf.windowRect
+    for _, p in ipairs(plan) do
+        local win, to = p.win, p.to
         if win and to then
-            local f = bounds[leaf.windowID] or win:frame()
-            -- Only windows on show: a parked one has no picture to take.
-            if f.x < sf.x + sf.w and f.x + f.w > sf.x and f.y < sf.y + sf.h and f.y + f.h > sf.y then
-                -- After a reload nothing counts as new.
-                local new = before ~= nil and not before[leaf.windowID]
-                if new or not framesMatch(f, to) then moved = true end
+            if p.away then
+                -- Out of sight: only coming into view moves anything.
+                if overlapsRect(to, sf) then moved = true end
                 tiles[#tiles + 1] = {
-                    wid = leaf.windowID,
-                    from = { x = f.x, y = f.y, w = f.w, h = f.h },
-                    to = { x = to.x, y = to.y, w = to.w, h = to.h },
-                    appear = new,
-                    -- The overlay hides the real ring: drawn with the picture.
-                    ring = Border.ringFor(win),
+                    wid = p.id,
+                    from = plain(p.from or to),
+                    to = plain(to),
+                    away = true,
+                    ring = Border.ringFor(win, true),
                 }
+            else
+                local f = bounds[p.id] or win:frame()
+                -- Only windows on show: a parked one has no picture to take.
+                if overlapsRect(f, sf) then
+                    -- After a reload nothing counts as new.
+                    local new = before ~= nil and not before[p.id]
+                    if new or not framesMatch(f, to) then moved = true end
+                    tiles[#tiles + 1] = {
+                        wid = p.id,
+                        from = plain(f),
+                        to = plain(to),
+                        appear = new,
+                        -- The overlay hides the real ring: drawn with the picture.
+                        ring = Border.ringFor(win),
+                    }
+                end
             end
         end
     end
@@ -788,13 +816,27 @@ local function captureRetile(key, screen, tree, area, byID, full)
         if retileSerial[key] ~= serial then return end
         local was = S.applyingLayout
         S.applyingLayout = true
-        local ok, err = xpcall(applyTree, debug.traceback, tree, area, byID, full,
-            up and { duration = 0 } or nil)
+        local ok, err = xpcall(apply, debug.traceback, up)
         S.applyingLayout = was
         if not ok then print("hyprspoon: retile failed: " .. tostring(err)) end
     end)
     if started then retileAt[key] = now end
     return started
+end
+
+-- A BSP pass: `tree` in `area` (see captureRetile).
+local function captureTree(key, screen, tree, area, byID, full)
+    return captureRetile(key, screen, byID, Anim.windowDuration() > 0, function()
+        -- Every tile's rect, without moving a window.
+        applyTree(tree, area, {}, full)
+        local plan = {}
+        for _, leaf in ipairs(Tree.leaves(tree)) do
+            plan[#plan + 1] = { id = leaf.windowID, win = byID[leaf.windowID], to = leaf.windowRect }
+        end
+        return plan
+    end, function(up)
+        applyTree(tree, area, byID, full, up and { duration = 0 } or nil)
+    end)
 end
 
 -- `onlyScreenUUID` limits the pass to one screen (resizes, swaps and split
@@ -854,7 +896,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                     Scroll.arrange(key, tree, usableFrame, screen, byID, full)
                     -- As scrolled to: new windows can move the view.
                     signatures[key] = base .. Scroll.signature(key)
-                elseif not captureRetile(key, screen, tree, usableFrame, byID, full) then
+                elseif not captureTree(key, screen, tree, usableFrame, byID, full) then
                     applyTree(tree, usableFrame, byID, full)
                 end
             end
@@ -1187,6 +1229,7 @@ M.stop = stop
 M.tileNow = tileNow
 M.layOut = layOut
 M.applyTree = applyTree
+M.captureRetile = captureRetile
 M.mayBeTab = mayBeTab
 M.handFocusBack = handFocusBack
 M.BSP_TAB_SETTLE = BSP_TAB_SETTLE
