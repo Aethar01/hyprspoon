@@ -614,6 +614,8 @@ function M:start(opts)
                 end
             end
         end)
+        -- New windows are placed the moment WindowServer has them.
+        if events.created then events.created(Layout.windowCreated) end
         S.running.events = events
     else
         filter:subscribe(hs.window.filter.windowMoved, onWindowMoved)

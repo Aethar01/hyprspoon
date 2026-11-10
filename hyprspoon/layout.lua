@@ -724,11 +724,19 @@ local function layOut(tree, rect)
     applyTree(tree, rect, {})
 end
 
+-- Per workspace, the windows its last pass tiled (experimental.captureRetile):
+-- one not among them is new there, and pops in rather than gliding from
+-- where it opened.
+local captureTiled = {}
+
 -- experimental.captureRetile: when the pass about to apply `tree` in
 -- `area` moves tiles on `screen`, pictures of them glide there instead of
 -- the windows easing; the options for applyTree then move the windows at
 -- once. nil to animate as usual.
-local function captureRetile(screen, tree, area, byID, full)
+local function captureRetile(key, screen, tree, area, byID, full)
+    local before = captureTiled[key]
+    captureTiled[key] = {}
+    for id in pairs(byID) do captureTiled[key][id] = true end
     local duration = S.cfg.tiling.animationDuration or 0
     if not (S.cfg.experimental or {}).captureRetile or duration <= 0 or S.dragState
        or S.instantLayout or hs.mouse.getButtons().left then
@@ -743,11 +751,14 @@ local function captureRetile(screen, tree, area, byID, full)
             local f = win:frame()
             -- Only windows on show: a parked one has no picture to take.
             if f:intersect(screenFrame).area > 0 then
-                if not framesMatch(f, to) then moved = true end
+                -- After a reload nothing counts as new.
+                local new = before ~= nil and not before[leaf.windowID]
+                if new or not framesMatch(f, to) then moved = true end
                 tiles[#tiles + 1] = {
                     wid = leaf.windowID,
                     from = { x = f.x, y = f.y, w = f.w, h = f.h },
                     to = { x = to.x, y = to.y, w = to.w, h = to.h },
+                    appear = new,
                 }
             end
         end
@@ -816,7 +827,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                     signatures[key] = base .. Scroll.signature(key)
                 else
                     applyTree(tree, usableFrame, byID, full,
-                        captureRetile(screen, tree, usableFrame, byID, full))
+                        captureRetile(key, screen, tree, usableFrame, byID, full))
                 end
             end
         end
@@ -928,6 +939,21 @@ local function scheduleRetile(force, immediate, delay)
 end
 
 -- The Space showing changed: the filter has caught up with every window.
+-- WindowServer created window `id` (hyprspoon.native.events). The window
+-- filter usually takes a new window in as allowed a moment before, which
+-- a Space switch does too, so its retile waits behind the usual delay: a
+-- window of ours that's just been created, and can't be a native tab, is
+-- placed now instead of sitting where the app opened it. Any window being
+-- created (menus, tooltips) lands here, so only a pending retile looks.
+local function windowCreated(id)
+    if not (retileTimer and retilePending) then return end
+    local win = Util.windowFor(id)
+    if not win or mayBeTab(win) then return end
+    retileTimer:stop()
+    retileTimer = nil
+    retileFlush()
+end
+
 local function spaceChanged()
     if spaceMoveTimer then spaceMoveTimer:stop() spaceMoveTimer = nil end
     scheduleRetile(true)
@@ -1102,6 +1128,7 @@ M.handFocusBack = handFocusBack
 M.BSP_TAB_SETTLE = BSP_TAB_SETTLE
 M.BSP_SETTLE = BSP_SETTLE
 M.scheduleRetile = scheduleRetile
+M.windowCreated = windowCreated
 M.scheduleRecheck = scheduleRecheck
 M.spaceChanged = spaceChanged
 M.holdForSpaceMove = holdForSpaceMove

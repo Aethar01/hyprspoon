@@ -574,9 +574,13 @@ static void run(Slide s) {
 typedef struct {
     uint32_t wid;
     CGRect from, to;
+    bool appear; // new to the layout: pops in at `to` instead of gliding
 } Tile;
 
-static NSString *boundsKey = nil;
+static NSString *boundsKey = nil, *opacityKey = nil, *scaleKey = nil;
+
+// How small a new tile's picture starts as it pops in (Hyprland's popin).
+#define APPEAR_SCALE 0.85
 
 // A layer from `from` to `to` over `duration`, eased out; `from` and `to`
 // relative to the overlay.
@@ -597,6 +601,26 @@ static void glide(CALayer *layer, CGRect from, CGRect to, double duration) {
     group.animations = @[ move, size ];
     group.duration = duration;
     group.timingFunction = ease;
+    [layer addAnimation:group forKey:slideKey];
+}
+
+// A layer that pops in at `to` over `duration`: grows from APPEAR_SCALE
+// about its middle as it fades in.
+static void appear(CALayer *layer, CGRect to, double duration) {
+    layer.anchorPoint = CGPointMake(0.5, 0.5);
+    layer.position = CGPointMake(CGRectGetMidX(to), CGRectGetMidY(to));
+    layer.bounds = (CGRect){ CGPointZero, to.size };
+    if (duration <= 0) return;
+    CABasicAnimation *fade = [CABasicAnimation animationWithKeyPath:opacityKey];
+    fade.fromValue = @0.0;
+    fade.toValue = @1.0;
+    CABasicAnimation *grow = [CABasicAnimation animationWithKeyPath:scaleKey];
+    grow.fromValue = @(APPEAR_SCALE);
+    grow.toValue = @1.0;
+    CAAnimationGroup *group = [CAAnimationGroup animation];
+    group.animations = @[ fade, grow ];
+    group.duration = duration;
+    group.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
     [layer addAnimation:group forKey:slideKey];
 }
 
@@ -640,7 +664,11 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, double du
         to = CGRectMake(to.origin.x + (src.origin.x - tiles[i].from.origin.x) * sx - frame.origin.x,
             to.origin.y + (src.origin.y - tiles[i].from.origin.y) * sy - frame.origin.y,
             src.size.width * sx, src.size.height * sy);
-        glide(layer, from, to, duration);
+        if (tiles[i].appear) {
+            appear(layer, to, duration);
+        } else {
+            glide(layer, from, to, duration);
+        }
         [root addSublayer:layer];
     }
     commitChanges();
@@ -808,8 +836,9 @@ static int l_finish(lua_State *L) {
 }
 
 // retile{ frame = {x, y, w, h}, scale =, duration =, hold =, wallpaperAge =,
-// tiles = { { wid =, from = {x, y, w, h}, to = {...} }, ... } }: glides the
-// tiles' pictures from `from` to `to` over `frame`, then gets out of the
+// tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear = }, ... } }:
+// glides the tiles' pictures from `from` to `to` (or pops those that
+// `appear` in at `to`) over `frame`, then gets out of the
 // way. Waits for the capture (about 40ms) and puts the overlay up before
 // returning, so the windows beneath can move. True if it's up.
 static int l_retile(lua_State *L) {
@@ -829,12 +858,15 @@ static int l_retile(lua_State *L) {
         for (lua_Integer i = 1; i <= n && count < MAX_TILES; i++) {
             lua_rawgeti(L, -1, i);
             uint32_t w = (uint32_t)numberField(L, -1, "wid", 0);
+            lua_getfield(L, -1, "appear");
+            bool popIn = lua_toboolean(L, -1);
+            lua_pop(L, 1);
             lua_getfield(L, -1, "from");
             CGRect from = readRect(L, -1);
             lua_getfield(L, -2, "to");
             CGRect to = readRect(L, -1);
             lua_pop(L, 3);
-            if (w && !CGRectIsEmpty(from) && !CGRectIsEmpty(to)) tiles[count++] = (Tile){ w, from, to };
+            if (w && !CGRectIsEmpty(from) && !CGRectIsEmpty(to)) tiles[count++] = (Tile){ w, from, to, popIn };
         }
     }
     lua_pop(L, 1);
@@ -901,6 +933,8 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         positionKey = [[NSString alloc] initWithUTF8String:"position"];
         slideKey = [[NSString alloc] initWithUTF8String:"slide"];
         boundsKey = [[NSString alloc] initWithUTF8String:"bounds"];
+        opacityKey = [[NSString alloc] initWithUTF8String:"opacity"];
+        scaleKey = [[NSString alloc] initWithUTF8String:"transform.scale"];
     }
     if (SLSNewConnection(0, &cid) != kCGErrorSuccess) return luaL_error(L, "hyprspoon.native.slide: no WindowServer connection");
     queue = dispatch_queue_create("hyprspoon.slide",
