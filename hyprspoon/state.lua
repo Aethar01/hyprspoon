@@ -243,6 +243,16 @@ S.defaults = {
         dropColor = { red = 0.35, green = 0.6, blue = 1 },
     },
 
+    -- The layout of particular workspaces, by number or name (a name as
+    -- `namedWorkspaces` gives it, or a display's), e.g.
+    --   workspaces = { [3] = { layout = "scrolling" }, A = { layout = "bsp" } }
+    -- The layouts: "bsp" (also "dwindle"), "scrolling" (also "scroll";
+    -- see `scrolling`). cycleLayout and setLayout choose another while
+    -- running; that's kept with the workspace, over a reload, and wins over
+    -- this. Otherwise a workspace listed in scrolling.workspaces scrolls,
+    -- and any other is "bsp". Scratchpads are always "bsp".
+    workspaces = {},
+
     -- niri's scrollable tiling, per workspace. Tiled windows go in columns
     -- side by side, scrolled sideways so the focused one is in view; a new
     -- window opens as a column right of the focused one. In a workspace
@@ -268,7 +278,9 @@ S.defaults = {
     -- leaves. Columns out of sight are parked in the display's corner.
     -- false, true (the defaults below), or a table:
     --   workspaces = true   all workspaces, or a list, e.g. { 3, "A" }
-    --                       (scratchpads never scroll)
+    --                       (scratchpads never scroll; the top-level
+    --                       `workspaces` option and cycleLayout can also
+    --                       choose which scroll, and win over this list)
     --   width = 0.5         a new column's share of the tiling area
     --   presets = { 1/3, 1/2, 2/3 }  the widths cycleColumnWidth goes
     --                       through
@@ -298,6 +310,9 @@ S.defaults = {
     --   wheel = { "alt" }   holding these, scrolling (two fingers, or a
     --                       mouse wheel a column a step) scrolls the
     --                       columns, as niri's Mod+scroll; false: none
+    --                       (wheel and swipe only run when `scrolling` is
+    --                       on, or a workspace's `layout` in `workspaces`
+    --                       is "scrolling", as the Spoon starts)
     --   swipe = false       fingers whose sideways swipe scrolls the
     --                       columns, settling on one; not the same as
     --                       swipe.fingers unless workspaces swipe

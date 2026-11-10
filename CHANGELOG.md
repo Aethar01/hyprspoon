@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- New `workspaces` option (#17): the layout of particular workspaces, by
+  number or name, e.g. `workspaces = { [3] = { layout = "scrolling" } }`.
+  The layouts are `"bsp"` and `"scrolling"` for now.
+- New `cycleLayout` action (Option+Shift+Y) and `setLayout(name)`: switch the
+  focused workspace's layout while running. The choice is kept with the
+  workspace, over reloads, and wins over `workspaces` and
+  `scrolling.workspaces`, which still work.
+- `query()` gives each workspace's `layout`.
+
 ## 0.6.0 (2026-11-10)
 
 Rebuild the native modules (`make -C hyprspoon/native`) after updating:

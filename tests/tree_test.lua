@@ -644,4 +644,19 @@ test("untiled workspaces keep their group membership without tile geometry", fun
     assert(Tree.setOf(2) == group and select(2, Tree.findByID(2)) == group)
 end)
 
+test("a workspace's layout is saved, restored after a reload, and dropped on a reboot", function()
+    S.trees, S.layouts = {}, { ws3 = "scrolling" }
+    Tree.saveTreesNow()
+    assert(settings["hyprspoon.layouts"].ws3 == "scrolling")
+    S.layouts = {}
+    package.loaded["hyprspoon.tree"] = nil
+    Tree = require("hyprspoon.tree")
+    assert(S.layouts.ws3 == "scrolling", "kept over a reload")
+    settings["hyprspoon.treesBoot"] = 500
+    package.loaded["hyprspoon.tree"] = nil
+    Tree = require("hyprspoon.tree")
+    assert(next(S.layouts) == nil, "with the trees, not kept across a reboot")
+    S.layouts = {}
+end)
+
 print("Tree tests passed")

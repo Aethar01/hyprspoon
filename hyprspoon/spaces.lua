@@ -268,6 +268,7 @@ local function forgetWorkspace(n)
     S.trees["ws" .. n] = nil
     S.maximized["ws" .. n] = nil
     S.untiled["ws" .. n] = nil
+    S.layouts["ws" .. n] = nil
 end
 
 local function refresh()

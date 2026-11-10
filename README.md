@@ -15,6 +15,9 @@ A Hyprland-inspired tiling window manager for macOS, as a
 - **Scrolling columns** (optional, per workspace), like niri: windows in
   columns on a strip wider than the display, scrolled to the focused one
   by keyboard, Option+scroll or a swipe.
+- **A layout per workspace**: tiled in a BSP tree or in scrolling columns,
+  set in the config or switched on the fly with `cycleLayout`, and kept
+  with the workspace.
 - **Workspace slides** on a spring, like Hyprland's animations.
 - **Window borders** drawn by WindowServer, fading between the active and
   inactive colours.
@@ -195,6 +198,7 @@ assignments too.
 | `displays` | `{}` | Workspaces kept on particular displays, by display name or UUID (see below) |
 | `namedWorkspaces` | `{"A", "S", "D"}` | Named workspaces after 1 to 10: scratchpads, shown over the workspace beneath |
 | `scratchpadScale` | `0.95` | Share of the display's area a scratchpad is laid out in, centred |
+| `workspaces` | `{}` | The layout of particular workspaces, by number or name (see [Layouts](#layouts-per-workspace)) |
 
 `displays` maps each display, by name or UUID, to its workspaces. A
 display shows the first of them when it connects:
@@ -281,6 +285,40 @@ pointer. Distances are fractions of the trackpad's width. Set
 | `swipe.distance` | `0.12` | Without `follow`, how far the fingers travel before it switches |
 | `swipe.direction` | `nil` | `"horizontal"` or `"vertical"` (fingers up for the next workspace); by default as `slide.workspaces`. Vertical leaves sideways swipes free to scroll columns |
 
+### Layouts per workspace
+
+A workspace is tiled in one of these layouts:
+
+| Layout | What it is |
+|---|---|
+| `"bsp"` (or `"dwindle"`) | A binary tree of splits, the default |
+| `"scrolling"` (or `"scroll"`) | [Scrolling columns](#scrolling-columns-scrolling) |
+
+`workspaces` gives some of them a layout, by number or name (a name as in
+`namedWorkspaces`, or a display's):
+
+```lua
+workspaces = { [3] = { layout = "scrolling" }, [4] = { layout = "bsp" } },
+```
+
+`cycleLayout` switches the focused workspace to the next layout (Option+Shift+Y),
+and `setLayout("scrolling")` to the one you name. What you pick is kept with
+the workspace, over reloads, and wins over the options below until the
+workspace is forgotten (empty and not showing) or you restart the Mac.
+The first of these names the layout:
+
+1. the choice made with `cycleLayout` or `setLayout`
+2. `workspaces[n].layout`
+3. `scrolling.workspaces`: those it lists scroll, or all of them with
+   `scrolling = true`
+4. `"bsp"`
+
+Scratchpads are always `"bsp"`. Switching keeps the windows and the tree
+they're in, so the splits that made columns are the BSP tiles' splits again
+on the way back. `scrolling.wheel` and `scrolling.swipe` run
+when `scrolling` is on or a workspace is set to `"scrolling"` in the config as
+the Spoon starts; `query()` has each workspace's `layout`.
+
 ### Scrolling columns (`scrolling`)
 
 niri's scrollable tiling, per workspace. Tiled windows go in columns side
@@ -298,7 +336,7 @@ workspace's windows. Set `scrolling = true` for the defaults, or a table:
 
 | Option | Default | Description |
 |---|---|---|
-| `scrolling.workspaces` | `true` | All workspaces, or a list such as `{ 3, "A" }`. Scratchpads never scroll |
+| `scrolling.workspaces` | `true` | All workspaces, or a list such as `{ 3, "A" }`. Scratchpads never scroll. [`workspaces`](#layouts-per-workspace) and `cycleLayout` win over it |
 | `scrolling.width` | `0.5` | A new column's share of the tiling area |
 | `scrolling.presets` | `{ 1/3, 1/2, 2/3 }` | The widths `cycleColumnWidth` (Option+R) goes through |
 | `scrolling.center` | `"never"` | `"never"` scrolls just enough to show the focused column; `"always"` (or `true`) centres it; `"on-overflow"` centres it when it doesn't fit beside the column focused before |
@@ -552,6 +590,7 @@ check the chords you choose.
 | Option+G | Cycle through floating windows | `focusFloat` |
 | Option+F | Fill the screen without gaps (Shift: maximize inside the gaps) | `toggleFill`, `toggleMaximize` |
 | Option+Y | Flip the split | `toggleSplit` |
+| Option+Shift+Y | Switch the workspace to its next [layout](#layouts-per-workspace) | `cycleLayout` |
 | Option+= | Balance the splits | `balance` |
 | Option+R | Rotate the layout (Shift: mirror it); in scrolling columns, the column's next (Shift: previous) width preset | `rotate`, `mirror` |
 | Option+Tab | Overview | `toggleOverview` |
@@ -583,7 +622,7 @@ hotkeys take their place. With `defaultHotkeys`, on the US and ABC layouts
 | Option+1…0 | ¡ ™ £ ¢ ∞ § ¶ • ª º |
 | Shift+Option+1…0 | ⁄ € ‹ › ﬁ ﬂ ‡ ° · ‚ |
 | Option+W F B T G Y R C | ∑ ƒ ∫ † © ¥ ® ç |
-| Shift+Option+F B R | Ï ı ‰ |
+| Shift+Option+F B R Y | Ï ı ‰ Á |
 | Option+H J K L | ˙ ∆ ˚ ¬ |
 | Shift+Option+H J K L | Ó Ô  (the Apple logo) Ò |
 | Option+A S D | å ß ∂ |
@@ -721,10 +760,11 @@ where there is no value. Lists encode as arrays, including empty lists.
       "workspace": "2", "focused": true }
   ],
   // Workspaces in use, in menu bar order. `number` is what gotoWorkspace
-  // takes; `showing` is true beneath a scratchpad too. Windows: tiles first.
+  // takes; `showing` is true beneath a scratchpad too. `layout` is "bsp"
+  // or "scrolling". Windows: tiles first.
   "workspaces": [
     { "name": "2", "number": 2, "display": "<UUID>", "showing": true,
-      "focused": true, "scratchpad": false, "windows": [1234] }
+      "focused": true, "scratchpad": false, "layout": "bsp", "windows": [1234] }
   ],
   // Windows with a workspace (not minimized or full screen). `hidden`:
   // parked on a workspace not showing, or beneath a scratchpad.
@@ -751,8 +791,9 @@ workspaces belonging to unconfigured displays use negative IDs. Pass that
 ID to `gotoWorkspace()`. `display` is the UUID it lives on, even when
 hidden, or the primary display while its own is disconnected. `showing`
 is true for the workspace beneath a scratchpad too; `focused` matches the
-focused workspace, and `scratchpad` identifies named workspaces. `windows`
-lists its window IDs, tiles before floats.
+focused workspace, and `scratchpad` identifies named workspaces. `layout`
+is the name of its layout (`"bsp"` or `"scrolling"`). `windows` lists its
+window IDs, tiles before floats.
 
 Each window has a numeric `id`, app name, title, and workspace name.
 `floating` reflects hyprspoon's floating classification, `hidden` means
