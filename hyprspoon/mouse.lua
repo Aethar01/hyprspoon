@@ -63,6 +63,9 @@ local function beginMouseDrag(mode, point)
 
     -- hyprspoon.native.frames follows the pointer from here, off the main thread;
     -- the drags below are then never seen here.
+    -- A picture still on its way back from the last drop: its window is
+    -- sent home by this drag's begin.
+    Slide.cancelHome()
     local frames = Util.native("frames")
     -- Not Hammerspoon's own windows: see Util.setFrame.
     if frames and win:pid() ~= (hs.processInfo and hs.processInfo.processID) then
@@ -187,10 +190,13 @@ function onMouseEvent(event)
         local win = S.dragState.win
         local mode = S.dragState.mode
         local lifted = S.dragState.lifted
+        local home = nil
         if S.dragState.native then
             -- Waits for the app to take the last frame (a window parked for
-            -- its picture is given it too).
-            Util.native("frames").dragEnd(point.x, point.y)
+            -- its picture is given it too). A drop that changes nothing
+            -- leaves it parked instead, while its picture goes back.
+            local stays = lifted and mode == "move" and win ~= nil and Drop.wouldStay(point)
+            home = select(2, Util.native("frames").dragEnd(point.x, point.y, stays))
             if S.running.events then S.running.events.mute(nil) end
         else
             if S.dragState.trailing then S.dragState.trailing:stop() end
@@ -198,6 +204,21 @@ function onMouseEvent(event)
         end
         S.dragState = nil
         followInLua(false)
+        if home then
+            -- The picture glides back to the tile and grows back to its
+            -- size; only then does the window come back under it, and the
+            -- picture fades. Nothing flashes where it was dropped. The drop
+            -- (a retile that leaves it be) waits for it too.
+            Drop.preview(nil)
+            Slide.home(home, function()
+                local frames = Util.native("frames")
+                if frames and frames.dragUnpark then frames.dragUnpark() end
+                S.windowInfo[win:id()], S.applied[win:id()] = nil, nil
+                Drop.finishDrag(win, point)
+                Slide.land()
+            end)
+            return true
+        end
         if mode == "move" and win then
             -- Its own move reports were muted (or taken for ours) during the
             -- drag, so which display it's on is looked up afresh.

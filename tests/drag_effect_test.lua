@@ -86,11 +86,14 @@ assert(landed == 1)
 -- ---------------------------------------------------------------------------
 
 local calls = {}
+local homeTo, homeDone
 local function log(what) calls[#calls + 1] = what end
 local liftOffered = "LIFTER"
 package.loaded["hyprspoon.slide"] = {
     lifter = function() log("lifter") if liftOffered then return liftOffered, 0.9 end end,
     land = function() log("land") end,
+    cancelHome = function() log("cancelHome") end,
+    home = function(frame, done) log("home") homeTo = frame homeDone = done end,
 }
 local parkAt = { x = 1919, y = 1079 }
 package.loaded["hyprspoon.spaces"] = {
@@ -114,9 +117,12 @@ package.loaded["hyprspoon.resize"] = {
     finishResize = function() log("finishResize") return true end,
 }
 local dropped = true
+local stays = false
 package.loaded["hyprspoon.drop"] = {
     beginDrag = function() end,
     updateDrag = function() end,
+    wouldStay = function() return stays end,
+    preview = function() log("preview") end,
     finishDrag = function() log("finishDrag") return dropped end,
 }
 package.loaded["hyprspoon.border"] = { previewer = function() return "RING" end }
@@ -125,7 +131,7 @@ package.loaded["hyprspoon.discover"] = { windowInfoFor = function() return { uui
 local began
 natives.frames = {
     dragBegin = function(t) began = t log("dragBegin") return true end,
-    dragEnd = function() log("dragEnd") end,
+    dragEnd = function(_, _, home) log(home and "dragEnd(home)" or "dragEnd") end,
 }
 S.cfg.mouse = { move = { "alt" }, resize = { "alt", "cmd" }, rightResize = { "alt" } }
 S.cfg.minWidth, S.cfg.minHeight = 240, 140
@@ -172,6 +178,29 @@ dropped = false
 drag("leftMouseDown", "leftMouseUp", { "alt" })
 assert(index("inBounds") < index("land") and index("claim") < index("land"))
 dropped = true
+
+-- A drop that changes nothing: the window stays parked while the picture
+-- goes home, then comes back under it (and the drop retiles) before the
+-- picture fades.
+stays = true
+natives.frames.dragEnd = function(_, _, home)
+    log(home and "dragEnd(home)" or "dragEnd")
+    if home then return nil, { x = 10, y = 20, w = 400, h = 300 } end
+end
+natives.frames.dragUnpark = function() log("dragUnpark") return true end
+drag("leftMouseDown", "leftMouseUp", { "alt" })
+assert(index("cancelHome") < index("dragBegin"), "a picture going home is left to the next drag")
+assert(index("dragEnd(home)") and index("home") and not index("finishDrag") and not index("land"))
+assert(homeTo.x == 10 and homeTo.w == 400)
+homeDone()
+assert(index("dragUnpark") < index("finishDrag") and index("finishDrag") < index("land"),
+    "the window is back, and retiled, before the picture fades")
+-- The native side kept nothing parked (the picture wasn't up yet): as before.
+natives.frames.dragEnd = function(_, _, home) log(home and "dragEnd(home)" or "dragEnd") end
+drag("leftMouseDown", "leftMouseUp", { "alt" })
+assert(index("dragEnd(home)") < index("finishDrag") and index("finishDrag") < index("land"))
+stays = false
+natives.frames.dragEnd = function() log("dragEnd") end
 
 -- Without a place to park the window (its display gone), no picture.
 parkAt = nil

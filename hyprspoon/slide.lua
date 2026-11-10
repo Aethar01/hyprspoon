@@ -281,6 +281,28 @@ function M.land()
     if mod and mod.land then mod.land() end
 end
 
+-- A drop that changed nothing: the picture glides back to `frame` (where
+-- its window was as the drag began, still parked) as windows move, then
+-- `done` runs (to bring the window back and M.land()). At once without
+-- the native glide.
+local homeTimer = nil
+function M.home(frame, done)
+    M.cancelHome()
+    local mod = native or Util.native("slide")
+    local took = mod and mod.home and mod.home(frame, Anim.get("windows"))
+    if not took or took <= 0 then return done() end
+    homeTimer = hs.timer.doAfter(took, function()
+        homeTimer = nil
+        done()
+    end)
+end
+
+-- A new drag begins: a picture still going home is left to it.
+function M.cancelHome()
+    if homeTimer then homeTimer:stop() end
+    homeTimer = nil
+end
+
 -- Workspace `n` is gone: its picture with it.
 function M.forget(n)
     if native and kept[n] then

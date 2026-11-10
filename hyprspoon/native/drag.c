@@ -188,6 +188,7 @@ static pid_t liftPid = 0;
 static uint32_t liftWid = 0;
 static CGRect liftPark;  // where the window waits
 static CGRect liftLast;  // the frame the drag last gave
+static bool liftKept = false; // kept parked past dragEnd while the picture goes home
 static CGFloat liftScale = 1;
 static RingPreview liftPreview = NULL;
 
@@ -212,12 +213,13 @@ static bool claimLift(unsigned serial) {
 }
 
 // The drag with a picture is over (or Lua is closing): the window comes
-// back from where it was parked to `frame` (NULL: the drag's last). True
-// if it was parked.
+// back from where it was parked to `frame` (NULL: the drag's last; always
+// its own frame if dragEnd kept it parked). True if it was parked.
 static bool unlift(const CGRect *frame) {
     os_unfair_lock_lock(&liftLock);
     bool taken = liftState == LIFT_TAKEN;
-    if (taken) framesSet(liftPid, liftWid, frame ? *frame : liftLast, 0, true);
+    if (taken) framesSet(liftPid, liftWid, frame && !liftKept ? *frame : liftLast, 0, true);
+    liftKept = false;
     liftState = LIFT_NONE;
     liftPreview = NULL;
     os_unfair_lock_unlock(&liftLock);
@@ -481,11 +483,27 @@ static int l_begin(lua_State *L) {
     return 1;
 }
 
-// dragEnd(x, y): stops following (at that point, if still dragging), waits
-// for the app to take the last frame and returns it as {x, y, w, h}, or nil
-// if the drag never moved the window. A window parked for its picture
-// (lift) is given that frame (or its own, if the drag never moved).
+static void pushRect(lua_State *L, CGRect r) {
+    lua_createtable(L, 0, 4);
+    lua_pushnumber(L, r.origin.x);
+    lua_setfield(L, -2, "x");
+    lua_pushnumber(L, r.origin.y);
+    lua_setfield(L, -2, "y");
+    lua_pushnumber(L, r.size.width);
+    lua_setfield(L, -2, "w");
+    lua_pushnumber(L, r.size.height);
+    lua_setfield(L, -2, "h");
+}
+
+// dragEnd(x, y, home): stops following (at that point, if still dragging),
+// waits for the app to take the last frame and returns it as {x, y, w, h},
+// or nil if the drag never moved the window. A window parked for its
+// picture (lift) is given that frame (or its own, if the drag never moved).
+// With `home` (a drop that changes nothing), one parked stays parked while
+// its picture goes back, and the second result is the frame it had as the
+// drag began, where dragUnpark() puts it.
 static int l_end(lua_State *L) {
+    bool home = lua_toboolean(L, 3);
     bool hasPoint = lua_isnumber(L, 1) && lua_isnumber(L, 2);
     CGPoint point = hasPoint ? CGPointMake(lua_tonumber(L, 1), lua_tonumber(L, 2)) : CGPointZero;
     if (tapThreadRunning) {
@@ -495,6 +513,22 @@ static int l_end(lua_State *L) {
         });
     }
     stopTellingLua();
+    if (home) {
+        os_unfair_lock_lock(&liftLock);
+        bool kept = liftState == LIFT_TAKEN;
+        if (kept) {
+            liftKept = true;
+            liftLast = drag.frame;
+            liftPreview = NULL;
+        }
+        os_unfair_lock_unlock(&liftLock);
+        if (kept) {
+            endPreview();
+            if (drag.given) pushRect(L, drag.last); else lua_pushnil(L);
+            pushRect(L, drag.frame);
+            return 2;
+        }
+    }
     bool lifted = unlift(drag.given ? &drag.last : &drag.frame);
     if (!drag.given) {
         if (lifted) framesWait(drag.pid);
@@ -504,15 +538,16 @@ static int l_end(lua_State *L) {
     }
     framesWait(drag.pid);
     endPreview();
-    lua_createtable(L, 0, 4);
-    lua_pushnumber(L, drag.last.origin.x);
-    lua_setfield(L, -2, "x");
-    lua_pushnumber(L, drag.last.origin.y);
-    lua_setfield(L, -2, "y");
-    lua_pushnumber(L, drag.last.size.width);
-    lua_setfield(L, -2, "w");
-    lua_pushnumber(L, drag.last.size.height);
-    lua_setfield(L, -2, "h");
+    pushRect(L, drag.last);
+    return 1;
+}
+
+// dragUnpark(): a window dragEnd kept parked goes back to its own frame,
+// and this waits for the app to take it. True if it was parked.
+static int l_unpark(lua_State *L) {
+    bool parked = unlift(NULL);
+    if (parked) framesWait(liftPid);
+    lua_pushboolean(L, parked);
     return 1;
 }
 
@@ -521,6 +556,8 @@ void dragRegister(lua_State *L) {
     lua_setfield(L, -2, "dragBegin");
     lua_pushcfunction(L, l_end);
     lua_setfield(L, -2, "dragEnd");
+    lua_pushcfunction(L, l_unpark);
+    lua_setfield(L, -2, "dragUnpark");
 }
 
 // Lua is closing: the thread stops and is joined, so nothing runs in this
@@ -536,7 +573,7 @@ void dragStop(void) {
         tapThreadRunning = false;
     }
     // Not left parked.
-    if (unlift(drag.given ? &drag.last : &drag.frame)) framesWait(drag.pid);
+    if (unlift(drag.given ? &drag.last : &drag.frame)) framesWait(liftPid);
     stopTellingLua();
     endPreview();
     drag.given = false;

@@ -1632,6 +1632,36 @@ static void liftDown(void) {
         DISPATCH_TIME_FOREVER, 0);
 }
 
+// A drop that changes nothing: the picture goes back to `to`, the frame
+// its window had as the drag began (parked till then: dragUnpark), growing
+// back to its size on the way, as `m` moves. Our window covers both
+// frames meanwhile, the picture moving inside it.
+static void liftHome(CGRect to, Motion m) {
+    if (!liftShown || !liftBox) return;
+    CALayer *box = liftBox;
+    CALayer *drawn = (CALayer *)box.presentationLayer ?: box;
+    NSNumber *scale = [drawn valueForKeyPath:@"transform.scale"] ?: @(liftScale);
+    CGRect from = liftPlaced;
+    CGRect area = CGRectIntegral(CGRectUnion(from, to));
+    CGPoint a = CGPointMake(CGRectGetMidX(from) - area.origin.x, CGRectGetMidY(from) - area.origin.y);
+    CGPoint b = CGPointMake(CGRectGetMidX(to) - area.origin.x, CGRectGetMidY(to) - area.origin.y);
+    beginChanges();
+    [box removeAllAnimations];
+    liftRoot.frame = (CGRect){ CGPointZero, area.size };
+    box.position = a;
+    commitChanges();
+    placeLift(area);
+    beginChanges();
+    box.position = b;
+    box.transform = CATransform3DIdentity;
+    if (m.duration > 0 || !m.ease) {
+        [box addAnimation:animate(m, positionKey, [NSValue valueWithBytes:&a objCType:@encode(CGPoint)],
+            [NSValue valueWithBytes:&b objCType:@encode(CGPoint)], 0) forKey:positionKey];
+        [box addAnimation:animate(m, scaleKey, scale, @1.0, 0) forKey:scaleKey];
+    }
+    commitChanges();
+}
+
 static void liftGoneNow(void *unused) {
     (void)unused;
     // Not if another drag's picture has come up meanwhile.
@@ -1991,6 +2021,19 @@ static int l_land(lua_State *L) {
     return 0;
 }
 
+// home(frame, motion): the drop changed nothing, so the picture glides back
+// to `frame` (see liftHome), as `motion` (an `animations` entry) moves.
+// Returns the seconds that takes; then dragUnpark() and land().
+static int l_home(lua_State *L) {
+    CGRect to = readRect(L, 1);
+    Motion m = readMotion(L, 2, defaultMotion);
+    double took = 0;
+    if (m.duration > 0 || !m.ease) took = animate(m, positionKey, @0, @1, 0).duration;
+    if (liftQueue) dispatch_async(liftQueue, ^{ liftHome(to, m); });
+    lua_pushnumber(L, took);
+    return 1;
+}
+
 // onReady(fn): fn(token, up) on the main thread once retile `token`'s
 // overlay is up (`up`), or couldn't be put up.
 static int l_onReady(lua_State *L) {
@@ -2173,6 +2216,7 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         { "bounds", l_bounds },
         { "lifter", l_lifter },
         { "land", l_land },
+        { "home", l_home },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);
