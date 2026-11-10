@@ -177,8 +177,8 @@ function M.endPan(commit, velocity)
 end
 
 -- A retile on `screen` (experimental.captureRetile): `tiles` is a list of
--- { wid =, from = rect, to = rect, appear = }, gliding as
--- animations.windows says and appearing as animations.fadeIn does. Call
+-- { wid =, from = rect, to = rect, appear = }, gliding (and new ones
+-- growing) as animations.windows says, fading as animations.fadeIn does. Call
 -- before the windows move: it waits for the capture. True if pictures
 -- cover the retile, so the windows can move at once.
 function M.retile(screen, tiles)
@@ -192,6 +192,8 @@ function M.retile(screen, tiles)
         fade = Anim.get("fadeIn"),
         hold = type(S.cfg.experimental.captureRetile) == "table"
             and S.cfg.experimental.captureRetile.hold or 0.05,
+        popin = type(S.cfg.experimental.captureRetile) == "table"
+            and S.cfg.experimental.captureRetile.popin or 0.8,
         wallpaperAge = S.cfg.slide and S.cfg.slide.wallpaperRefresh or 0,
         tiles = tiles,
     }) == true

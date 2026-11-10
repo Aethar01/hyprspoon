@@ -76,8 +76,9 @@ S.defaults = {
     --                      tiling.animationDuration). Windows moved through
     --                      accessibility always ease; a spring moves the
     --                      pictures of experimental.captureRetile
-    --   fadeIn = {}        new windows fading in with captureRetile
-    --                      (default: as windows)
+    --   fadeIn = {}        with captureRetile: new windows fading in as
+    --                      they pop in, and fresh pictures of the windows
+    --                      fading over the old (default: as windows)
     -- e.g. { curve = "spring", duration = 0.2 } springs everything, and
     -- { windows = { curve = "ease", duration = 0.15 } } only retiles.
     animations = {},
@@ -328,13 +329,18 @@ S.defaults = {
         -- Hyprland's windows do, instead of easing each window through
         -- accessibility moves: one capture of the display's tiles (about
         -- 40ms, before anything moves) over the wallpaper, while the
-        -- windows move at once beneath. Not while dragging, nor in
-        -- scrolling workspaces. Floating windows over the tiles are hidden
-        -- until it's done. Moves as animations.windows and
-        -- animations.fadeIn say; on while windows animate. true, or a
-        -- table: hold = 0.05 (seconds the pictures stay after they settle,
-        -- while apps redraw at their new sizes). A prototype (#19); needs
-        -- hyprspoon.native.slide and Screen Recording.
+        -- windows move at once beneath. A picture keeps its size, its
+        -- edges stretched where its tile outgrows it, until the window has
+        -- its new size and a fresh picture fades in. New windows pop in at
+        -- their tiles. Not while dragging, nor in scrolling workspaces.
+        -- Floating windows over the tiles are hidden until it's done.
+        -- Moves as animations.windows and animations.fadeIn say; on while
+        -- windows animate. true, or a table:
+        --   popin = 0.8   share of their size new windows grow from (1:
+        --                 they only fade in)
+        --   hold = 0.05   seconds the pictures stay after they settle
+        -- A prototype (#19); needs hyprspoon.native.slide and Screen
+        -- Recording.
         captureRetile = false,
     },
 }
