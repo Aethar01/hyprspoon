@@ -674,20 +674,37 @@ static void endNoSooner(double seconds) {
         DISPATCH_TIME_FOREVER, 0);
 }
 
-// Moves `layer` (anchored at its top-left) from `from` to `to` as `m`
-// moves; how long that takes.
+// Where `layer`'s anchor point is when its frame is `r`.
+static CGPoint anchorAt(CALayer *layer, CGRect r) {
+    return CGPointMake(r.origin.x + r.size.width * layer.anchorPoint.x,
+        r.origin.y + r.size.height * layer.anchorPoint.y);
+}
+
+// Moves `layer` from `from` to `to` as `m` moves; how long that takes.
+//
+// Additively: the layer is put at `to` and drawn offset by `from - to`, an
+// offset that goes to nothing. A retile carried on (`from` the frame the
+// last one was taking it to) adds its own offset over the one still
+// running, so the tile turns towards its new place without stopping: its
+// speed carries on, as Hyprland's windows do when their target changes.
 static double glide(CALayer *layer, CGRect from, CGRect to, Motion m) {
-    layer.anchorPoint = CGPointZero;
-    layer.position = to.origin;
+    CGPoint p0 = anchorAt(layer, from), p1 = anchorAt(layer, to);
+    layer.position = p1;
     layer.bounds = (CGRect){ CGPointZero, to.size };
     if (m.ease && m.duration <= 0) return 0;
-    CABasicAnimation *move = animate(m, positionKey, [NSValue valueWithBytes:&from.origin objCType:@encode(CGPoint)],
-        [NSValue valueWithBytes:&to.origin objCType:@encode(CGPoint)], 0);
-    CGRect fromBounds = { CGPointZero, from.size }, toBounds = { CGPointZero, to.size };
-    CABasicAnimation *size = animate(m, boundsKey, [NSValue valueWithBytes:&fromBounds objCType:@encode(CGRect)],
-        [NSValue valueWithBytes:&toBounds objCType:@encode(CGRect)], 0);
-    [layer addAnimation:move forKey:positionKey];
-    [layer addAnimation:size forKey:boundsKey];
+    if (CGPointEqualToPoint(p0, p1) && CGSizeEqualToSize(from.size, to.size)) return 0;
+    CGPoint offset = CGPointMake(p0.x - p1.x, p0.y - p1.y), none = CGPointZero;
+    CGRect grow = { CGPointZero, { from.size.width - to.size.width, from.size.height - to.size.height } };
+    CGRect still = CGRectZero;
+    CABasicAnimation *move = animate(m, positionKey, [NSValue valueWithBytes:&offset objCType:@encode(CGPoint)],
+        [NSValue valueWithBytes:&none objCType:@encode(CGPoint)], 0);
+    CABasicAnimation *size = animate(m, boundsKey, [NSValue valueWithBytes:&grow objCType:@encode(CGRect)],
+        [NSValue valueWithBytes:&still objCType:@encode(CGRect)], 0);
+    move.additive = YES;
+    size.additive = YES;
+    // Unnamed, so each adds to those still running instead of replacing them.
+    [layer addAnimation:move forKey:nil];
+    [layer addAnimation:size forKey:nil];
     return move.duration;
 }
 
@@ -1009,32 +1026,32 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
             t->radius = shownTiles[j].radius;
             box = boxes[j];
             ring = rings[j];
-            CGRect now = drawnFrame(box);
-            CGRect ringNow = ring ? drawnFrame(ring) : CGRectNull;
-            [box removeAllAnimations];
-            box.transform = CATransform3DIdentity;
+            // Where the last retile was taking them: the glides still
+            // running carry on beneath the new ones.
+            CGRect was = box.frame;
+            CGRect ringWas = ring ? ring.frame : CGRectNull;
             if (ring && !(t->ring && t->width > 0)) {
                 [ring removeFromSuperlayer];
                 ring = nil;
             } else if (!ring && t->ring && t->width > 0) {
+                // A ring it didn't have: from where the box is drawn now.
                 ring = ringLayer(t);
-                ringNow = outset(now, t->width);
+                ring.anchorPoint = box.anchorPoint;
+                ringWas = outset(drawnFrame(box), t->width);
                 [root addSublayer:ring];
             }
-            [ring removeAllAnimations];
-            ring.transform = CATransform3DIdentity;
             if (ring) styleRing(ring, t);
             CGFloat w = ring ? t->width : 0;
             if (box.sublayers.count == 0) {
                 // Still waiting for its picture: it pops in at the new place.
                 t->appear = true;
+                [box removeAllAnimations];
+                [ring removeAllAnimations];
                 placeHidden(box, ring, to, w);
             } else {
                 t->appear = false;
-                box.opacity = 1;
-                ring.opacity = 1;
-                took = fmax(took, glide(box, now, to, move));
-                if (ring) glide(ring, ringNow, outset(to, w), move);
+                took = fmax(took, glide(box, was, to, move));
+                if (ring) glide(ring, ringWas, outset(to, w), move);
             }
         } else {
             t->radius = cornerRadius(t->wid, t->radius);
@@ -1052,6 +1069,8 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
                 CALayer *pic = CGRectIsNull(src) || CGRectIsEmpty(src) ? nil : edgeStretched(image, area, src);
                 if (pic) [box addSublayer:pic];
                 CGRect from = pic ? CGRectOffset(src, -frame.origin.x, -frame.origin.y) : to;
+                box.anchorPoint = CGPointZero;
+                ring.anchorPoint = CGPointZero;
                 took = fmax(took, glide(box, from, to, move));
                 if (ring) glide(ring, outset(from, w), outset(to, w), move);
             }
