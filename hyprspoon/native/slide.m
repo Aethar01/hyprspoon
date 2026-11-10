@@ -68,9 +68,20 @@
 
 SL_FUNCS(SL_DECLARE)
 
+// Optional: each window's corner radius (macOS 26 and later), as border.m
+// reads it. Without it, the radius Lua gives.
+static CFTypeRef (*SLSWindowQueryWindows)(int, CFArrayRef, uint32_t);
+static CFTypeRef (*SLSWindowQueryResultCopyWindows)(CFTypeRef);
+static bool (*SLSWindowIteratorAdvance)(CFTypeRef);
+static CFArrayRef (*SLSWindowIteratorGetCornerRadii)(CFTypeRef);
+
 static const char *loadSymbols(void) {
     slOpen();
     SL_FUNCS(SL_LOAD)
+    SLSWindowQueryWindows = dlsym(RTLD_DEFAULT, "SLSWindowQueryWindows");
+    SLSWindowQueryResultCopyWindows = dlsym(RTLD_DEFAULT, "SLSWindowQueryResultCopyWindows");
+    SLSWindowIteratorAdvance = dlsym(RTLD_DEFAULT, "SLSWindowIteratorAdvance");
+    SLSWindowIteratorGetCornerRadii = dlsym(RTLD_DEFAULT, "SLSWindowIteratorGetCornerRadii");
     return NULL;
 }
 
@@ -625,6 +636,8 @@ typedef struct {
     uint32_t wid;
     CGRect from, to; // on screen
     bool appear;     // new to the layout: pops in at `to`
+    bool ring;       // drawn with its border ring (the real one is beneath)
+    CGFloat color[4], width, radius;
 } Tile;
 
 static NSString *boundsKey = nil, *opacityKey = nil, *scaleKey = nil;
@@ -634,6 +647,7 @@ static NSString *boundsKey = nil, *opacityKey = nil, *scaleKey = nil;
 // the window at its new size yet.
 static Tile shownTiles[MAX_TILES];
 static CALayer *boxes[MAX_TILES];
+static CALayer *rings[MAX_TILES]; // nil for a tile without one
 static bool live[MAX_TILES];
 static unsigned retileGeneration = 0;
 static CGRect retileFrame;
@@ -710,6 +724,49 @@ static CALayer *edgeStretched(CGImageRef image, CGRect area, CGRect src) {
     return pic;
 }
 
+// Window `wid`'s corner radius as WindowServer has it, else `fallback`.
+static CGFloat cornerRadius(uint32_t wid, CGFloat fallback) {
+    CGFloat radius = 0;
+    if (SLSWindowQueryWindows && SLSWindowQueryResultCopyWindows && SLSWindowIteratorAdvance
+        && SLSWindowIteratorGetCornerRadii) {
+        CFArrayRef list = slWindowList(wid);
+        CFTypeRef query = SLSWindowQueryWindows(cid, list, 0);
+        CFTypeRef iterator = query ? SLSWindowQueryResultCopyWindows(query) : NULL;
+        if (iterator && SLSWindowIteratorAdvance(iterator)) {
+            CFArrayRef radii = SLSWindowIteratorGetCornerRadii(iterator);
+            if (radii && CFArrayGetCount(radii) > 0) {
+                double value = 0;
+                CFNumberGetValue(CFArrayGetValueAtIndex(radii, 0), kCFNumberDoubleType, &value);
+                radius = value;
+            }
+            if (radii) CFRelease(radii);
+        }
+        if (iterator) CFRelease(iterator);
+        if (query) CFRelease(query);
+        CFRelease(list);
+    }
+    return radius > 0 ? radius : fallback;
+}
+
+// `r` grown by `by` on every side.
+static CGRect outset(CGRect r, CGFloat by) {
+    return CGRectInset(r, -by, -by);
+}
+
+// Tile `t`'s ring, as border.m draws it: `width` wide just outside the
+// window, its inside following the window's corners.
+static CALayer *ringLayer(const Tile *t) {
+    CALayer *ring = [CALayer layer];
+    CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+    CGColorRef color = CGColorCreate(space, t->color);
+    CGColorSpaceRelease(space);
+    ring.borderColor = color;
+    CGColorRelease(color);
+    ring.borderWidth = t->width;
+    ring.cornerRadius = t->radius + t->width;
+    return ring;
+}
+
 static bool near2(CGFloat a, CGFloat b) {
     return fabs(a - b) <= 2;
 }
@@ -730,11 +787,15 @@ static double showPicture(int i, CGImageRef image, CGRect area, CGRect b) {
     double took = 0;
     if (box.sublayers.count == 0) {
         [box addSublayer:pic];
-        took = fadeIn(box, retileFade);
-        if (popScale < 1 && !(retileMove.ease && retileMove.duration <= 0)) {
-            CABasicAnimation *grow = animate(retileMove, scaleKey, @(popScale), @1.0, 0);
-            [box addAnimation:grow forKey:scaleKey];
-            took = fmax(took, grow.duration);
+        // The box and its ring pop in together.
+        CALayer *parts[2] = { box, rings[i] };
+        for (int k = 0; k < 2 && parts[k]; k++) {
+            took = fmax(took, fadeIn(parts[k], retileFade));
+            if (popScale < 1 && !(retileMove.ease && retileMove.duration <= 0)) {
+                CABasicAnimation *grow = animate(retileMove, scaleKey, @(popScale), @1.0, 0);
+                [parts[k] addAnimation:grow forKey:scaleKey];
+                took = fmax(took, grow.duration);
+            }
         }
     } else {
         [box addSublayer:pic];
@@ -845,25 +906,39 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
         root.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
     }
     for (int i = 0; i < count; i++) {
+        Tile *t = &shownTiles[i];
+        t->radius = cornerRadius(t->wid, t->radius);
         CALayer *box = [CALayer layer];
         box.masksToBounds = YES;
+        // The window's own corners: the picture's stretched edges are square.
+        box.cornerRadius = t->radius;
         boxes[i] = box;
+        CALayer *ring = t->ring && t->width > 0 ? ringLayer(t) : nil;
+        rings[i] = ring;
         live[i] = false;
-        CGRect to = CGRectOffset(tiles[i].to, -frame.origin.x, -frame.origin.y);
-        if (tiles[i].appear) {
+        CGRect to = CGRectOffset(t->to, -frame.origin.x, -frame.origin.y);
+        CGFloat w = ring ? t->width : 0;
+        if (t->appear) {
             // Empty and unseen until its own capture (popInNew).
+            CGPoint middle = CGPointMake(CGRectGetMidX(to), CGRectGetMidY(to));
             box.anchorPoint = CGPointMake(0.5, 0.5);
             box.bounds = (CGRect){ CGPointZero, to.size };
-            box.position = CGPointMake(CGRectGetMidX(to), CGRectGetMidY(to));
+            box.position = middle;
             box.opacity = 0;
+            ring.anchorPoint = CGPointMake(0.5, 0.5);
+            ring.bounds = (CGRect){ CGPointZero, outset(to, w).size };
+            ring.position = middle;
+            ring.opacity = 0;
         } else {
-            CGRect src = image ? CGRectIntersection(tiles[i].from, area) : CGRectNull;
+            CGRect src = image ? CGRectIntersection(t->from, area) : CGRectNull;
             CALayer *pic = CGRectIsNull(src) || CGRectIsEmpty(src) ? nil : edgeStretched(image, area, src);
             if (pic) [box addSublayer:pic];
             CGRect from = pic ? CGRectOffset(src, -frame.origin.x, -frame.origin.y) : to;
             took = fmax(took, glide(box, from, to, move));
+            if (ring) glide(ring, outset(from, w), outset(to, w), move);
         }
         [root addSublayer:box];
+        if (ring) [root addSublayer:ring];
     }
     commitChanges();
     if (image) CGImageRelease(image);
@@ -1049,7 +1124,8 @@ static int l_finish(lua_State *L) {
 // hold =, popin = (0.8: new tiles grow from that share of their size; 1
 // only fades them in), wallpaperAge =, (a motion as run() takes it: curve =, duration =,
 // mass =, stiffness =, damping =)
-// tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear = }, ... } }:
+// tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear =, ring = { color =
+// {r, g, b, a}, width =, radius = } }, ... } }:
 // glides the tiles' pictures from `from` to `to` (and fades those that
 // `appear` in at `to`) over `frame`, then gets out of the
 // way. Waits for the capture (about 40ms) and puts the overlay up before
@@ -1083,8 +1159,23 @@ static int l_retile(lua_State *L) {
             CGRect from = readRect(L, -1);
             lua_getfield(L, -2, "to");
             CGRect to = readRect(L, -1);
-            lua_pop(L, 3);
-            if (w && !CGRectIsEmpty(from) && !CGRectIsEmpty(to)) tiles[count++] = (Tile){ w, from, to, popIn };
+            lua_pop(L, 2);
+            Tile t = { w, from, to, popIn, false, { 0, 0, 0, 0 }, 0, 0 };
+            lua_getfield(L, -1, "ring");
+            if (lua_type(L, -1) == LUA_TTABLE) {
+                t.ring = true;
+                t.width = numberField(L, -1, "width", 0);
+                t.radius = numberField(L, -1, "radius", 0);
+                lua_getfield(L, -1, "color");
+                for (int c = 0; c < 4; c++) {
+                    lua_rawgeti(L, -1, c + 1);
+                    t.color[c] = luaL_optnumber(L, -1, c == 3 ? 1 : 0);
+                    lua_pop(L, 1);
+                }
+                lua_pop(L, 1);
+            }
+            lua_pop(L, 2); // the ring and the tile
+            if (w && !CGRectIsEmpty(from) && !CGRectIsEmpty(to)) tiles[count++] = t;
         }
     }
     lua_pop(L, 1);

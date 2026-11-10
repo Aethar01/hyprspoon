@@ -759,6 +759,8 @@ local function captureRetile(key, screen, tree, area, byID, full)
                     from = { x = f.x, y = f.y, w = f.w, h = f.h },
                     to = { x = to.x, y = to.y, w = to.w, h = to.h },
                     appear = new,
+                    -- The overlay hides the real ring: drawn with the picture.
+                    ring = Border.ringFor(win),
                 }
             end
         end
