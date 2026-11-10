@@ -230,6 +230,57 @@ function M.retile(screen, tiles, done)
     return true
 end
 
+-- How a dragged window looks (mouse.dragEffect): { scale =, opacity =,
+-- duration = } from the option (true for the defaults), or nil when off.
+-- Out-of-range numbers are brought into range; others are the defaults.
+local EFFECT = { scale = 0.95, opacity = 0.8, duration = 0.15 }
+local EFFECT_RANGE = { scale = { 0.1, 1 }, opacity = { 0.05, 1 }, duration = { 0, 2 } }
+
+function M.dragEffect(opt)
+    if opt == true then opt = {} end
+    if type(opt) ~= "table" then return nil end
+    local out = {}
+    for k, default in pairs(EFFECT) do
+        local v = tonumber(opt[k])
+        local range = EFFECT_RANGE[k]
+        out[k] = v and math.min(range[2], math.max(range[1], v)) or default
+    end
+    return out
+end
+
+-- A modifier-drag moving a picture of its window instead of the window
+-- (mouse.dragEffect; see hyprspoon/native/lift.h): the lifter for
+-- frames.dragBegin and the share of its size the picture shrinks to, or
+-- nil when off, without the native module, or without Screen Recording
+-- permission. The drag must end with M.land().
+function M.lifter()
+    local effect = M.dragEffect(S.cfg.mouse and S.cfg.mouse.dragEffect)
+    local mod = effect and (native or Util.native("slide"))
+    if not mod or not mod.lifter then return nil end
+    -- Drawn at the finest resolution of any display: it can be dragged
+    -- onto any of them.
+    local resolution = 1
+    for _, screen in ipairs(hs.screen.allScreens()) do
+        local mode = screen:currentMode()
+        if mode and mode.scale and mode.scale > resolution then resolution = mode.scale end
+    end
+    local lift = mod.lifter({
+        scale = effect.scale,
+        opacity = effect.opacity,
+        duration = effect.duration,
+        resolution = resolution,
+    })
+    if not lift then return nil end
+    return lift, effect.scale
+end
+
+-- A drag with a lifter has ended, its window in place: the picture fades
+-- over it (or never comes up, if it wasn't up yet).
+function M.land()
+    local mod = native or Util.native("slide")
+    if mod and mod.land then mod.land() end
+end
+
 -- Workspace `n` is gone: its picture with it.
 function M.forget(n)
     if native and kept[n] then

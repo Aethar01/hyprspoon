@@ -33,6 +33,7 @@
 
 #include "lauxlib.h"
 #include "lua.h"
+#include "lift.h"
 #include "luacall.h"
 #include "skylight.h"
 
@@ -136,20 +137,24 @@ static int l_onChange(lua_State *L) {
     return 0;
 }
 
-static void drainEvents(void *unused) {
-    (void)unused;
+static void drainConnection(int connection, mach_port_t port) {
     struct {
         mach_msg_header_t header;
         char body[4096];
     } message;
     for (;;) {
         mach_msg_return_t r = mach_msg(&message.header, MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0, sizeof(message),
-            drainPort, 0, MACH_PORT_NULL);
+            port, 0, MACH_PORT_NULL);
         if (r == MACH_MSG_SUCCESS) mach_msg_destroy(&message.header);
         else if (r != MACH_RCV_TOO_LARGE) break;
     }
     CGEventRef event;
-    while ((event = SLEventCreateNextEvent(cid))) CFRelease(event);
+    while ((event = SLEventCreateNextEvent(connection))) CFRelease(event);
+}
+
+static void drainEvents(void *unused) {
+    (void)unused;
+    drainConnection(cid, drainPort);
 }
 
 // ---------------------------------------------------------------------------
@@ -394,33 +399,34 @@ static void commitChanges(void) {
     [CATransaction flush];
 }
 
-static bool makeWindow(void) {
+// A window of our own on `connection`, off screen until placed, showing
+// `*layerOut` (origin top-left) through `*contextOut`; 0 if it can't be made.
+static uint32_t newOverlay(int connection, CAContext **contextOut, CALayer **layerOut) {
     CGRect frame = { CGPointZero, { 1, 1 } }, none = CGRectZero;
     CFTypeRef region = NULL, opaque = NULL;
     CGSNewRegionWithRect(&frame, &region);
     CGSNewRegionWithRect(&none, &opaque);
     beginChanges();
-    context = [[CAContext contextWithCGSConnection:(uint32_t)cid options:@{}] retain];
-    root = [[CALayer alloc] init];
+    CAContext *context = [[CAContext contextWithCGSConnection:(uint32_t)connection options:@{}] retain];
+    CALayer *root = [[CALayer alloc] init];
     root.geometryFlipped = YES;
     root.masksToBounds = YES;
     context.layer = root;
     commitChanges();
     uint64_t tags = (1ULL << 1) | (1ULL << 9);
+    uint32_t wid = 0;
     if (region && opaque) {
-        SLSNewWindowWithOpaqueShapeAndContext(cid, 3, region, opaque, 13, &tags, -9999, -9999, 64, &wid, context);
+        SLSNewWindowWithOpaqueShapeAndContext(connection, 3, region, opaque, 13, &tags, -9999, -9999, 64, &wid, context);
     }
     if (region) CFRelease(region);
     if (opaque) CFRelease(opaque);
     if (!wid) {
         [root release];
         [context release];
-        root = nil;
-        context = nil;
-        return false;
+        return 0;
     }
-    SLSSetWindowTags(cid, wid, &tags, 64);
-    SLSSetWindowOpacity(cid, wid, false);
+    SLSSetWindowTags(connection, wid, &tags, 64);
+    SLSSetWindowOpacity(connection, wid, false);
     CFIndex density = 0;
     CFNumberRef value = CFNumberCreate(NULL, kCFNumberCFIndexType, &density);
     CFStringRef key = CFStringCreateWithCString(NULL, "com.apple.WindowShadowDensity", kCFStringEncodingUTF8);
@@ -432,7 +438,14 @@ static bool makeWindow(void) {
     CFRelease(shadow);
     CFRelease(key);
     CFRelease(value);
-    return true;
+    *contextOut = context;
+    *layerOut = root;
+    return wid;
+}
+
+static bool makeWindow(void) {
+    wid = newOverlay(cid, &context, &root);
+    return wid != 0;
 }
 
 // Fits the window to `frame` (only when it changes: reshaping is costly).
@@ -1379,6 +1392,273 @@ static void deliverReady(void *unused) {
 }
 
 // ---------------------------------------------------------------------------
+// Drags (#26, mouse.dragEffect; a prototype)
+// ---------------------------------------------------------------------------
+//
+// With mouse.dragEffect, a window being moved shrinks a little and goes
+// see-through, as Hyprland's does. macOS ignores the alpha set on another
+// app's window (SLSSetWindowAlpha succeeds and the window stays opaque), so
+// what's dragged is a picture of it: one capture as the drag begins, in a
+// window of our own the size of the real one, the picture shrunk and faded
+// inside it. drag.c moves our window instead of the real one, which waits
+// parked out of sight (see lift.h). Its contents are as they were when the
+// drag began. Once the button's up the real window goes where the drag
+// left it (and on to wherever the drop puts it), and the picture fades
+// over it.
+//
+// Its own queue, connection and window: a drop sets off a retile, whose
+// overlay must neither take the picture down nor be held up by it, and a
+// 40ms capture for a retile mustn't hold up the drag's frames.
+
+static dispatch_queue_t liftQueue = NULL;
+static int liftCid = 0;
+static dispatch_source_t liftDrain = NULL;
+static mach_port_t liftDrainPort = MACH_PORT_NULL;
+
+// Everything below belongs to liftQueue.
+static uint32_t liftWid = 0;
+static CAContext *liftContext = nil;
+static CALayer *liftRoot = nil; // the window's content, origin top-left
+static CALayer *liftBox = nil;  // the picture, shrunk and faded (in liftRoot)
+static CGRect liftPlaced = { { 0, 0 }, { 0, 0 } };
+static double liftPlacedScale = 0;
+static bool liftDrawn = false; // ordered in
+static unsigned liftShown = 0; // the drag whose picture is up; 0 for none
+static unsigned liftGoing = 0; // the drag whose picture is fading out
+static double liftScale = 0.95, liftOpacity = 0.8, liftDuration = 0.15, liftResolution = 1;
+
+// Takes the picture down once it has faded: a timer, for l_gc to cancel.
+static dispatch_source_t liftGone = NULL;
+
+// The drag a picture is wanted for (0 once it has landed), and the frame
+// it last gave. Any thread.
+static _Atomic unsigned liftWanted = 0;
+static os_unfair_lock liftLock = OS_UNFAIR_LOCK_INIT;
+static CGRect liftFrame;
+static unsigned liftFrameSerial = 0;
+static atomic_bool liftMoveQueued = false;
+
+static void drainLiftEvents(void *unused) {
+    (void)unused;
+    drainConnection(liftCid, liftDrainPort);
+}
+
+// Puts our window at `frame`, as placeWindow puts the overlay; a new shape
+// only when the size changes.
+static void placeLift(CGRect frame) {
+    if (liftResolution != liftPlacedScale) {
+        SLSSetWindowResolution(liftCid, liftWid, liftResolution);
+        liftPlacedScale = liftResolution;
+    }
+    if (CGRectEqualToRect(frame, liftPlaced)) return;
+    if (!CGSizeEqualToSize(frame.size, liftPlaced.size)) {
+        CGRect shape = { CGPointZero, frame.size };
+        CFTypeRef region = NULL;
+        CGSNewRegionWithRect(&shape, &region);
+        if (region) {
+            SLSSetWindowShape(liftCid, liftWid, frame.origin.x, frame.origin.y, region);
+            CFRelease(region);
+        }
+    }
+    CFTypeRef t = SLSTransactionCreate(liftCid);
+    if (t) {
+        SLSTransactionMoveWindowWithGroup(t, liftWid, frame.origin);
+        CGAffineTransform transform = CGAffineTransformIdentity;
+        transform.tx = -frame.origin.x;
+        transform.ty = -frame.origin.y;
+        SLSTransactionSetWindowTransform(t, liftWid, 0, 0, transform);
+        SLSTransactionCommit(t, 0);
+        CFRelease(t);
+    }
+    liftPlaced = frame;
+}
+
+// At the overlay's level: above the windows and their rings, under the
+// drop preview (an hs.canvas at the overlay level).
+static void orderLift(bool in) {
+    if (in == liftDrawn) return;
+    CFTypeRef t = SLSTransactionCreate(liftCid);
+    if (!t) return;
+    if (in) {
+        SLSTransactionSetWindowLevel(t, liftWid, OVERLAY_LEVEL);
+        SLSTransactionOrderWindow(t, liftWid, ORDER_ABOVE, 0);
+    } else {
+        SLSTransactionOrderWindow(t, liftWid, ORDER_OUT, 0);
+    }
+    SLSTransactionCommit(t, 0);
+    CFRelease(t);
+    liftDrawn = in;
+}
+
+static void clearLift(void) {
+    beginChanges();
+    for (CALayer *layer in [[liftRoot.sublayers copy] autorelease]) {
+        [layer removeAllAnimations];
+        [layer removeFromSuperlayer];
+    }
+    commitChanges();
+    liftBox = nil;
+    orderLift(false);
+}
+
+static Motion liftMotion(void) {
+    return (Motion){ true, liftDuration, 0, 0, 0 };
+}
+
+// The frame drag `serial` last gave, else `fallback`.
+static CGRect liftFrameOf(unsigned serial, CGRect fallback) {
+    os_unfair_lock_lock(&liftLock);
+    CGRect at = liftFrameSerial == serial ? liftFrame : fallback;
+    os_unfair_lock_unlock(&liftLock);
+    return at;
+}
+
+// Captures window `target` for drag `serial` (begun with it at `frame`),
+// puts the picture up over it where the drag has it now, and offers it to
+// `claim`: taken, it shrinks and fades to the drag's look.
+static void liftUp(unsigned serial, uint32_t target, CGRect frame, LiftClaim claim) {
+    if (atomic_load(&liftWanted) != serial) return;
+    CGRect b;
+    if (SLSGetWindowBounds(liftCid, target, &b) != kCGErrorSuccess || b.size.width < 1 || b.size.height < 1) return;
+    uint32_t wids[1] = { target };
+    CGRect area = CGRectNull;
+    CGImageRef image = captureOn(liftCid, wids, 1, &area, false);
+    if (!image) return;
+    if (atomic_load(&liftWanted) != serial || (!liftWid && !(liftWid = newOverlay(liftCid, &liftContext, &liftRoot)))) {
+        CGImageRelease(image);
+        return;
+    }
+    // A capture covers the window's part on screen (`area`); a picture
+    // the window's own shape is all of it.
+    CGRect part = CGRectOffset(area, -b.origin.x, -b.origin.y);
+    CGFloat iw = CGImageGetWidth(image), ih = CGImageGetHeight(image);
+    if (ih > 0 && fabs(iw / ih - b.size.width / b.size.height) < 0.01) part = (CGRect){ CGPointZero, b.size };
+    CGRect at = liftFrameOf(serial, frame);
+    CGFloat kx = at.size.width / b.size.width, ky = at.size.height / b.size.height;
+
+    liftGoing = 0;
+    beginChanges();
+    for (CALayer *layer in [[liftRoot.sublayers copy] autorelease]) {
+        [layer removeAllAnimations];
+        [layer removeFromSuperlayer];
+    }
+    liftRoot.frame = (CGRect){ CGPointZero, at.size };
+    CALayer *box = [CALayer layer];
+    box.frame = liftRoot.bounds; // shrinks about its middle
+    CALayer *picture = [CALayer layer];
+    picture.frame = CGRectMake(part.origin.x * kx, part.origin.y * ky, part.size.width * kx, part.size.height * ky);
+    picture.contents = (id)image;
+    [box addSublayer:picture];
+    [liftRoot addSublayer:box];
+    commitChanges();
+    CGImageRelease(image);
+    placeLift(at);
+    orderLift(true);
+
+    // Up over the window, as it is: now the drag can park it.
+    if (!claim(serial)) {
+        clearLift();
+        return;
+    }
+    liftShown = serial;
+    liftBox = box;
+    beginChanges();
+    box.transform = CATransform3DMakeScale(liftScale, liftScale, 1);
+    box.opacity = liftOpacity;
+    if (liftDuration > 0) {
+        [box addAnimation:animate(liftMotion(), scaleKey, @1.0, @(liftScale), 0) forKey:scaleKey];
+        [box addAnimation:animate(liftMotion(), opacityKey, @1.0, @(liftOpacity), 0) forKey:opacityKey];
+    }
+    commitChanges();
+    // Where the drag has got to meanwhile.
+    placeLift(liftFrameOf(serial, at));
+}
+
+static void liftMoveNow(void *unused) {
+    (void)unused;
+    atomic_store(&liftMoveQueued, false);
+    os_unfair_lock_lock(&liftLock);
+    CGRect at = liftFrame;
+    unsigned serial = liftFrameSerial;
+    os_unfair_lock_unlock(&liftLock);
+    if (liftShown && serial == liftShown) placeLift(at);
+}
+
+// Lifter.begin (lift.h). Main thread.
+static void liftBegin(unsigned serial, uint32_t target, CGRect frame, LiftClaim claim) {
+    if (!liftQueue || !serial || !claim) return;
+    atomic_store(&liftWanted, serial);
+    dispatch_async(liftQueue, ^{ liftUp(serial, target, frame, claim); });
+}
+
+// Lifter.move (lift.h): only the latest of a burst is drawn. Any thread.
+static void liftMove(unsigned serial, CGRect frame) {
+    if (!liftQueue) return;
+    os_unfair_lock_lock(&liftLock);
+    liftFrame = frame;
+    liftFrameSerial = serial;
+    os_unfair_lock_unlock(&liftLock);
+    if (!atomic_exchange(&liftMoveQueued, true)) dispatch_async_f(liftQueue, NULL, liftMoveNow);
+}
+
+static const Lifter lifter = { liftBegin, liftMove };
+
+// The drag has landed, its window where it goes: the picture grows back
+// to its size as it fades over it, then goes.
+static void liftDown(void) {
+    if (!liftShown) return;
+    liftGoing = liftShown;
+    liftShown = 0;
+    CALayer *box = liftBox;
+    double took = 0;
+    if (box) {
+        CALayer *drawn = (CALayer *)box.presentationLayer ?: box;
+        NSNumber *scale = [drawn valueForKeyPath:@"transform.scale"] ?: @(liftScale);
+        NSNumber *opacity = @(drawn.opacity);
+        beginChanges();
+        [box removeAllAnimations];
+        box.transform = CATransform3DIdentity;
+        box.opacity = 0;
+        if (liftDuration > 0) {
+            CABasicAnimation *grow = animate(liftMotion(), scaleKey, scale, @1.0, 0);
+            CABasicAnimation *fade = animate(liftMotion(), opacityKey, opacity, @0.0, 0);
+            [box addAnimation:grow forKey:scaleKey];
+            [box addAnimation:fade forKey:opacityKey];
+            took = fade.duration;
+        }
+        commitChanges();
+    }
+    dispatch_source_set_timer(liftGone, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(took * NSEC_PER_SEC)),
+        DISPATCH_TIME_FOREVER, 0);
+}
+
+static void liftGoneNow(void *unused) {
+    (void)unused;
+    // Not if another drag's picture has come up meanwhile.
+    if (!liftGoing || liftShown) return;
+    liftGoing = 0;
+    clearLift();
+}
+
+static void releaseLift(void) {
+    liftShown = liftGoing = 0;
+    if (!liftWid) return;
+    clearLift();
+    beginChanges();
+    liftContext.layer = nil;
+    commitChanges();
+    SLSReleaseWindow(liftCid, liftWid);
+    if ([liftContext respondsToSelector:@selector(invalidate)]) [liftContext performSelector:@selector(invalidate)];
+    [liftRoot release];
+    [liftContext release];
+    liftRoot = nil;
+    liftContext = nil;
+    liftWid = 0;
+    liftPlaced = CGRectZero;
+    liftPlacedScale = 0;
+}
+
+// ---------------------------------------------------------------------------
 // Lua API
 // ---------------------------------------------------------------------------
 
@@ -1668,6 +1948,49 @@ static int l_bounds(lua_State *L) {
     return 1;
 }
 
+// lifter{ scale =, opacity =, duration =, resolution = }: the Lifter
+// (lift.h) frames.dragBegin takes, its pictures shrunk to `scale` and
+// faded to `opacity` over `duration` seconds (back again as they land),
+// drawn at `resolution`. Nil without Screen Recording permission: a
+// capture would show nothing of the window.
+static int l_lifter(lua_State *L) {
+    bool allowed = false;
+    if (@available(macOS 10.15, *)) allowed = CGPreflightScreenCaptureAccess();
+    if (!allowed || !liftQueue) {
+        lua_pushnil(L);
+        return 1;
+    }
+    double scale = 0.95, opacity = 0.8, duration = 0.15, resolution = 1;
+    if (lua_type(L, 1) == LUA_TTABLE) {
+        scale = numberField(L, 1, "scale", scale);
+        opacity = numberField(L, 1, "opacity", opacity);
+        duration = numberField(L, 1, "duration", duration);
+        resolution = numberField(L, 1, "resolution", resolution);
+    }
+    scale = fmin(1, fmax(0.1, scale));
+    opacity = fmin(1, fmax(0.05, opacity));
+    duration = fmax(0, duration);
+    resolution = fmax(1, resolution);
+    // Before the drag's begin, on the same queue.
+    dispatch_async(liftQueue, ^{
+        liftScale = scale;
+        liftOpacity = opacity;
+        liftDuration = duration;
+        liftResolution = resolution;
+    });
+    lua_pushlightuserdata(L, (void *)&lifter);
+    return 1;
+}
+
+// land(): the drag with a picture has ended and its window is in place:
+// the picture fades over it, or isn't put up if it isn't yet.
+static int l_land(lua_State *L) {
+    (void)L;
+    atomic_store(&liftWanted, 0);
+    if (liftQueue) dispatch_async(liftQueue, ^{ liftDown(); });
+    return 0;
+}
+
 // onReady(fn): fn(token, up) on the main thread once retile `token`'s
 // overlay is up (`up`), or couldn't be put up.
 static int l_onReady(lua_State *L) {
@@ -1725,6 +2048,21 @@ static int l_gc(lua_State *L) {
             drain = NULL;
         }
     });
+    atomic_store(&liftWanted, 0);
+    dispatch_sync(liftQueue, ^{
+        dispatch_source_cancel(liftGone);
+        dispatch_release(liftGone);
+        liftGone = NULL;
+        releaseLift();
+        if (liftDrain) {
+            dispatch_source_cancel(liftDrain);
+            dispatch_release(liftDrain);
+            liftDrain = NULL;
+        }
+    });
+    dispatch_release(liftQueue);
+    liftQueue = NULL;
+    SLSReleaseConnection(liftCid);
     dispatch_source_cancel(visibility);
     dispatch_release(visibility);
     visibility = NULL;
@@ -1756,6 +2094,31 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         SLSReleaseConnection(cid);
         return luaL_error(L, "hyprspoon.native.slide: no WindowServer connection");
     }
+    if (SLSNewConnection(0, &liftCid) != kCGErrorSuccess) {
+        SLSReleaseConnection(cid);
+        SLSReleaseConnection(captureCid);
+        return luaL_error(L, "hyprspoon.native.slide: no WindowServer connection");
+    }
+    liftQueue = dispatch_queue_create("hyprspoon.slide.lift",
+        dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
+    dispatch_set_target_queue(liftQueue, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
+    liftDrainPort = MACH_PORT_NULL;
+    if (SLSGetEventPort(liftCid, &liftDrainPort) == kCGErrorSuccess && liftDrainPort != MACH_PORT_NULL) {
+        liftDrain = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, liftDrainPort, 0, liftQueue);
+        dispatch_source_set_event_handler_f(liftDrain, drainLiftEvents);
+        dispatch_resume(liftDrain);
+        dispatch_async_f(liftQueue, NULL, drainLiftEvents);
+    }
+    liftGone = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, liftQueue);
+    dispatch_source_set_timer(liftGone, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler_f(liftGone, liftGoneNow);
+    dispatch_resume(liftGone);
+    atomic_store(&liftWanted, 0);
+    liftWid = 0;
+    liftDrawn = false;
+    liftShown = liftGoing = 0;
+    liftPlaced = CGRectZero;
+    liftPlacedScale = 0;
     captureQueue = dispatch_queue_create("hyprspoon.slide.capture",
         dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
     atomic_store(&stopping, false);
@@ -1806,6 +2169,8 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         { "retile", l_retile },
         { "onReady", l_onReady },
         { "bounds", l_bounds },
+        { "lifter", l_lifter },
+        { "land", l_land },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);

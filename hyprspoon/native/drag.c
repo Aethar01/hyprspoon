@@ -10,6 +10,9 @@
 // the app gets as fast as it can take them), to the window's ring, and for
 // moves to Lua for the drop preview.
 //
+// With mouse.dragEffect, a move drags a picture of the window instead, once
+// one is up (see "The picture dragged instead" below).
+//
 // The tap runs on a thread of its own. A tap that can swallow events holds
 // up the session's input until it returns, so on Hammerspoon's main thread
 // every pointer event of a drag would wait for whatever Lua was doing.
@@ -23,6 +26,7 @@
 #include <string.h>
 
 #include "frames.h"
+#include "lift.h"
 #include "luacall.h"
 #include "preview.h"
 
@@ -44,6 +48,8 @@ typedef struct {
     bool trailingArmed;
     RingPreview preview; // shows each frame in the window's ring, if given
     bool tellLua;        // moves go to Lua (onMove)
+    const Lifter *lifter; // drags a picture of the window once it's up, if given
+    unsigned serial;      // this drag, to the lifter
 } Drag;
 
 static Drag drag;
@@ -155,6 +161,70 @@ static void stopTellingLua(void) {
 }
 
 // ---------------------------------------------------------------------------
+// The picture dragged instead (mouse.dragEffect, lift.h)
+// ---------------------------------------------------------------------------
+//
+// A move with a Lifter begins with the window itself, as any other, so
+// nothing waits for the picture (a capture takes about 40ms). Capturing
+// the window under the pointer whenever the modifier goes down instead
+// would cost that each time Option is held to type a character, mostly
+// for nothing. The picture comes up over the window where the drag has it
+// then, and claimLift() parks the window where
+// Lua's Spaces.parkPoint says, as a window on another workspace waits;
+// from then on the drag moves the picture, and the ring follows it, shrunk
+// as it's drawn. Once the button's up, dragEnd gives the window the drag's
+// last frame.
+//
+// The window's frames go out under liftLock, as does the park: a frame on
+// its way can't follow the park and bring the window back.
+
+enum { LIFT_NONE, LIFT_WAITING, LIFT_TAKEN };
+
+static os_unfair_lock liftLock = OS_UNFAIR_LOCK_INIT;
+static int liftState = LIFT_NONE;
+static unsigned liftSerial = 0; // the drag waiting for its picture, or dragging it
+static unsigned liftSerials = 0;
+static pid_t liftPid = 0;
+static uint32_t liftWid = 0;
+static CGRect liftPark;  // where the window waits
+static CGRect liftLast;  // the frame the drag last gave
+static CGFloat liftScale = 1;
+static RingPreview liftPreview = NULL;
+
+// `f` shrunk to `scale` about its middle, as the picture is drawn.
+static CGRect shrunk(CGRect f, CGFloat scale) {
+    CGFloat w = f.size.width * scale, h = f.size.height * scale;
+    return CGRectMake(f.origin.x + (f.size.width - w) / 2, f.origin.y + (f.size.height - h) / 2, w, h);
+}
+
+// LiftClaim (lift.h), on slide.m's queue.
+static bool claimLift(unsigned serial) {
+    os_unfair_lock_lock(&liftLock);
+    bool take = liftState == LIFT_WAITING && serial == liftSerial;
+    if (take) {
+        liftState = LIFT_TAKEN;
+        framesSet(liftPid, liftWid, liftPark, 0, true);
+        CGRect ring = shrunk(liftLast, liftScale);
+        if (liftPreview) liftPreview(liftWid, &ring);
+    }
+    os_unfair_lock_unlock(&liftLock);
+    return take;
+}
+
+// The drag with a picture is over (or Lua is closing): the window comes
+// back from where it was parked to `frame` (NULL: the drag's last). True
+// if it was parked.
+static bool unlift(const CGRect *frame) {
+    os_unfair_lock_lock(&liftLock);
+    bool taken = liftState == LIFT_TAKEN;
+    if (taken) framesSet(liftPid, liftWid, frame ? *frame : liftLast, 0, true);
+    liftState = LIFT_NONE;
+    liftPreview = NULL;
+    os_unfair_lock_unlock(&liftLock);
+    return taken;
+}
+
+// ---------------------------------------------------------------------------
 // Following the pointer (tap thread)
 // ---------------------------------------------------------------------------
 
@@ -184,15 +254,32 @@ static CGRect frameAt(CGPoint p) {
     return f;
 }
 
+// A frame of a drag with a Lifter: to the window until the picture is
+// up, then to the picture alone (see claimLift).
+static void giveLifted(void) {
+    os_unfair_lock_lock(&liftLock);
+    bool lifted = liftState == LIFT_TAKEN;
+    CGRect ring = lifted ? shrunk(drag.last, liftScale) : drag.last;
+    liftLast = drag.last;
+    if (!lifted) framesSet(drag.pid, drag.wid, drag.last, 0, drag.given);
+    if (drag.preview) drag.preview(drag.wid, &ring);
+    os_unfair_lock_unlock(&liftLock);
+    drag.lifter->move(drag.serial, drag.last);
+}
+
 // After the first, the drag's frames go without asking the app where the
 // window is: nothing else moves it meanwhile.
 static void give(CGPoint p) {
     drag.last = frameAt(p);
-    framesSet(drag.pid, drag.wid, drag.last, 0, drag.given);
+    if (drag.lifter) {
+        giveLifted();
+    } else {
+        framesSet(drag.pid, drag.wid, drag.last, 0, drag.given);
+    }
     drag.given = true;
     drag.lastGiven = CFAbsoluteTimeGetCurrent();
     drag.haveWaiting = false;
-    if (drag.preview) drag.preview(drag.wid, &drag.last);
+    if (drag.preview && !drag.lifter) drag.preview(drag.wid, &drag.last);
     if (drag.move && drag.tellLua) tellMove(p);
 }
 
@@ -294,12 +381,16 @@ static CGFloat number(lua_State *L, int index, const char *key, CGFloat fallback
 // dragBegin{ pid =, wid =, mode = "move" | "resize", frame = {x, y, w, h},
 // point = {x, y}, xBranch =, yBranch = ("a", "b" or nil), minW =, minH =,
 // onMove = function(x, y), preview = border.previewer(), interval = seconds
-// per display refresh }: follows the pointer until dragEnd or the button
-// comes up. False if the tap can't be made.
+// per display refresh, lift = slide.lifter(), liftScale =, park = {x, y} }:
+// follows the pointer until dragEnd or the button comes up. A move with
+// `lift` and `park` drags a picture of the window, shrunk to `liftScale`,
+// once it's up, the window parked at `park` meanwhile. False if the tap
+// can't be made.
 static int l_begin(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     // Anything left of an earlier drag.
     if (tapThreadRunning) runOnTap(^{ end(); });
+    unlift(NULL);
     endPreview();
     stopTellingLua();
 
@@ -328,6 +419,32 @@ static int l_begin(lua_State *L) {
     lua_getfield(L, 1, "preview");
     next.preview = lua_islightuserdata(L, -1) ? (RingPreview)lua_touserdata(L, -1) : NULL;
     lua_pop(L, 1);
+    CGPoint park = CGPointZero;
+    lua_getfield(L, 1, "park");
+    bool parks = lua_istable(L, -1);
+    if (parks) {
+        int t = lua_gettop(L);
+        park = CGPointMake(number(L, t, "x", 0), number(L, t, "y", 0));
+    }
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "lift");
+    next.lifter = next.move && parks && lua_islightuserdata(L, -1) ? (const Lifter *)lua_touserdata(L, -1) : NULL;
+    lua_pop(L, 1);
+    if (next.lifter) {
+        if (++liftSerials == 0) liftSerials = 1;
+        next.serial = liftSerials;
+        CGFloat scale = fmin(1, fmax(0.1, number(L, 1, "liftScale", 1)));
+        os_unfair_lock_lock(&liftLock);
+        liftState = LIFT_WAITING;
+        liftSerial = next.serial;
+        liftPid = next.pid;
+        liftWid = next.wid;
+        liftPark = (CGRect){ park, next.frame.size };
+        liftLast = next.frame;
+        liftScale = scale;
+        liftPreview = next.preview;
+        os_unfair_lock_unlock(&liftLock);
+    }
     lua_getfield(L, 1, "onMove");
     if (lua_isfunction(L, -1)) {
         luaCallbackSet(&onMove, L, lua_gettop(L));
@@ -354,8 +471,11 @@ static int l_begin(lua_State *L) {
         ok = true;
     });
     if (!ran || !ok) {
+        unlift(&next.frame);
         stopTellingLua();
         drag.preview = NULL;
+    } else if (next.lifter) {
+        next.lifter->begin(next.serial, next.wid, next.frame, claimLift);
     }
     lua_pushboolean(L, ran && ok);
     return 1;
@@ -363,7 +483,8 @@ static int l_begin(lua_State *L) {
 
 // dragEnd(x, y): stops following (at that point, if still dragging), waits
 // for the app to take the last frame and returns it as {x, y, w, h}, or nil
-// if the drag never moved the window.
+// if the drag never moved the window. A window parked for its picture
+// (lift) is given that frame (or its own, if the drag never moved).
 static int l_end(lua_State *L) {
     bool hasPoint = lua_isnumber(L, 1) && lua_isnumber(L, 2);
     CGPoint point = hasPoint ? CGPointMake(lua_tonumber(L, 1), lua_tonumber(L, 2)) : CGPointZero;
@@ -374,7 +495,9 @@ static int l_end(lua_State *L) {
         });
     }
     stopTellingLua();
+    bool lifted = unlift(drag.given ? &drag.last : &drag.frame);
     if (!drag.given) {
+        if (lifted) framesWait(drag.pid);
         endPreview();
         lua_pushnil(L);
         return 1;
@@ -412,6 +535,8 @@ void dragStop(void) {
         pthread_join(tapThread, NULL);
         tapThreadRunning = false;
     }
+    // Not left parked.
+    if (unlift(drag.given ? &drag.last : &drag.frame)) framesWait(drag.pid);
     stopTellingLua();
     endPreview();
     drag.given = false;
