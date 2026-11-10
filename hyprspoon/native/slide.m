@@ -357,7 +357,7 @@ static unsigned retileGeneration = 0;
 static Motion retileMove, retileFade;
 static bool retileRefresh = false;
 static bool fadingOut = false; // the overlay fading to the windows beneath
-static NSString *boundsKey = nil, *opacityKey = nil, *scaleKey = nil;
+static NSString *boundsKey = nil, *sizeKey = nil, *opacityKey = nil, *scaleKey = nil;
 
 // An animation of `key` from `from` to `to` as `m` moves, its duration how
 // long that takes. `velocity`, in distances to go per second, starts a
@@ -727,12 +727,14 @@ static double glide(CALayer *layer, CGRect from, CGRect to, Motion m) {
     if (m.ease && m.duration <= 0) return 0;
     if (CGPointEqualToPoint(p0, p1) && CGSizeEqualToSize(from.size, to.size)) return 0;
     CGPoint offset = CGPointMake(p0.x - p1.x, p0.y - p1.y), none = CGPointZero;
-    CGRect grow = { CGPointZero, { from.size.width - to.size.width, from.size.height - to.size.height } };
-    CGRect still = CGRectZero;
+    // The size alone: an offset with a negative width (a tile growing) as
+    // a whole bounds rect is standardized by CoreAnimation into a shifted
+    // origin, which slid the picture over by the width it was to grow.
+    CGSize grow = { from.size.width - to.size.width, from.size.height - to.size.height }, still = CGSizeZero;
     CABasicAnimation *move = animate(m, positionKey, [NSValue valueWithBytes:&offset objCType:@encode(CGPoint)],
         [NSValue valueWithBytes:&none objCType:@encode(CGPoint)], 0);
-    CABasicAnimation *size = animate(m, boundsKey, [NSValue valueWithBytes:&grow objCType:@encode(CGRect)],
-        [NSValue valueWithBytes:&still objCType:@encode(CGRect)], 0);
+    CABasicAnimation *size = animate(m, sizeKey, [NSValue valueWithBytes:&grow objCType:@encode(CGSize)],
+        [NSValue valueWithBytes:&still objCType:@encode(CGSize)], 0);
     move.additive = YES;
     size.additive = YES;
     // Unnamed, so each adds to those still running instead of replacing them.
@@ -1565,6 +1567,7 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         positionKey = [[NSString alloc] initWithUTF8String:"position"];
         slideKey = [[NSString alloc] initWithUTF8String:"slide"];
         boundsKey = [[NSString alloc] initWithUTF8String:"bounds"];
+        sizeKey = [[NSString alloc] initWithUTF8String:"bounds.size"];
         opacityKey = [[NSString alloc] initWithUTF8String:"opacity"];
         scaleKey = [[NSString alloc] initWithUTF8String:"transform.scale"];
     }
