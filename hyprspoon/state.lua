@@ -331,9 +331,10 @@ S.defaults = {
         -- 40ms, before anything moves) over the wallpaper, while the
         -- windows move at once beneath. A picture keeps its size; where its
         -- tile outgrows it, a band of its edge is mirrored and the rest
-        -- stretched from there. Once it settles
-        -- the overlay fades to the real windows. New windows pop in at
-        -- their tiles. Not while dragging, nor in scrolling workspaces.
+        -- stretched from there, and the pictures show the apps' latest
+        -- frames as they glide (refresh). Once it settles the overlay fades
+        -- to the real windows. New windows pop in at their tiles. Not while
+        -- dragging, nor in scrolling workspaces.
         -- Floating windows over the tiles are hidden until it's done.
         -- Moves as animations.windows and animations.fadeIn say; on while
         -- windows animate. true, or a table:
@@ -342,9 +343,11 @@ S.defaults = {
         --   hold = 0.05   seconds the pictures stay after they settle
         --   mirror = 32   points of a growing window's edge mirrored before
         --                 the rest is stretched (0: stretched only)
-        --   refresh = false  capture the windows again mid-glide once they
-        --                 have their new size, fading those in (an app
-        --                 still redrawing then shows as an extra jump)
+        --   refresh = "live"  capture the windows back to back while they
+        --                 glide (about every 40ms), each picture in place of
+        --                 the last, so they show the apps' latest frames;
+        --                 true: once each has its new size, faded in;
+        --                 false: never
         -- A prototype (#19); needs hyprspoon.native.slide and Screen
         -- Recording.
         captureRetile = false,

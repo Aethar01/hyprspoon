@@ -351,11 +351,12 @@ static const Motion defaultMotion = { false, 0.2, 0.6, 800, 38 };
 
 // The retile on show (see Retiles below) while the overlay's generation is
 // retileGeneration: how its tiles move, and how new ones and its handover
-// fade. With `retileRefresh`, windows are captured again mid-glide once
-// they have their new size.
+// fade, and how it refreshes its pictures mid-glide (retileRefresh).
 static unsigned retileGeneration = 0;
 static Motion retileMove, retileFade;
-static bool retileRefresh = false;
+enum { REFRESH_OFF, REFRESH_ONCE, REFRESH_LIVE };
+static int retileRefresh = REFRESH_OFF;
+static double glideEnds = 0; // when its last glide settles (CFAbsoluteTime)
 static bool fadingOut = false; // the overlay fading to the windows beneath
 static NSString *boundsKey = nil, *sizeKey = nil, *opacityKey = nil, *scaleKey = nil;
 
@@ -968,6 +969,7 @@ typedef struct {
     uint32_t wids[MAX_TILES];
     CGRect bounds[MAX_TILES]; // where each was as the capture was asked for
     bool newOnly;
+    bool every; // live: every tile, each new picture in place of the last
     unsigned generation;
 } Wanted;
 
@@ -979,10 +981,19 @@ static void showCaptured(const Wanted *w, CGImageRef image, CGRect area) {
     beginChanges();
     for (int k = 0; k < w->count; k++) {
         int i = tileOf(w->wids[k]);
-        if (i < 0 || live[i]) continue;
+        if (i < 0 || (live[i] && !w->every)) continue;
         CGRect b = CGRectIntersection(w->bounds[k], area);
         if (CGRectIsNull(b) || CGRectIsEmpty(b)) continue;
         bool pictured = boxes[i].sublayers.count > 0;
+        if (w->every && pictured) {
+            // Live: the window's latest frame in place of the last, as an
+            // app's new frame shows, whatever size it has got to.
+            CALayer *pic = edgeExtended(image, area, b, shownTiles[i].radius, mirrorBand);
+            if (!pic) continue;
+            for (CALayer *old in [[boxes[i].sublayers copy] autorelease]) [old removeFromSuperlayer];
+            [boxes[i] addSublayer:pic];
+            continue;
+        }
         bool there = arrived(w->bounds[k], shownTiles[i].to);
         if (pictured && (w->newOnly || !there)) continue;
         took = fmax(took, showPicture(i, image, area, b));
@@ -994,14 +1005,15 @@ static void showCaptured(const Wanted *w, CGImageRef image, CGRect area) {
 
 // Captures the tiles not live yet (with `newOnly`, the new ones with nothing
 // shown) as they are now, off the queue, and shows them when it's back.
-static void recapture(bool newOnly) {
+static void recapture(bool newOnly, bool every) {
     if (retileGeneration != generation || shownCount == 0 || capturing) return;
     Wanted *w = calloc(1, sizeof(Wanted));
     if (!w) return;
     w->newOnly = newOnly;
+    w->every = every;
     w->generation = generation;
     for (int i = 0; i < shownCount; i++) {
-        if (live[i]) continue;
+        if (live[i] && !every) continue;
         if (newOnly && (!shownTiles[i].appear || boxes[i].sublayers.count)) continue;
         if (SLSGetWindowBounds(cid, shownTiles[i].wid, &w->bounds[w->count]) != kCGErrorSuccess) continue;
         w->wids[w->count++] = shownTiles[i].wid;
@@ -1029,13 +1041,25 @@ static void recapture(bool newOnly) {
 
 static void popInNew(void *context) {
     if ((unsigned)(uintptr_t)context != generation) return;
-    recapture(true);
+    recapture(true, false);
 }
+
+// Live, the tiles are captured back to back while they glide: the capture
+// queue takes one at a time, so this looks again this often for the next.
+#define LIVE_START 0.04
+#define LIVE_POLL 0.01
 
 static void refresh(void *unused) {
     (void)unused;
-    if (retileGeneration != generation || shownCount == 0 || !retileRefresh) return;
-    recapture(false);
+    if (retileGeneration != generation || shownCount == 0 || retileRefresh == REFRESH_OFF) return;
+    if (retileRefresh == REFRESH_LIVE) {
+        if (CFAbsoluteTimeGetCurrent() >= glideEnds) return;
+        recapture(false, true);
+        dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(LIVE_POLL * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER, 0);
+        return;
+    }
+    recapture(false, false);
     bool waiting = false;
     for (int i = 0; i < shownCount; i++) waiting |= !live[i];
     if (waiting && ++refreshes < MAX_REFRESHES) {
@@ -1110,7 +1134,7 @@ static CGRect drawnFrame(CALayer *layer) {
 // succession merge into one motion. Only windows it hasn't got are
 // captured. False if there was nothing to show.
 static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion move, Motion fade, double hold,
-                   double pop, bool refresh, const uint32_t *under, int underCount) {
+                   double pop, int refresh, const uint32_t *under, int underCount) {
     if (count <= 0 || count > MAX_TILES || (!wid && !makeWindow())) return false;
     bool carry = shown && retileGeneration == generation && shownCount > 0
         && CGRectEqualToRect(frame, retileFrame);
@@ -1131,6 +1155,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
         clearLayers();
         plane = nil;
         retileEnds = 0;
+        glideEnds = 0;
     }
     retileGeneration = generation;
     retileFrame = frame;
@@ -1249,10 +1274,12 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
 
     placeWindow(frame, scale);
     orderWindow(true);
-    endNoSooner((refresh ? fmax(took, REFRESH_AFTER + 0.1) : took) + hold);
+    glideEnds = fmax(glideEnds, CFAbsoluteTimeGetCurrent() + took);
+    endNoSooner((refresh == REFRESH_ONCE ? fmax(took, REFRESH_AFTER + 0.1) : took) + hold);
     dispatch_async_f(queue, (void *)(uintptr_t)generation, popInNew);
-    if (refresh) {
-        dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(REFRESH_AFTER * NSEC_PER_SEC)),
+    if (refresh != REFRESH_OFF) {
+        double after = refresh == REFRESH_LIVE ? LIVE_START : REFRESH_AFTER;
+        dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(after * NSEC_PER_SEC)),
             DISPATCH_TIME_FOREVER, 0);
     }
     return true;
@@ -1470,18 +1497,21 @@ static int l_finish(lua_State *L) {
 }
 
 // retile{ frame = {x, y, w, h}, scale =, move = motion, fade = motion,
-// hold =, popin = (0.8: new tiles grow from that share of their size; 1
-// only fades them in), mirror = (32: points of a growing window mirrored
-// past its edges before the rest is stretched; 0 stretches only),
-// refresh = (capture windows again mid-glide once
-// they have their new size), wallpaperAge =, beneath = {wid, ...} (over a
-// scratchpad, the windows it covers: the backdrop over the wallpaper), (a motion as run() takes it: curve =, duration =,
-// mass =, stiffness =, damping =)
-// tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear =, ring = { color =
-// {r, g, b, a}, width =, radius = } }, ... } }:
-// glides the tiles' pictures from `from` to `to` (and fades those that
-// `appear` in at `to`) over `frame`, then gets out of the
-// way. Waits for the capture (about 40ms) and puts the overlay up before
+//   hold =, popin =, mirror =, refresh =, wallpaperAge =, beneath =,
+//   tiles = { { wid =, from = {x, y, w, h}, to = {...}, appear =,
+//               ring = { color = {r, g, b, a}, width =, radius = } }, ... } }
+// glides the tiles' pictures from `from` to `to` (popping those that
+// `appear` in at `to`) over `frame`, then fades to the windows beneath.
+//   move, fade   motions as run() takes them (curve =, duration =, mass =,
+//                stiffness =, damping =)
+//   hold         seconds the pictures stay once settled (0.05)
+//   popin        share of their size new tiles grow from (0.8; 1 only fades)
+//   mirror       points of a growing window mirrored past its edges before
+//                the rest is stretched (32; 0 stretches only)
+//   refresh      "live": the windows captured back to back while they
+//                glide, each frame in place of the last; true: once each
+//                has its new size, faded in; false: never
+//   beneath      over a scratchpad, the windows it covers: the backdrop
 // Returns a token at once; the capture (about 40ms) and the overlay are
 // done on the queue, and onReady's fn(token, up) says when the windows
 // beneath can move.
@@ -1500,7 +1530,8 @@ static int l_retile(lua_State *L) {
     double pop = numberField(L, 1, "popin", 0.8);
     double band = fmax(0, numberField(L, 1, "mirror", 32));
     lua_getfield(L, 1, "refresh");
-    bool refresh = lua_toboolean(L, -1);
+    int refresh = lua_type(L, -1) == LUA_TSTRING && strcmp(lua_tostring(L, -1), "live") == 0 ? REFRESH_LIVE
+        : lua_toboolean(L, -1) ? REFRESH_ONCE : REFRESH_OFF;
     lua_pop(L, 1);
     wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
     static Tile tiles[MAX_TILES];
