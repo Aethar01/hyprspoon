@@ -214,10 +214,54 @@ local function windowFor(id)
     return nil
 end
 
--- The native modules in hyprspoon/native (built with `make -C hyprspoon/native`): nil,
--- with a note in the console, for one that isn't built or won't load. The
--- callers then carry on in Lua (and there are no borders).
+-- The native modules in hyprspoon/native (built with `make -C hyprspoon/native`): nil
+-- for one that isn't built or won't load. Callers fall back to Lua (or turn off
+-- native-only features) and record each disabled feature via disableFeature()
+-- so the console and query() report it clearly once.
 local natives = {}
+local nativeErrors = {}
+local disabled = {}
+
+local function describeNativeError(err)
+    local s = tostring(err or "unavailable")
+    local sym = s:match("(SkyLight has no [%w_]+)")
+    if sym then return sym end
+    if s:find("no WindowServer connection", 1, true) then return "no WindowServer connection" end
+    if s:find("not found", 1, true) or s:find("no file", 1, true) then
+        return "module not built (build with: make -C hyprspoon/native)"
+    end
+    return s:match("^[^\n]+") or s
+end
+
+-- Records that `feature` was turned off for `reason` (and prints one console
+-- line naming it, once per start()). `fallback`, when given, notes what took
+-- over in Lua.
+local function disableFeature(feature, reason, fallback)
+    if not feature or disabled[feature] then return end
+    reason = tostring(reason or "unavailable")
+    disabled[feature] = reason
+    if fallback then
+        print(string.format("hyprspoon: %s turned off (%s): %s", feature, fallback, reason))
+    else
+        print(string.format("hyprspoon: %s turned off: %s", feature, reason))
+    end
+end
+
+local function nativeError(name)
+    return nativeErrors[name]
+end
+
+-- Disabled native features as a sorted list of { feature =, reason = },
+-- for query().
+local function disabledFeatures()
+    local names, out = {}, {}
+    for name in pairs(disabled) do names[#names + 1] = name end
+    table.sort(names)
+    for i, name in ipairs(names) do
+        out[i] = { feature = name, reason = disabled[name] }
+    end
+    return out
+end
 
 local function native(name)
     if natives[name] == nil then
@@ -225,17 +269,24 @@ local function native(name)
         -- only after holding Hammerspoon up for seconds while it checks, so
         -- don't try.
         local path = package.searchpath("hyprspoon.native." .. name, package.cpath)
-        if path and hs.fs.xattr.get(path, "com.apple.quarantine") then
-            print("hyprspoon: hyprspoon.native." .. name .. " not loaded: macOS has it quarantined. Run: "
-                .. "xattr -dr com.apple.quarantine " .. path:match("^(.*/)hyprspoon/native/"))
+        if path and hs.fs and hs.fs.xattr and hs.fs.xattr.get(path, "com.apple.quarantine") then
+            local dir = path:match("^(.*/)hyprspoon/native/")
+            nativeErrors[name] = dir
+                and ("quarantined (run: xattr -dr com.apple.quarantine " .. dir .. ")")
+                or "quarantined by macOS"
             natives[name] = false
-            return nil
+        else
+            local ok, mod = pcall(require, "hyprspoon.native." .. name)
+            if ok then
+                natives[name] = mod
+            else
+                natives[name] = false
+                nativeErrors[name] = describeNativeError(mod)
+            end
         end
-        local ok, mod = pcall(require, "hyprspoon.native." .. name)
-        if not ok then
-            print("hyprspoon: hyprspoon.native." .. name .. " not loaded (build with: make -C hyprspoon/native): " .. tostring(mod))
-        end
-        natives[name] = ok and mod or false
+    end
+    if natives[name] == false and name == "frames" then
+        disableFeature("nativeFrames", nativeErrors.frames, "using Lua fallback")
     end
     return natives[name] or nil
 end
@@ -327,6 +378,7 @@ local function stop()
     if watchTimer then watchTimer:stop() end
     if warpTimer then warpTimer:stop() warpTimer = nil end
     managedCache = nil
+    disabled = {}
 end
 
 local function pointInFrame(point, frame)
@@ -344,6 +396,9 @@ S.lastMouseTime = 0 -- last click/drag/release, to tell user resizes from app on
 
 M.deepMerge = deepMerge
 M.native = native
+M.nativeError = nativeError
+M.disableFeature = disableFeature
+M.disabledFeatures = disabledFeatures
 M.setFrame = setFrame
 M.focusWindow = focusWindow
 M.focusHistory = focusHistory

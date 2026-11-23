@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.6.3 (2026-11-23)
+
+Rebuild the native modules (`make -C hyprspoon/native`) after updating: all
+five native modules carry teardown, timer, and validation fixes, and `slide.so`
+excludes off-screen windows from slide captures.
+
+- Workspace slides no longer show a black background when an off-Space or
+  native full-screen window is still assigned to the workspace being left or
+  entered: `spaces.lua` now limits slide captures to visible windows on the
+  current Space (excluding full-screen, off-Space, group-hidden, and
+  scrolled-away windows), and `slide.m` drops any window not on screen before
+  computing bounds or capturing.
+- Turned-off native features now print one clear console line naming the
+  feature and reason (missing module, quarantine, missing SkyLight symbol,
+  macOS version, or Screen Recording permission) and are reported in
+  `query().disabled` (#21).
+- CI now builds and tests on a matrix of macOS 15 and macOS 26 runners (#20).
+- Native reliability and cleanup: serialized reload/shutdown teardown and Mach
+  port drain cancellation across `border.m`, `slide.m`, `frames.c`, `tabs.c`,
+  and `events.c`; switched elapsed-time checks to `CLOCK_UPTIME_RAW`; hardened
+  Lua rect/number/callback validation; isolated multi-button drags, per-window
+  ring previews, and same-app background tab assignment.
+- Lua lifecycle and edge-case cleanup: `stop()` now tears down active drags,
+  swipes, timers, overlays, and native modules cleanly; guarded nil
+  `win:id()`/`win:frame()` on closing windows; kept `filled`/`maximized`,
+  group bars, scrolling wheel/resize, and restored leaf metadata consistent.
+
 ## 0.6.2 (2026-11-10)
 
 - Scratchpads can use any layout: `workspaces = { A = { layout = "scrolling" } }`,

@@ -208,7 +208,15 @@ function M.start()
     if not S.cfg.border and not bars then return end
     local cfg = style()
     native = Util.native("border") or false
-    if not native then return end
+    if not native then
+        if Util.disableFeature then
+            local reason = Util.nativeError and Util.nativeError("border") or "unavailable"
+            if S.cfg.border then Util.disableFeature("borders", reason) end
+            if bars then Util.disableFeature("groupBar", reason) end
+            if maskOptions() then Util.disableFeature("borderMask", reason) end
+        end
+        return
+    end
     -- Drawn at the finest resolution of any display.
     local resolution = 1
     for _, screen in ipairs(hs.screen.allScreens()) do
@@ -226,7 +234,13 @@ function M.start()
     if mask then
         masking = native.mask(mask)
         if S.running.events then S.running.events.filter(masking) end
-        if not masking then print("hyprspoon: experimental.borderMask needs macOS 13 or later") end
+        if not masking then
+            if Util.disableFeature then
+                Util.disableFeature("borderMask", "needs macOS 13 or later")
+            else
+                print("hyprspoon: experimental.borderMask needs macOS 13 or later")
+            end
+        end
     end
     native.set(onShow())
 end

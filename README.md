@@ -31,8 +31,9 @@ A Hyprland-inspired tiling window manager for macOS, as a
 
 ## Requirements
 
-- macOS. Developed and tested on macOS 27 with Hammerspoon 1.1.1; earlier
-  versions are untested.
+- macOS 15 or later (CI builds and tests on macOS 15 and macOS 26; developed
+  and live-tested on macOS 27 with Hammerspoon 1.1.1). Earlier versions are
+  untested.
 - [Hammerspoon](https://www.hammerspoon.org) 1.1.1 or later.
 
 ## Install
@@ -783,6 +784,10 @@ where there is no value. Lists encode as arrays, including empty lists.
   "windows": [
     { "id": 1234, "app": "Safari", "title": "hyprspoon", "workspace": "2",
       "floating": false, "hidden": false, "focused": true }
+  ],
+  // Native features turned off (missing module, SkyLight symbol, or permission).
+  "disabled": [
+    { "feature": "borders", "reason": "module not built (build with: make -C hyprspoon/native)" }
   ]
 }
 ```
@@ -814,6 +819,12 @@ Only managed windows in the current macOS Space's filter appear, grouped
 by workspace in the same order as `workspaces`. Hidden apps, minimized
 windows and full-screen windows are absent. Reading titles costs an
 accessibility call per window, so hooks don't call `query()` themselves.
+
+`disabled` lists any native feature that was turned off (`borders`,
+`groupBar`, `borderMask`, `slides`, `captureRetile`, `dragEffect`,
+`nativeEvents`, `nativeHover`, `nativeFrames`) together with its `reason`,
+sorted by feature name. Each disabled feature also prints one line to the
+Hammerspoon console on `start()`.
 
 To hear about changes instead of polling, give `start()` functions in `on`
 and shell commands in `exec`, by event:

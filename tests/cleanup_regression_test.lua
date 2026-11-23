@@ -483,4 +483,97 @@ runIsolated(function()
         "workspace 2 should slide in with window 20")
 end)
 
+-- 12. Native feature failures print one clear console line per feature and populate Util.disabledFeatures() (#21).
+runIsolated(function()
+    clearHyprspoon()
+    local noop = function() end
+    local lines = {}
+    local realPrint = print
+    print = function(s) lines[#lines + 1] = tostring(s) end
+
+    hs = {
+        settings = { get = function() return nil end, set = noop },
+        timer = { delayed = { new = function() return { start = noop, stop = noop } end } },
+        fs = { xattr = { get = function() return nil end } },
+        screen = { allScreens = function() return {} end },
+        eventtap = {
+            new = function() return { start = function(self) return self end, stop = noop } end,
+            event = { types = { mouseMoved = 5 } },
+        },
+        drawing = { color = { asRGB = function() return { red = 1, green = 1, blue = 1, alpha = 1 } end } },
+    }
+    -- Simulate missing/broken native modules by preloading erroring loaders.
+    local oldPreload = {}
+    for _, name in ipairs({ "border", "slide", "hover", "frames" }) do
+        local key = "hyprspoon.native." .. name
+        oldPreload[key] = package.preload[key]
+    end
+    package.preload["hyprspoon.native.border"] = function()
+        error("hyprspoon.native.border: SkyLight has no SLSNewWindowWithOpaqueShapeAndContext")
+    end
+    package.preload["hyprspoon.native.slide"] = function()
+        error("module 'hyprspoon.native.slide' not found")
+    end
+    package.preload["hyprspoon.native.hover"] = function()
+        error("hyprspoon.native.hover: no WindowServer connection")
+    end
+    package.preload["hyprspoon.native.frames"] = function()
+        error("module 'hyprspoon.native.frames' not found")
+    end
+
+    local ok, err = pcall(function()
+        package.loaded["hyprspoon.border"] = { watch = noop }
+        package.loaded["hyprspoon.tree"] = { behindMaximized = function() return false end, filling = function() return false end }
+        local S = require("hyprspoon.state")
+        local Util = require("hyprspoon.util")
+        S.cfg = {
+            border = { active = "#fff", width = 3, radius = 12 },
+            group = { bar = { height = 24 } },
+            experimental = { borderMask = true, captureRetile = true },
+            slide = { workspaces = "horizontal" },
+            mouse = { dragEffect = true },
+            focusFollowsMouse = true,
+        }
+        S.running = {}
+        package.loaded["hyprspoon.border"] = nil
+        package.loaded["hyprspoon.spaces"] = { isHidden = function() return false end }
+        package.loaded["hyprspoon.scroll"] = { isAway = function() return false end }
+        package.loaded["hyprspoon.focus"] = { invalidateWindowCache = noop }
+        package.loaded["hyprspoon.groupbar"] = { suspend = noop }
+
+        local Border = require("hyprspoon.border")
+        local Slide = require("hyprspoon.slide")
+        local Ffm = require("hyprspoon.ffm")
+
+        Border.start()
+        Slide.start()
+        Ffm.start()
+        -- Calling native("frames") twice should print nativeFrames only once.
+        Util.native("frames")
+        Util.native("frames")
+
+        local disabled = Util.disabledFeatures()
+        local byFeature = {}
+        for _, entry in ipairs(disabled) do byFeature[entry.feature] = entry.reason end
+        assert(byFeature.borders == "SkyLight has no SLSNewWindowWithOpaqueShapeAndContext",
+            "borders should report the missing SkyLight symbol")
+        assert(byFeature.groupBar == "SkyLight has no SLSNewWindowWithOpaqueShapeAndContext")
+        assert(byFeature.borderMask == "SkyLight has no SLSNewWindowWithOpaqueShapeAndContext")
+        assert(byFeature.slides and byFeature.slides:find("make -C hyprspoon/native", 1, true))
+        assert(byFeature.captureRetile and byFeature.captureRetile:find("make -C hyprspoon/native", 1, true))
+        assert(byFeature.dragEffect and byFeature.dragEffect:find("make -C hyprspoon/native", 1, true))
+        assert(byFeature.nativeHover == "no WindowServer connection")
+        assert(byFeature.nativeFrames and byFeature.nativeFrames:find("make -C hyprspoon/native", 1, true))
+        assert(#disabled == 8, "expected 8 disabled features, got " .. #disabled)
+        assert(#lines == 8, "expected exactly one console line per disabled feature, got " .. #lines)
+
+        Util.stop()
+        assert(#Util.disabledFeatures() == 0, "Util.stop clears disabled features for the next start()")
+    end)
+
+    print = realPrint
+    for key, prev in pairs(oldPreload) do package.preload[key] = prev end
+    if not ok then error(err) end
+end)
+
 print("Cleanup regression tests passed")

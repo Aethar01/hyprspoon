@@ -203,6 +203,11 @@ local function start()
         hover = native
         return
     end
+    if Util.disableFeature then
+        local reason = native and "event tap could not start"
+            or (Util.nativeError and Util.nativeError("hover")) or "unavailable"
+        Util.disableFeature("nativeHover", reason, "using Lua event tap fallback")
+    end
     S.running.moveTap = hs.eventtap.new({ hs.eventtap.event.types.mouseMoved }, onMouseMoved):start()
 end
 

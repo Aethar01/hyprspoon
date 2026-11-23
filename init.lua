@@ -178,7 +178,7 @@ local M = {
     warpToFocusedWindow = Actions.warpToFocusedWindow,
     warpToWindow = Actions.warpToWindow,
     workspaces = Spaces.workspaces,
-    -- spoon.hyprspoon:query() -> { focus, displays, workspaces, windows }.
+    -- spoon.hyprspoon:query() -> { focus, displays, workspaces, windows, disabled }.
     -- Call after start(). Fields are documented in README.md (Status bars)
     -- and hyprspoon/hooks.lua; missing values are false. Titles cost one
     -- accessibility call per managed window.
@@ -650,8 +650,16 @@ function M:start(opts)
         if events.created then events.created(Layout.windowCreated) end
         S.running.events = events
     else
+        if Util.disableFeature then
+            Util.disableFeature("nativeEvents",
+                Util.nativeError and Util.nativeError("events") or "unavailable",
+                "using window filter fallback")
+        end
         filter:subscribe(hs.window.filter.windowMoved, onWindowMoved)
     end
+    -- Probe the frames module up front so a missing module or SkyLight symbol
+    -- is reported once at startup and listed in query().disabled.
+    Util.native("frames")
 
     -- Forget per-window state once a window is gone.
     filter:subscribe(hs.window.filter.windowDestroyed, function(win)

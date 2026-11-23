@@ -177,10 +177,15 @@ end
 --               by workspace in the order above. focus.window may be an
 --               unmanaged window absent from this list. Hidden group
 --               members are omitted, as they are from the overview.
+--   disabled    { feature, reason }, native features turned off because
+--               their module failed to load, a SkyLight symbol was missing,
+--               or a macOS requirement wasn't met (sorted by feature name).
 -- Titles take an accessibility call per window.
 function M.query()
     local focus, focusedN = focused()
-    local out = { focus = focus, displays = {}, workspaces = {}, windows = {} }
+    local Util = package.loaded["hyprspoon.util"]
+    local disabled = Util and Util.disabledFeatures and Util.disabledFeatures() or {}
+    local out = { focus = focus, displays = {}, workspaces = {}, windows = {}, disabled = disabled }
     for _, ws in ipairs(Spaces.overview()) do
         local name = Spaces.label(ws.n)
         local ids = {}

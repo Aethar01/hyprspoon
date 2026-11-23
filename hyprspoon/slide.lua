@@ -326,13 +326,36 @@ end
 local changeHooked = nil
 
 function M.start()
-    local wantRetile = S.cfg.experimental and S.cfg.experimental.captureRetile
-    local mod = (S.cfg.slide or wantRetile) and Util.native("slide") or false
-    if mod and mod.onChange then
+    local wantSlide = S.cfg.slide and true or false
+    local wantRetile = S.cfg.experimental and S.cfg.experimental.captureRetile and true or false
+    local wantDragEffect = M.dragEffect(S.cfg.mouse and S.cfg.mouse.dragEffect) ~= nil
+    local mod = (wantSlide or wantRetile or wantDragEffect) and Util.native("slide") or false
+    if not mod then
+        if Util.disableFeature then
+            local reason = Util.nativeError and Util.nativeError("slide") or "unavailable"
+            if wantSlide then Util.disableFeature("slides", reason) end
+            if wantRetile then Util.disableFeature("captureRetile", reason) end
+            if wantDragEffect then Util.disableFeature("dragEffect", reason) end
+        end
+        return
+    end
+    if wantRetile and (not mod.retile or not mod.onReady) and Util.disableFeature then
+        Util.disableFeature("captureRetile", "slide module needs rebuild (make -C hyprspoon/native)")
+    end
+    if wantDragEffect and Util.disableFeature then
+        if not Util.native("frames") then
+            Util.disableFeature("dragEffect", Util.nativeError and Util.nativeError("frames") or "frames module unavailable")
+        elseif not mod.lifter then
+            Util.disableFeature("dragEffect", "slide module needs rebuild (make -C hyprspoon/native)")
+        elseif not mod.lifter({}) then
+            Util.disableFeature("dragEffect", "needs Screen Recording permission")
+        end
+    end
+    if mod.onChange then
         mod.onChange(function(on) require("hyprspoon.groupbar").suspend("slide", on) end)
         changeHooked = mod
     end
-    if not S.cfg.slide then return end
+    if not wantSlide then return end
     native = mod
     M.reset()
 end

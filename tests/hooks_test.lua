@@ -191,6 +191,18 @@ assert(byID[11].focused == true and byID[11].floating == false and byID[11].hidd
     and byID[11].app == "Terminal" and byID[11].title == "zsh" and byID[11].workspace == "1")
 assert(byID[12].floating == true and byID[12].focused == false)
 assert(byID[13].hidden == true and byID[13].workspace == "2")
+assert(type(q.disabled) == "table" and #q.disabled == 0, "disabled is always a list")
+
+-- Disabled native features appear in query().disabled.
+package.loaded["hyprspoon.util"] = {
+    disabledFeatures = function()
+        return { { feature = "borders", reason = "SkyLight has no SLSNewConnection" } }
+    end,
+}
+local qd = Hooks.query()
+assert(#qd.disabled == 1 and qd.disabled[1].feature == "borders"
+    and qd.disabled[1].reason == "SkyLight has no SLSNewConnection")
+package.loaded["hyprspoon.util"] = nil
 
 -- The same keys whatever the state.
 local function keys(t)
