@@ -658,6 +658,32 @@ function M.awayUUID(id)
     return a and Spaces.uuidForKey(a.key)
 end
 
+-- Current horizontal scroll offset of workspace `key` ("ws<n>"), in points.
+function M.viewOffset(key)
+    local view = key and views[key]
+    return view and view.x or 0
+end
+
+-- Reorders the column holding `fromID` before or after the column holding
+-- `targetID` (`side` "left" or "right"), used by overview drag-and-drop.
+function M.reorderWindow(key, fromID, targetID, side)
+    if not key or not fromID or not targetID or fromID == targetID or not M.enabled(key) then return false end
+    local tree = S.trees[key]
+    if not tree then return false end
+    local cols = M.columns(tree)
+    local fci = locate(cols, fromID)
+    local tci = locate(cols, targetID)
+    if not fci or not tci or fci == tci then return false end
+    local col = table.remove(cols, fci)
+    if fci < tci then tci = tci - 1 end
+    table.insert(cols, side == "right" and (tci + 1) or tci, col)
+    local prevInstant = S.instantLayout
+    S.instantLayout = true
+    commit(key, cols)
+    S.instantLayout = prevInstant
+    return true
+end
+
 -- Window `goneID`, focused, is closing (or leaving) workspace `key`, whose
 -- tree was `tree`: the window to focus instead, of those in `valid`. The
 -- one it was opened from, if it was just opened in a column of its own

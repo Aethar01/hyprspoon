@@ -36,12 +36,7 @@
 #include "lift.h"
 #include "luacall.h"
 #include "skylight.h"
-
-// CoreAnimation's link to a WindowServer window (private).
-@interface CAContext : NSObject
-+ (instancetype)contextWithCGSConnection:(uint32_t)cid options:(NSDictionary *)options;
-@property (retain) CALayer *layer;
-@end
+#include "slide_internal.h"
 
 #define SL_FUNCS(X)                                                                    \
     X(CGError, SLSNewConnection, (int, int *))                                         \
@@ -178,15 +173,65 @@ static void drainEvents(void *unused) {
 // Pictures
 // ---------------------------------------------------------------------------
 
-typedef struct {
-    int key;          // the caller's (a workspace number); 0 when free
-    CGImageRef image;
-    CGRect bounds;    // where it was on screen
-    double taken;
-} Shot;
+// Shot is defined in slide_internal.h.
 
 #define MAX_PICTURES 32
 static Shot pictures[MAX_PICTURES];
+
+// Per-window thumbnail cache for overview (kept across opens and cleared on
+// display changes / reload, so windows keep their thumbnails without extra
+// captures). Hidden workspaces also reuse `pictures[]` directly.
+#define MAX_THUMBS 48
+static Thumb thumbs[MAX_THUMBS];
+
+void slideThumbStore(uint32_t target, CGImageRef image, CGRect area, CGRect src) {
+    if (!target || !image || !validRect(area) || !validRect(src)) return;
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < MAX_THUMBS; i++) {
+        if (thumbs[i].wid == target) { slot = i; break; }
+        if (!thumbs[i].image && slot < 0) slot = i;
+        if (thumbs[i].image && thumbs[i].taken < thumbs[oldest].taken) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    CGImageRetain(image);
+    if (thumbs[slot].image) CGImageRelease(thumbs[slot].image);
+    thumbs[slot] = (Thumb){ target, image, area, src, CFAbsoluteTimeGetCurrent() };
+}
+
+Thumb *slideThumbLookup(uint32_t target) {
+    for (int i = 0; i < MAX_THUMBS; i++) {
+        if (thumbs[i].wid == target && thumbs[i].image) return &thumbs[i];
+    }
+    // Fall back to workspace captures slide.m already holds for workspace slides.
+    static Thumb fromShot;
+    for (int i = 0; i < MAX_PICTURES; i++) {
+        Shot *p = &pictures[i];
+        if (!p->image || p->winCount <= 0) continue;
+        for (int k = 0; k < p->winCount; k++) {
+            if (p->wids[k] == target) {
+                fromShot = (Thumb){ target, p->image, p->bounds, p->winRects[k], p->taken };
+                return &fromShot;
+            }
+        }
+    }
+    return NULL;
+}
+
+void slideThumbForget(uint32_t target) {
+    for (int i = 0; i < MAX_THUMBS; i++) {
+        if (thumbs[i].wid == target) {
+            if (thumbs[i].image) CGImageRelease(thumbs[i].image);
+            memset(&thumbs[i], 0, sizeof(thumbs[i]));
+        }
+    }
+}
+
+void slideThumbClear(void) {
+    for (int i = 0; i < MAX_THUMBS; i++) {
+        if (thumbs[i].image) CGImageRelease(thumbs[i].image);
+        memset(&thumbs[i], 0, sizeof(thumbs[i]));
+    }
+}
 
 // Wallpapers are kept apart, by display bounds.
 #define MAX_WALLPAPERS 8
@@ -203,6 +248,29 @@ static Shot *pictureFor(int key) {
 static void dropPicture(Shot *p) {
     if (p->image) CGImageRelease(p->image);
     memset(p, 0, sizeof(*p));
+}
+
+void slidePictureStore(int key, CGImageRef image, CGRect bounds,
+                       const uint32_t *wids, const CGRect *winRects, int winCount) {
+    if (!key || !image || !validRect(bounds)) return;
+    Shot *p = pictureFor(key);
+    if (p) dropPicture(p);
+    for (int i = 0; i < MAX_PICTURES; i++) {
+        if (!pictures[i].image) {
+            memset(&pictures[i], 0, sizeof(pictures[i]));
+            pictures[i].key = key;
+            pictures[i].image = CGImageRetain(image);
+            pictures[i].bounds = bounds;
+            pictures[i].taken = CFAbsoluteTimeGetCurrent();
+            int n = winCount > MAX_SHOT_WINS ? MAX_SHOT_WINS : winCount;
+            pictures[i].winCount = n;
+            for (int k = 0; k < n; k++) {
+                pictures[i].wids[k] = wids[k];
+                pictures[i].winRects[k] = winRects[k];
+            }
+            return;
+        }
+    }
 }
 
 // The union of every display's bounds: a capture is of the windows' parts
@@ -259,18 +327,28 @@ static int onScreenByStacking(uint32_t *wids, int count) {
 // One capture of `wids` together on `connection`, and where it covers
 // (retained; NULL if there's nothing to see). With `stacked`, keep only
 // on-screen windows and put them in their stacking order first; windows
-// that don't overlap (tiles) needn't be.
-static CGImageRef captureOn(int connection, uint32_t *wids, int count, CGRect *bounds, bool stacked) {
+// that don't overlap (tiles) needn't be. Optionally records the on-screen
+// count and each window's clipped bounds without any extra WindowServer call.
+static CGImageRef captureOnInfo(int connection, uint32_t *wids, int count, CGRect *bounds, bool stacked,
+                                int *outCount, uint32_t *outWids, CGRect *outRects, int maxOut) {
     if (stacked) {
         count = onScreenByStacking(wids, count);
         if (count == 0) return NULL;
     }
     CGRect screen = displaysBounds(), area = CGRectNull;
+    int recorded = 0;
     for (int i = 0; i < count; i++) {
         CGRect b;
         if (SLSGetWindowBounds(connection, wids[i], &b) != kCGErrorSuccess) continue;
         b = CGRectIntersection(b, screen);
-        if (!CGRectIsNull(b)) area = CGRectUnion(area, b);
+        if (!CGRectIsNull(b)) {
+            area = CGRectUnion(area, b);
+            if (outWids && outRects && recorded < maxOut) {
+                outWids[recorded] = wids[i];
+                outRects[recorded] = b;
+                recorded++;
+            }
+        }
     }
     if (CGRectIsNull(area) || CGRectIsEmpty(area)) return NULL;
     CFArrayRef list = SLSHWCaptureWindowList(connection, wids, count, CAPTURE_NOMINAL);
@@ -279,7 +357,12 @@ static CGImageRef captureOn(int connection, uint32_t *wids, int count, CGRect *b
     if (CFArrayGetCount(list) > 0) image = CGImageRetain((CGImageRef)CFArrayGetValueAtIndex(list, 0));
     CFRelease(list);
     *bounds = area;
+    if (outCount) *outCount = recorded;
     return image;
+}
+
+static CGImageRef captureOn(int connection, uint32_t *wids, int count, CGRect *bounds, bool stacked) {
+    return captureOnInfo(connection, wids, count, bounds, stacked, NULL, NULL, NULL, 0);
 }
 
 // A capture of `wids` as they're stacked on screen, on the slide's connection.
@@ -377,13 +460,7 @@ static int shownCount = 0;
 
 static NSString *positionKey = nil, *slideKey = nil;
 
-// How something moves (the `animations` option): on a spring (Hyprland's
-// mass, stiffness and dampening), or eased over `duration` seconds,
-// quad-out like the windows' own animations.
-typedef struct {
-    bool ease;
-    double duration, mass, stiffness, damping;
-} Motion;
+// Motion is defined in slide_internal.h.
 
 static const Motion defaultMotion = { false, 0.2, 0.6, 800, 38 };
 
@@ -1040,8 +1117,8 @@ static bool offFrame(CGRect r, CGRect frame) {
 
 // Pictures of tiles that glided off the display, by window, for when they
 // come back (see above). Each holds the capture it was cut from.
-#define MAX_KEPT 8
-#define KEPT_MAX_AGE 60.0
+#define MAX_KEPT 32
+#define KEPT_MAX_AGE 600.0
 static struct {
     uint32_t wid;
     CALayer *pic;
@@ -1319,7 +1396,7 @@ static Shot *beneathPicture(const uint32_t *ids, int count) {
     CGRect bounds;
     CGImageRef image = captureOn(cid, stacked, count, &bounds, true);
     if (!image) return NULL;
-    beneath = (Shot){ -1, image, bounds, CFAbsoluteTimeGetCurrent() };
+    beneath = (Shot){ .key = -1, .image = image, .bounds = bounds, .taken = CFAbsoluteTimeGetCurrent() };
     memcpy(beneathIds, sorted, sizeof(uint32_t) * count);
     beneathCount = count;
     return &beneath;
@@ -1914,11 +1991,23 @@ static int l_capture(lua_State *L) {
         if (p) dropPicture(p);
         if (count == 0) return;
         CGRect bounds;
-        CGImageRef image = capture(wids, count, &bounds);
+        uint32_t winIds[MAX_SHOT_WINS];
+        CGRect winRects[MAX_SHOT_WINS];
+        int winCount = 0;
+        CGImageRef image = captureOnInfo(cid, wids, count, &bounds, true, &winCount, winIds, winRects, MAX_SHOT_WINS);
         if (!image) return;
         for (int i = 0; i < MAX_PICTURES; i++) {
             if (!pictures[i].image) {
-                pictures[i] = (Shot){ key, image, bounds, CFAbsoluteTimeGetCurrent() };
+                memset(&pictures[i], 0, sizeof(pictures[i]));
+                pictures[i].key = key;
+                pictures[i].image = image;
+                pictures[i].bounds = bounds;
+                pictures[i].taken = CFAbsoluteTimeGetCurrent();
+                pictures[i].winCount = winCount;
+                for (int k = 0; k < winCount; k++) {
+                    pictures[i].wids[k] = winIds[k];
+                    pictures[i].winRects[k] = winRects[k];
+                }
                 took = true;
                 return;
             }
@@ -1941,6 +2030,7 @@ static int l_forget(lua_State *L) {
         if (all) {
             for (int i = 0; i < wallpaperCount; i++) dropPicture(&wallpapers[i]);
             wallpaperCount = 0;
+            slideThumbClear();
         }
     });
     return 0;
@@ -2285,6 +2375,7 @@ static int l_stop(lua_State *L) {
             clearLayers();
             orderWindow(false);
             dropBeneath();
+            overviewStopNow();
         });
     }
     if (liftQueue) {
@@ -2294,6 +2385,108 @@ static int l_stop(lua_State *L) {
         });
     }
     return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Internal bridge for overview.m (slide_internal.h)
+// ---------------------------------------------------------------------------
+
+dispatch_queue_t slideQueue(void) { return queue; }
+bool slideIsStopping(void) { return atomic_load(&stopping); }
+bool slideValidRect(CGRect r) { return validRect(r); }
+Motion slideDefaultMotion(void) { return defaultMotion; }
+void slideBeginChanges(void) { beginChanges(); }
+void slideCommitChanges(void) { commitChanges(); }
+CABasicAnimation *slideAnimate(Motion m, NSString *key, id from, id to, double velocity) {
+    return animate(m, key, from, to, velocity);
+}
+bool slideCanCapture(void) {
+    if (@available(macOS 10.15, *)) return CGPreflightScreenCaptureAccess();
+    return true;
+}
+uint32_t slideCreateOverlay(CAContext **contextOut, CALayer **layerOut) {
+    return newOverlay(cid, contextOut, layerOut);
+}
+void slidePlaceOverlay(uint32_t targetWid, CGRect *placedRect, double *placedSc, CGRect frame, double scale) {
+    if (!targetWid) return;
+    if (scale != *placedSc) {
+        SLSSetWindowResolution(cid, targetWid, scale);
+        *placedSc = scale;
+    }
+    if (CGRectEqualToRect(frame, *placedRect)) return;
+    CGRect shape = { CGPointZero, frame.size };
+    CFTypeRef region = NULL;
+    CGSNewRegionWithRect(&shape, &region);
+    if (region) {
+        SLSSetWindowShape(cid, targetWid, frame.origin.x, frame.origin.y, region);
+        CFRelease(region);
+    }
+    CFTypeRef t = SLSTransactionCreate(cid);
+    if (t) {
+        SLSTransactionMoveWindowWithGroup(t, targetWid, frame.origin);
+        CGAffineTransform transform = CGAffineTransformIdentity;
+        transform.tx = -frame.origin.x;
+        transform.ty = -frame.origin.y;
+        SLSTransactionSetWindowTransform(t, targetWid, 0, 0, transform);
+        SLSTransactionCommit(t, 0);
+        CFRelease(t);
+    }
+    *placedRect = frame;
+}
+void slideOrderOverlay(uint32_t targetWid, bool *isShown, bool in, int level) {
+    if (!targetWid || in == *isShown) return;
+    CFTypeRef t = SLSTransactionCreate(cid);
+    if (!t) return;
+    if (in) {
+        SLSTransactionSetWindowLevel(t, targetWid, level);
+        SLSTransactionOrderWindow(t, targetWid, ORDER_ABOVE, 0);
+    } else {
+        SLSTransactionOrderWindow(t, targetWid, ORDER_OUT, 0);
+    }
+    SLSTransactionCommit(t, 0);
+    CFRelease(t);
+    *isShown = in;
+}
+void slideReleaseOverlay(uint32_t *targetWid, CAContext **ctx, CALayer **layer,
+                         bool *isShown, CGRect *placedRect, double *placedSc) {
+    if (!*targetWid) return;
+    slideOrderOverlay(*targetWid, isShown, false, OVERLAY_LEVEL);
+    if (*ctx) {
+        beginChanges();
+        (*ctx).layer = nil;
+        commitChanges();
+    }
+    SLSReleaseWindow(cid, *targetWid);
+    if (*ctx && [*ctx respondsToSelector:@selector(invalidate)]) [*ctx performSelector:@selector(invalidate)];
+    [*layer release];
+    [*ctx release];
+    *layer = nil;
+    *ctx = nil;
+    *targetWid = 0;
+    *placedRect = CGRectZero;
+    *placedSc = 0;
+}
+bool slideWindowBounds(uint32_t target, CGRect *bounds) {
+    return SLSGetWindowBounds(cid, target, bounds) == kCGErrorSuccess;
+}
+CGImageRef slideCaptureWindows(uint32_t *wids, int count, CGRect *bounds, bool stacked) {
+    return captureOn(cid, wids, count, bounds, stacked);
+}
+Shot *slideWallpaper(CGRect display) {
+    CGRect full = displayHolding(display);
+    Shot *wall = wallpaperFor(full);
+    if (!wall) wall = takeWallpaper(full);
+    return wall;
+}
+CGFloat slideCornerRadius(uint32_t target, CGFloat fallback) {
+    return cornerRadius(target, fallback);
+}
+CGRect slideReadRect(lua_State *L, int index) { return readRect(L, index); }
+double slideNumberField(lua_State *L, int index, const char *key, double fallback) {
+    return numberField(L, index, key, fallback);
+}
+Motion slideReadMotion(lua_State *L, int index, Motion fallback) {
+    return readMotion(L, index, fallback);
 }
 
 static void releaseAll(void) {
@@ -2321,6 +2514,8 @@ static void releaseAll(void) {
     dropPicture(&beneath);
     beneathCount = 0;
     dropAllKept();
+    slideThumbClear();
+    overviewReleaseAll();
 }
 
 // Collected with the Lua state (reload, quit), before Lua unloads the
@@ -2334,6 +2529,7 @@ static int l_gc(lua_State *L) {
     // `captureQueue`, then drain `captureQueue` (whose completion blocks go
     // to `queue`), then drain `queue` a second time and release everything.
     dispatch_sync(queue, ^{
+        overviewCancelTimers();
         dispatch_source_cancel(settled);
         dispatch_release(settled);
         settled = NULL;
@@ -2474,11 +2670,13 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
     shownCount = 0;
     retileGeneration = 0;
     memset(pictures, 0, sizeof(pictures));
+    memset(thumbs, 0, sizeof(thumbs));
     wallpaperCount = 0;
     wid = 0;
     shown = false;
     placed = CGRectZero;
     placedScale = 0;
+    overviewInit();
 
     static const luaL_Reg funcs[] = {
         { "onChange", l_onChange },
@@ -2496,6 +2694,11 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         { "land", l_land },
         { "home", l_home },
         { "stop", l_stop },
+        { "overviewOpen", l_overviewOpen },
+        { "overviewUpdate", l_overviewUpdate },
+        { "overviewDrag", l_overviewDrag },
+        { "overviewClose", l_overviewClose },
+        { "overviewStop", l_overviewStop },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);

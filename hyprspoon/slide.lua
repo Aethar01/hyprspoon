@@ -74,6 +74,14 @@ local function current(n, ids, screen)
     return k ~= nil and k.ids == signature(ids) and k.uuid == screen:getUUID()
 end
 
+-- Records that workspace `n`'s picture was already captured into native
+-- `pictures[n]` (e.g. when the overview opens), so leaving via overview keeps
+-- slide-in pictures warm for later workspace switches.
+function M.noteCaptured(n, ids, screen)
+    if not native or not n or not screen or not ids or #ids == 0 then return end
+    kept[n] = { ids = signature(ids), uuid = screen:getUUID() }
+end
+
 -- The slide over `screen`'s usable area, moving as animations.workspaces says.
 local function slide(screen, t)
     local cfg = type(S.cfg.slide) == "table" and S.cfg.slide or {}
@@ -97,7 +105,7 @@ end
 -- before the windows move: it waits for the capture. True if a slide
 -- covers the switch (this one, or the swipe's that just showed it).
 function M.switch(screen, from, to, outIds, inIds, dir)
-    if not native or not S.cfg.slide or not screen then return false end
+    if S.overviewSuppressSlide or not native or not S.cfg.slide or not screen then return false end
     if hs.timer.secondsSinceEpoch() < panShownUntil then
         panShownUntil = 0
         return true
@@ -123,7 +131,7 @@ end
 -- `screen` (with `baseIds`). Call before its windows move. True if a
 -- slide covers it.
 function M.showScratchpad(screen, n, ids, baseIds)
-    if not native or not S.cfg.slide or not screen or not current(n, ids, screen) then return false end
+    if S.overviewSuppressSlide or not native or not S.cfg.slide or not screen or not current(n, ids, screen) then return false end
     local dx, dy = toward(S.cfg.slide.scratchpads, 1)
     if not dx then return false end
     local still = take(nil, baseIds, screen, STILL)
@@ -134,7 +142,7 @@ end
 -- Scratchpad `n` (with `ids`) goes back off `screen`, over the workspace
 -- beneath. Call before its windows move. True if a slide covers it.
 function M.hideScratchpad(screen, n, ids)
-    if not native or not S.cfg.slide or not screen then return false end
+    if S.overviewSuppressSlide or not native or not S.cfg.slide or not screen then return false end
     local dx, dy = toward(S.cfg.slide.scratchpads, -1)
     if not dx or not take(n, ids, screen) then return false end
     native.run(slide(screen, { out = n, dx = dx, dy = dy }))

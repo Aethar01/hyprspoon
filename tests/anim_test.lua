@@ -31,6 +31,7 @@ end
 -- tiling.animationDuration, off when it's 0.
 config({})
 check("workspaces", { curve = "spring", mass = 0.6, stiffness = 800, damping = 38 })
+check("overview", { curve = "spring", mass = 0.6, stiffness = 800, damping = 38 })
 check("windows", { curve = "ease", duration = 0 })
 check("fadeIn", { curve = "ease", duration = 0 })
 assert(Anim.windowDuration() == 0)
@@ -38,6 +39,7 @@ assert(Anim.windowDuration() == 0)
 -- The older options still count.
 config({ animationDuration = 0.2, slide = { mass = 1, stiffness = 500, damping = 20 } })
 check("workspaces", { curve = "spring", mass = 1, stiffness = 500, damping = 20 })
+check("overview", { curve = "spring", mass = 1, stiffness = 500, damping = 20 })
 check("windows", { duration = 0.2 })
 check("fadeIn", { duration = 0.2 })
 

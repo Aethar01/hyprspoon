@@ -148,6 +148,7 @@ kind. `fadeIn` follows `windows` before the top level.
 | Kind | Animates |
 |---|---|
 | `animations.workspaces` | Workspace and scratchpad slides |
+| `animations.overview` | Niri-style [overview](#overview-overview) zoom-in/out and workspace/column scrolling (default: as `workspaces`) |
 | `animations.windows` | Retiles. Windows moved through accessibility always ease over `duration`; a spring moves the pictures of [`experimental.captureRetile`](#experimental-options), in every layout (scrolling columns' scrolls too) |
 | `animations.fadeIn` | With `experimental.captureRetile`: new windows fading in as they pop in, and the pictures fading to the real windows once settled |
 
@@ -295,6 +296,46 @@ pointer. Distances are fractions of the trackpad's width. Set
 | `swipe.span` | `0.35` | With `follow`, how far the fingers move a whole workspace |
 | `swipe.distance` | `0.12` | Without `follow`, how far the fingers travel before it switches |
 | `swipe.direction` | `nil` | `"horizontal"` or `"vertical"` (fingers up for the next workspace); by default as `slide.workspaces`. Vertical leaves sideways swipes free to scroll columns |
+
+### Overview (`overview`)
+
+A niri-style zoomed-out workspace overview (`toggleOverview`, default
+Option+Tab): each display zooms out onto a dark backdrop with its workspaces
+stacked vertically (the current workspace centred, neighbours above and below,
+and a trailing empty workspace at the bottom). Scrolling workspaces extend
+their full strip of columns horizontally across the display.
+
+With `hyprspoon.native.slide` and Screen Recording permission, wallpapers and
+windows render as GPU-composited captures (automatically cached from workspace
+switches, retiles and overview opens) with CoreAnimation spring zoom-in/out
+and smooth scrolling. Without the native module or Screen Recording, a
+pure-Lua fallback renders the same niri layout with app icons and titles.
+
+| Option | Default | Description |
+|---|---|---|
+| `overview.style` | `"niri"` | `"niri"` (zoomed-out vertical workspace stack), or `"grid"` (classic grid of workspace cards) |
+| `overview.zoom` | `0.5` | Scale of workspaces in niri overview (`0.1` to `0.95`) |
+| `overview.backdrop` | `"wallpaper"` | `"wallpaper"` (use each display's macOS wallpaper behind the zoomed-out workspaces), or `"color"` (solid `backdropColor`) |
+| `overview.backdropColor` | `"#262626"` | Solid backdrop colour (or fallback when no wallpaper is available) |
+| `overview.backdropBlur` | `20` | Gaussian blur radius in points applied to the wallpaper backdrop (`0` or `false` for crisp unblurred) |
+| `overview.backdropDim` | `0.35` | Darkening scrim opacity (`0` to `1`) over the wallpaper backdrop |
+| `overview.workspaceShadow` | `true` | Drop shadow behind each workspace surface |
+| `overview.workspaceGap` | `24` | Vertical gap between stacked workspaces, in points |
+| `overview.workspaceRadius` | `12` | Corner radius of each workspace surface, in points |
+| `overview.showLabels` | `true` | Workspace number/name badge on each workspace |
+| `overview.emptyWorkspace` | `true` | Include a trailing empty workspace slot to switch to or drop windows onto |
+| `overview.captures` | `true` | Use live/cached window and wallpaper captures via `hyprspoon.native.slide` when available |
+| `overview.swipe` | `false` | Number of fingers (e.g. `4`) whose vertical trackpad swipe opens/closes the overview |
+
+While the niri overview is open:
+
+- **Up/Down** or **k/j** (or **Tab** / **Shift+Tab**, or vertical scroll): move between workspaces
+- **Left/Right** or **h/l** (or **Home/End**, **g/G**, or horizontal scroll): move across windows and scrolling columns
+- **[ / ]** or **, / .**: switch active display
+- **1…9, 0**: jump straight to workspace 1…10
+- **Return / Space** or **click** a window or workspace: switch and zoom in (clicking the backdrop or pressing **Escape / q** cancels)
+- **x / w / Backspace** or **middle-click**: close the selected or hovered window
+- **Drag a window** onto another workspace (including the trailing empty workspace) to move it there, or onto a sibling column in a scrolling workspace to reorder columns
 
 ### Layouts per workspace
 

@@ -523,7 +523,7 @@ function M:start(opts)
     Ffm.start()
     S.running.sessionWatcher = hs.caffeinate.watcher.new(Ffm.onSessionEvent):start()
 
-    if S.cfg.swipe or Scroll.swipeFingers() then
+    if S.cfg.swipe or Scroll.swipeFingers() or (Overview.swipeFingers and Overview.swipeFingers()) then
         S.running.gestureTap = hs.eventtap.new({ hs.eventtap.event.types.gesture },
             Swipe.onGesture):start()
     end

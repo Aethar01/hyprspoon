@@ -29,6 +29,7 @@ local DEFAULTS = {
     windows = { curve = "ease", duration = 0, mass = 0.6, stiffness = 800, damping = 38 },
 }
 DEFAULTS.fadeIn = DEFAULTS.windows
+DEFAULTS.overview = DEFAULTS.workspaces
 
 -- Reported once per bad setting.
 local warned = {}
@@ -40,7 +41,7 @@ end
 
 local function older(kind)
     local cfg = S.cfg or S.defaults
-    if kind == "workspaces" then
+    if kind == "workspaces" or kind == "overview" then
         local s = type(cfg.slide) == "table" and cfg.slide or {}
         return { mass = s.mass, stiffness = s.stiffness, damping = s.damping }
     end

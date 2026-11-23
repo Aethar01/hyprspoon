@@ -91,9 +91,54 @@ S.defaults = {
     --   fadeIn = {}        with captureRetile: new windows fading in as
     --                      they pop in, and the pictures fading to the
     --                      real windows once settled (default: as windows)
+    --   overview = {}      niri-style overview zoom-in/out and workspace
+    --                      scrolling (default: as workspaces)
     -- e.g. { curve = "spring", duration = 0.2 } springs everything, and
     -- { windows = { curve = "ease", duration = 0.15 } } only retiles.
     animations = {},
+
+    -- Workspace overview (toggleOverview).
+    --   style = "niri"        "niri": zoomed-out workspaces stacked vertically
+    --                         with scrolling columns extending sideways, live
+    --                         window captures (with hyprspoon.native.slide and
+    --                         Screen Recording), spring zoom-in/out, keyboard/
+    --                         scroll navigation, window closing, and drag-and-
+    --                         drop between workspaces. "grid": classic grid.
+    --   zoom = 0.5            scale of workspaces in niri overview (0.1..0.95)
+    --   backdrop = "wallpaper"  "wallpaper": use each display's macOS wallpaper
+    --                         behind the zoomed-out workspaces; "color": solid
+    --                         backdropColor
+    --   backdropColor = "#262626"  solid backdrop colour (or fallback)
+    --   backdropBlur = 20     Gaussian blur radius in points on the wallpaper
+    --                         backdrop (0 or false for crisp unblurred)
+    --   backdropDim = 0.35    darkening scrim over the wallpaper backdrop (0..1)
+    --   workspaceShadow = true     drop shadow behind each workspace surface
+    --   workspaceGap = 24     points between stacked workspaces
+    --   workspaceRadius = 12  corner radius of each workspace surface (points)
+    --   showLabels = true     workspace number/name badge on each workspace
+    --   emptyWorkspace = true show a trailing empty workspace slot to switch
+    --                         to or drop windows onto (like niri's dynamic
+    --                         empty workspace)
+    --   captures = true       use live window & wallpaper captures via native
+    --                         slide module when available; false or no Screen
+    --                         Recording falls back to app/title cards
+    --   swipe = false         fingers whose vertical trackpad swipe toggles
+    --                         the overview (e.g. 4); false disables gesture
+    overview = {
+        style = "niri",
+        zoom = 0.5,
+        backdrop = "wallpaper",
+        backdropColor = "#262626",
+        backdropBlur = 20,
+        backdropDim = 0.35,
+        workspaceShadow = true,
+        workspaceGap = 24,
+        workspaceRadius = 12,
+        showLabels = true,
+        emptyWorkspace = true,
+        captures = true,
+        swipe = false,
+    },
 
     -- Workspaces slide in and out as they switch, like Hyprland's, moving
     -- as animations.workspaces says (mass, stiffness and damping here are

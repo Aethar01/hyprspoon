@@ -127,7 +127,9 @@ local function endActive()
 end
 
 local function onGesture(event)
-    if S.overviewOpen or S.dragState or S.barDragging then
+    local ov = S.cfg.overview
+    local ovFingers = type(ov) == "table" and type(ov.swipe) == "number" and ov.swipe >= 3 and ov.swipe or nil
+    if (S.overviewOpen and not ovFingers) or S.dragState or S.barDragging then
         endActive()
         return false
     end
@@ -142,11 +144,18 @@ local function onGesture(event)
             sumY = sumY + touch.normalizedPosition.y
         end
     end
+    local overviewGesture = ovFingers ~= nil and n == ovFingers
+    if S.overviewOpen then
+        if not overviewGesture then
+            endActive()
+            return false
+        end
+    end
     local cfg = S.cfg.swipe
-    local workspaces = cfg and n == cfg.fingers
+    local workspaces = not S.overviewOpen and cfg and n == cfg.fingers
     -- Sideways swipes scroll columns, unless they switch workspaces.
-    local columns = n == Scroll.swipeFingers() and not (workspaces and axis() == "horizontal")
-    if not workspaces and not columns then
+    local columns = not S.overviewOpen and n == Scroll.swipeFingers() and not (workspaces and axis() == "horizontal")
+    if not workspaces and not columns and not overviewGesture then
         endActive()
         return false
     end
@@ -185,6 +194,20 @@ local function onGesture(event)
         return false
     end
     if s.fired then return false end
+
+    -- Vertical swipe with overview.swipe fingers toggles the niri overview
+    -- (fingers up opens, fingers down closes).
+    if overviewGesture and math.abs(dy) >= (cfg and cfg.distance or 0.10) and math.abs(dy) > 2 * math.abs(dx) then
+        if (dy > 0 and not S.overviewOpen) or (dy < 0 and S.overviewOpen) then
+            local Overview = package.loaded["hyprspoon.overview"]
+            if Overview and Overview.toggle then
+                s.fired = true
+                defer(function() Overview.toggle() end)
+            end
+            return false
+        end
+    end
+    if S.overviewOpen then return false end
 
     if columns and math.abs(dx) >= START and math.abs(dx) > 2 * math.abs(dy) then
         local key, view0 = Scroll.panBegin(hs.mouse.getCurrentScreen())

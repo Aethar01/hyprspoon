@@ -1298,8 +1298,25 @@ end
 
 -- Displays came or went: workspaces of a missing display move to the
 -- primary one, and every parked window goes to its (possibly new) corner.
+-- Keep slide pictures when a follow-up screen timer sees the same displays.
+local lastScreenSig = nil
+
+local function screenSignature()
+    local parts = {}
+    for _, screen in ipairs(orderedScreens()) do
+        local f = screen:fullFrame()
+        parts[#parts + 1] = string.format("%s:%.0f,%.0f,%.0f,%.0f",
+            tostring(screen:getUUID()), f.x, f.y, f.w, f.h)
+    end
+    return table.concat(parts, "|")
+end
+
 function M.screensChanged()
-    Slide.reset()
+    local sig = screenSignature()
+    if sig ~= lastScreenSig then
+        lastScreenSig = sig
+        Slide.reset()
+    end
     refresh()
     sync(true)
 end
@@ -1557,13 +1574,105 @@ function M.hasWindows(n)
     return false
 end
 
+-- Next free numbered workspace on display `uuid` for the niri-style overview's
+-- trailing empty workspace slot; nil if the display already ends in an empty
+-- numbered workspace or doesn't own numbered workspaces.
+function M.nextEmptyWorkspace(uuid)
+    refresh()
+    if not uuid or not connected[uuid] then return nil end
+    local numbered = {}
+    for n in pairs(home) do
+        if n >= 1 and n <= NAMED_BASE and displayOf(n) == uuid then
+            numbered[#numbered + 1] = n
+        end
+    end
+    table.sort(numbered)
+    if #numbered > 0 and not M.hasWindows(numbered[#numbered]) then return nil end
+    if declared[uuid] then
+        for _, n in ipairs(declared[uuid]) do
+            if not home[n] then return n end
+        end
+        return nil
+    end
+    if uuid == primaryUUID then
+        local n = freeWorkspace(uuid)
+        if n <= 10 then return n end
+    end
+    return nil
+end
+
+-- Moves a specific window `win` (visible or parked) to workspace `n` without
+-- switching workspaces or playing a slide (used by overview drag-and-drop).
+function M.sendWindowToWorkspace(win, n)
+    n = number(n)
+    if not n or not win then return false end
+    local id = win:id()
+    if not id then return false end
+    refresh()
+    local current = of[id]
+    if current == n then return false end
+    local from = (current and displayOf(current)) or pointerUUID()
+    if not home[n] then home[n] = homeFor(n) end
+    local targetUUID = displayOf(n)
+    of[id] = n
+    bringMembers(id, n)
+    if current then
+        local oldKey = "ws" .. tostring(current)
+        if S.trees and S.trees[oldKey] and Tree.removeID then
+            S.trees[oldKey] = Tree.removeID(S.trees[oldKey], id)
+            S.keyIndex = {}
+        end
+        if S.maximized and S.maximized[oldKey] == id then
+            S.maximized[oldKey] = nil
+            if S.filled then S.filled[oldKey] = nil end
+        end
+    end
+    if shown[n] then
+        if shown[n] ~= from and connected[shown[n]] then
+            pins[id] = hs.timer.secondsSinceEpoch() + 1
+            S.windowInfo[id] = nil
+            settle()
+            win:moveToScreen(connected[shown[n]], false, true, 0)
+        end
+        if parked[id] then unpark(win) end
+    else
+        pinned[id] = nil
+        park(win, n)
+        -- If sent to a hidden workspace on another display, centre its stored
+        -- frame on that display so the overview renders it cleanly there.
+        if targetUUID and connected[targetUUID] and parked[id] then
+            local sf = connected[targetUUID]:frame()
+            local pf = parked[id]
+            if not Util.pointInFrame({ x = pf.x + pf.w / 2, y = pf.y + pf.h / 2 }, sf) then
+                parked[id] = {
+                    x = sf.x + math.max(0, (sf.w - pf.w) / 2),
+                    y = sf.y + math.max(0, (sf.h - pf.h) / 2),
+                    w = math.min(pf.w, sf.w),
+                    h = math.min(pf.h, sf.h),
+                }
+            end
+        end
+    end
+    forgetEmpty()
+    if Tree.saveTrees then Tree.saveTrees() end
+    save()
+    local prevInstant = S.instantLayout
+    S.instantLayout = true
+    Layout.tileNow()
+    S.instantLayout = prevInstant
+    hideEmptyScratchpads()
+    return true
+end
+
 function M.start()
+    lastScreenSig = screenSignature()
     refresh()
     sync(false)
 end
 
 -- Flushes a pending save (reload, shutdown).
 function M.stop()
+    lastScreenSig = nil
     if ruleSwitchTimer then ruleSwitchTimer:stop() ruleSwitchTimer = nil end
     if saveTimer then saveNow() end
 end
