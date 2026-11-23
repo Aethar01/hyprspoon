@@ -77,7 +77,7 @@ end
 local function overPopup(point, entry)
     if not hover then return false end
     local id, pid, layer = hover.topAt(point.x, point.y)
-    if not id or id == entry.id or Util.windowKinds[id] == "standard"
+    if not id or (entry and id == entry.id) or Util.windowKinds[id] == "standard"
        or Util.windowKinds[id] == "subwindow" then
         return false
     end
@@ -89,10 +89,16 @@ end
 local function ffmFocusPending()
     local entry = ffmPending
     ffmPending = nil
-    if not entry or S.dragState or locked then return end
+    if not entry or S.dragState or S.barDragging or S.overviewOpen or locked then return end
     local point = hs.mouse.absolutePosition()
-    -- Over no window: a display with nothing on it takes focus.
+    -- Over no window: a display with nothing on it takes focus, unless a
+    -- menu bar dropdown or popup is open under the pointer.
     if entry.nothing then
+        if overPopup(point, nil) then
+            S.ffmLastWindow = nil
+            if hover then hover.forget() end
+            return
+        end
         if not Focus.snapshotEntryAt(point) then Spaces.pointerOverNothing(point) end
         return
     end
@@ -119,7 +125,7 @@ end
 -- The pointer is at `point`, over a window other than last time (or we
 -- can't tell: no snapshot).
 local function onPointer(point)
-    if not S.cfg.focusFollowsMouse or S.dragState or S.overviewOpen then return end
+    if not S.cfg.focusFollowsMouse or S.dragState or S.barDragging or S.overviewOpen then return end
     -- The pointer moving is the surest sign the lock screen has gone, even
     -- when no unlock notification came.
     if locked then
@@ -188,8 +194,10 @@ local function snapshotDropped()
 end
 
 -- Watches the pointer: natively if hyprspoon.native.hover is built, else with an
--- event tap calling onMouseMoved.
+-- event tap calling onMouseMoved. Skipped when focusFollowsMouse is off so
+-- ordinary pointer movement never crosses into Lua for nothing.
 local function start()
+    if not S.cfg.focusFollowsMouse then return end
     local native = Util.native("hover")
     if native and native.start(function(x, y) onPointer({ x = x, y = y }) end, Util.WARP_MOUSE_EVENT) then
         hover = native

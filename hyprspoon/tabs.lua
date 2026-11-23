@@ -17,6 +17,7 @@ end
 -- Whether the centre of `frame` lies inside `rect`: how a window that has
 -- taken over a tile is recognised.
 local function centredIn(frame, rect)
+    if not frame or not rect then return false end
     local x, y = frame.x + frame.w / 2, frame.y + frame.h / 2
     return x >= rect.x and x < rect.x + rect.w and y >= rect.y and y < rect.y + rect.h
 end
@@ -38,9 +39,12 @@ function M.background(windows, frameOf, listedIDs)
         if #wins >= 2 then
             local groups = {}
             for _, win in ipairs(wins) do
-                local gk = frameKey(frameOf(win))
-                groups[gk] = groups[gk] or {}
-                table.insert(groups[gk], win)
+                local f = frameOf(win)
+                if f then
+                    local gk = frameKey(f)
+                    groups[gk] = groups[gk] or {}
+                    table.insert(groups[gk], win)
+                end
             end
 
             local listed = listedIDs(pid)
@@ -86,8 +90,10 @@ function M.successor(oldPid, rect, candidates, known, frameOf, visit)
     for _, c in ipairs(candidates) do
         if not known[c.id] and c.pid == oldPid then
             local f = frameOf(c)
-            if visit then visit(c, f) end
-            if centredIn(f, rect) then return c end
+            if f then
+                if visit then visit(c, f) end
+                if centredIn(f, rect) then return c end
+            end
         end
     end
 end
@@ -121,13 +127,16 @@ function M.assign(background, shown, ownerOf)
     table.sort(ids)
     for _, id in ipairs(ids) do
         if not assigned[id] then
+            local bg = background[id]
             local owner, best, score, tied = ownerOf(id), nil, -1, false
             for _, w in ipairs(shown) do
-                if used[w.id] < (w.count or 1) then
+                -- Never assign a background tab across different apps.
+                local sameApp = not (bg and bg.pid and w.pid) or w.pid == bg.pid
+                if sameApp and used[w.id] < (w.count or 1) then
                     local rank = 0
                     if owner and owner.rect and centredIn(w.frame, owner.rect) then rank = 2 end
                     for _, title in ipairs(w.titles or {}) do
-                        if title ~= "" and title == background[id].title then rank = math.max(rank, 1) end
+                        if title ~= "" and bg and title == bg.title then rank = math.max(rank, 1) end
                     end
                     if rank > score then best, score, tied = w.id, rank, false
                     elseif rank == score then tied = true end

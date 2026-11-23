@@ -73,11 +73,15 @@ end
 
 -- Called before placement, so a new group is inset on its very first frame.
 function M.prepare(leaf, rect)
-    if running and leaf.kind == "group" then leaf.groupInset = M.height(rect) end
+    if running and leaf.kind == "group" then
+        -- Filled tiles hide their ring and bar, so reserve no strip above them.
+        leaf.groupInset = (Tree.filling and Tree.filling(leaf.windowID)) and 0 or M.height(rect)
+    end
 end
 
 local function rgba(value)
-    local c = hs.drawing.color.asRGB(type(value) == "string" and { hex = value } or value)
+    local c = value and hs.drawing.color.asRGB(type(value) == "string" and { hex = value } or value)
+    if not c then return { 1, 1, 1, 1 } end
     return { c.red, c.green, c.blue, c.alpha or 1 }
 end
 
@@ -168,9 +172,12 @@ local BAR_SLACK = 12  -- points above and below its bar still count as on it
 -- and once it's a drag, `dragging`, and `tearing` while it's off the bar.
 local press = nil
 local dragTap = nil
+local refocusTimer = nil
 
 local function stopDrag()
+    S.barDragging = nil
     if dragTap then dragTap:stop() dragTap = nil end
+    if refocusTimer then refocusTimer:stop() refocusTimer = nil end
 end
 
 local function dragMoved(p, point)
@@ -178,6 +185,7 @@ local function dragMoved(p, point)
         if math.abs(point.x - p.start.x) < DRAG_START
            and math.abs(point.y - p.start.y) < DRAG_START then return end
         p.dragging = true
+        S.barDragging = true
     end
     local Drop = require("hyprspoon.drop")
     local slot, marker = M.slotAt(p.id, point, BAR_SLACK)
@@ -240,10 +248,15 @@ local function startDrag()
             -- drag has been dealt with. Its bar may be gone by then (a
             -- group emptied by the drop), so the tap stops itself.
             p.done = true
+            S.barDragging = nil
             if p.dragging then
                 dragEnded(p, point)
                 -- In case the canvas never gets it (its bar went with the drop).
-                hs.timer.doAfter(0.2, function() if press == p then refocus(p) end end)
+                if refocusTimer then refocusTimer:stop() end
+                refocusTimer = hs.timer.doAfter(0.2, function()
+                    refocusTimer = nil
+                    if press == p then refocus(p) end
+                end)
             end
             hs.timer.doAfter(0, function()
                 tap:stop()
@@ -269,7 +282,8 @@ function M.update(onlyLeaf)
         if cfg and not blocked and S.tilingEnabled and info and info.shown == id and info.key
            and info.rect and not S.untiled[info.key] and not S.autoFloat[id]
            and not S.fullscreen[id] and not S.offSpace[id] and not Spaces.isHidden(id)
-           and not Scroll.isAway(id) and not Tree.behindMaximized(id) then
+           and not Scroll.isAway(id) and not Tree.behindMaximized(id)
+           and not (Tree.filling and Tree.filling(id)) then
             -- Maximized and pseudotiled content reserve space in their own
             -- frame; keep the strip attached to that same frame.
             local rect = leaf.fullRect or leaf.pseudoRect or info.rect
@@ -443,7 +457,7 @@ function M.stop()
                 -- here, including maximized/pseudotiled frames, before it runs.
                 if amount > 0 and rect and win and S.tilingEnabled and not S.untiled[key]
                    and not S.autoFloat[id] and not S.fullscreen[id] and not S.offSpace[id]
-                   and not Spaces.isHidden(id) then
+                   and not Spaces.isHidden(id) and not Scroll.isAway(id) then
                     leaf.windowRect = rect
                     Util.setFrame(win, rect, 0)
                 end

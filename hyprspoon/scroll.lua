@@ -255,8 +255,9 @@ end
 -- height), `n` of them in `areaH` with gaps. Windows with no share of
 -- their own get at least `least` each; with none, the rest scale to fill.
 function M.heights(own, n, areaH, gap, least)
-    least = least or 1
-    local avail = areaH - (n - 1) * gap
+    if n <= 0 then return {} end
+    local avail = math.max(n, areaH - (n - 1) * gap)
+    least = math.min(least or 1, math.max(1, math.floor(avail / n)))
     local hs, autos, used = {}, {}, 0
     for i = 1, n do
         if own[i] then
@@ -282,7 +283,7 @@ function M.heights(own, n, areaH, gap, least)
         for _, i in ipairs(autos) do hs[i] = each end
         used = used + each * #autos
     end
-    hs[n] = hs[n] + (avail - used)
+    hs[n] = math.max(1, hs[n] + (avail - used))
     return hs
 end
 
@@ -836,6 +837,7 @@ end
 -- that way, at the width it had before it joined, else as wide as the one
 -- it left (consume-or-expel-window-left/right).
 function M.consumeOrExpel(win, direction)
+    if not STEP[direction] then return false end
     local key, cols, ci, wi, leaf = context(win)
     if not key then return false end
     local col = cols[ci]
@@ -954,6 +956,7 @@ function M.cycleWidth(win, back)
     if not key then return end
     local current = shareNow(key, leaf) or cols[ci].width or opt("width")
     local presets = opt("presets")
+    if type(presets) ~= "table" or #presets == 0 then return end
     local pick = back and presets[#presets] or presets[1]
     if back then
         for i = #presets, 1, -1 do
@@ -1110,14 +1113,15 @@ end
 -- width, positive to the left) since it started at view offset `x0`.
 function M.panTo(key, x0, dx)
     local view = views[key]
-    if not view or not view.pan then return end
-    M.panAt(key, x0 + dx * view.viewW / opt("swipeSpan"))
+    local span = opt("swipeSpan")
+    if not view or not view.pan or not span or span <= 0 then return end
+    M.panAt(key, x0 + dx * view.viewW / span)
 end
 
 -- Holds the view of workspace `key`, panning, at offset `x`.
 function M.panAt(key, x)
     local view = views[key]
-    if not view or not view.pan then return end
+    if not view or not view.pan or #view.starts == 0 then return end
     local total = view.starts[#view.starts] + view.widths[#view.widths]
     view.pan = math.floor(math.max(-view.viewW / 2, math.min(x, total - view.viewW / 2)) + 0.5)
     -- At most one layout a frame: each step moves every window in view.
@@ -1169,6 +1173,7 @@ end
 -- until when a wheel step waits before the next.
 local wheelPan = nil
 local wheelReady = 0
+local wheelTimer = nil
 
 local function wheelMods()
     local mods = Layouts.configured("scrolling") and opt("wheel")
@@ -1185,7 +1190,16 @@ local function modsHeld(flags, mods)
     return true
 end
 
+local function cancelWheelPan()
+    local p = wheelPan
+    wheelPan = nil
+    if p and views[p.key] then views[p.key].pan = nil end
+    if panTimer then panTimer:stop() panTimer = nil end
+    if wheelTimer then wheelTimer:stop() wheelTimer = nil end
+end
+
 local function wheelSettle()
+    wheelTimer = nil
     local p = wheelPan
     wheelPan = nil
     if not p then return end
@@ -1195,7 +1209,9 @@ local function wheelSettle()
         local dt = last.t - s[i].t
         if dt >= 0.03 or i == 1 then
             local view = views[p.key]
-            if dt > 0 and view then v = (last.x - s[i].x) / dt / view.viewW end
+            if dt > 0 and view and view.viewW and view.viewW > 0 then
+                v = (last.x - s[i].x) / dt / view.viewW
+            end
             break
         end
     end
@@ -1207,19 +1223,28 @@ end
 -- and settles on one when the fingers lift; a mouse wheel's step focuses
 -- the column beside. True to keep the event from the app beneath.
 function M.onScrollWheel(e)
+    if S.overviewOpen or S.dragState then
+        if wheelPan then cancelWheelPan() end
+        return false
+    end
     local P = hs.eventtap.event.properties
     local phase = e:getProperty(P.scrollWheelEventScrollPhase)
     local momentum = e:getProperty(P.scrollWheelEventMomentumPhase)
+    if not S.tilingEnabled then
+        if wheelPan then cancelWheelPan() end
+        return false
+    end
     if wheelPan then
         -- Coasting after the fingers lift: the settle has it.
         if momentum ~= 0 then return true end
         if phase == 4 or phase == 8 then
-            hs.timer.doAfter(0, wheelSettle)
+            if wheelTimer then wheelTimer:stop() end
+            wheelTimer = hs.timer.doAfter(0, wheelSettle)
             return true
         end
     end
     local mods = wheelMods()
-    if not mods or not S.tilingEnabled then return false end
+    if not mods then return false end
     if not wheelPan and not modsHeld(e:getFlags(), mods) then return false end
     local dy = e:getProperty(P.scrollWheelEventPointDeltaAxis1)
     local dx = e:getProperty(P.scrollWheelEventPointDeltaAxis2)
@@ -1227,7 +1252,8 @@ function M.onScrollWheel(e)
     if e:getProperty(P.scrollWheelEventIsContinuous) ~= 1 then
         -- A mouse wheel: a column a step.
         local now = hs.timer.secondsSinceEpoch()
-        local key = Tree.keyForScreen(hs.mouse.getCurrentScreen())
+        local screen = hs.mouse.getCurrentScreen()
+        local key = screen and Tree.keyForScreen(screen)
         local view = key and M.enabled(key) and views[key]
         if not view or not view.cols then return false end
         -- Down a step is right, as niri's, natural scrolling or not (field
@@ -1237,7 +1263,13 @@ function M.onScrollWheel(e)
             wheelReady = now + 0.12
             local ci = view.focusID and locate(view.cols, view.focusID)
             local target = ci and view.cols[ci + (d > 0 and -1 or 1)]
-            if target then hs.timer.doAfter(0, function() focusLeaf(key, activeIn(target)) end) end
+            if target then
+                if wheelTimer then wheelTimer:stop() end
+                wheelTimer = hs.timer.doAfter(0, function()
+                    wheelTimer = nil
+                    focusLeaf(key, activeIn(target))
+                end)
+            end
         end
         return true
     end
@@ -1277,10 +1309,30 @@ function M.bringBack(onlyKey)
     if not onlyKey then views = {} else views[onlyKey] = nil end
 end
 
--- Cancels pending parks (reload, shutdown). Windows away stay where they
--- are; the layout after a reload carries on from there.
+function M.forget(id)
+    local a = id and away[id]
+    if a then
+        cancelPark(a)
+        away[id] = nil
+    end
+end
+
+function M.forgetWorkspace(key)
+    if not key then return end
+    views[key] = nil
+    for id, a in pairs(away) do
+        if a.key == key then
+            cancelPark(a)
+            away[id] = nil
+        end
+    end
+end
+
+-- Cancels pending parks and pans (reload, shutdown). Windows away stay
+-- where they are; the layout after a reload carries on from there.
 function M.stop()
-    if wheelPan then wheelPan = nil end
+    cancelWheelPan()
+    for _, view in pairs(views) do view.pan = nil end
     for _, a in pairs(away) do cancelPark(a) end
 end
 

@@ -64,6 +64,7 @@ local function panel(uuid, list, size, position)
     local origin = position(w, h)
     local canvas = hs.canvas.new({ x = origin.x, y = origin.y, w = w, h = h })
     canvas:level(hs.canvas.windowLevels.status)
+    canvas:behavior({ "canJoinAllSpaces", "stationary" })
     canvas:clickActivating(false)
     canvas:appendElements({
         type = "rectangle", action = "strokeAndFill",
@@ -132,12 +133,14 @@ local function drawBadges()
             if not cfg.all then
                 list = hs.fnutils.filter(list, function(entry) return entry.display == uuid end)
             end
-            local frame = screen:frame()
-            local corner = CORNERS[cfg.corner] or CORNERS.bottomRight
-            badges[uuid] = panel(uuid, list, cfg.size, function(w, h)
-                return corner(frame, w, h, cfg.margin)
-            end)
-            badges[uuid]:show()
+            if #list > 0 then
+                local frame = screen:frame()
+                local corner = CORNERS[cfg.corner] or CORNERS.bottomRight
+                badges[uuid] = panel(uuid, list, cfg.size, function(w, h)
+                    return corner(frame, w, h, cfg.margin)
+                end)
+                badges[uuid]:show()
+            end
         end
     end
     -- Displays that have gone.

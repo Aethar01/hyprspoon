@@ -10,10 +10,16 @@
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <libproc.h>
+#include <math.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "luacall.h"
+
+static double monotonicNow(void) {
+    return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) * 1e-9;
+}
 
 typedef struct {
     uint32_t id;
@@ -29,7 +35,7 @@ static int entryCount = 0;
 static CGRect unmanaged[MAX_UNMANAGED]; // pointer here focuses nothing (PiP)
 static int unmanagedCount = 0;
 static bool haveSnapshot = false;
-static CFAbsoluteTime expires = 0;
+static double expires = 0;
 
 static uint32_t last = 0; // the window last reported under the pointer
 static int64_t warpMarker = 0;
@@ -75,7 +81,7 @@ static void report(CGPoint p) {
 static CGEventRef onEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context) {
     (void)proxy;
     (void)context;
-    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+    if (type == kCGEventTapDisabledByTimeout) {
         if (tap) CGEventTapEnable(tap, true);
         return event;
     }
@@ -85,7 +91,7 @@ static CGEventRef onEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
         return event;
     }
     CGPoint p = CGEventGetLocation(event);
-    if (!haveSnapshot || CFAbsoluteTimeGetCurrent() > expires) {
+    if (!haveSnapshot || monotonicNow() > expires) {
         haveSnapshot = false;
         report(p);
         // Lua usually hands a snapshot over while handling it.
@@ -134,6 +140,13 @@ static int l_start(lua_State *L) {
         return 1;
     }
     tapSource = CFMachPortCreateRunLoopSource(NULL, tap, 0);
+    if (!tapSource) {
+        CFMachPortInvalidate(tap);
+        CFRelease(tap);
+        tap = NULL;
+        lua_pushboolean(L, false);
+        return 1;
+    }
     CFRunLoopAddSource(CFRunLoopGetMain(), tapSource, kCFRunLoopCommonModes);
     CGEventTapEnable(tap, true);
     luaCallbackSet(&onMove, L, 1);
@@ -160,10 +173,15 @@ static CGRect readRect(lua_State *L, int index) {
 // nothing is focused, and how many seconds the snapshot holds.
 static int l_snapshot(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
+    haveSnapshot = false;
     entryCount = 0;
     lua_Integer n = luaL_len(L, 1);
     for (lua_Integer i = 1; i <= n && entryCount < MAX_ENTRIES; i++) {
         lua_rawgeti(L, 1, i);
+        if (!lua_istable(L, -1)) {
+            lua_pop(L, 1);
+            continue;
+        }
         Entry *e = &entries[entryCount++];
         lua_getfield(L, -1, "id");
         e->id = (uint32_t)lua_tointeger(L, -1);
@@ -180,11 +198,13 @@ static int l_snapshot(lua_State *L) {
         n = luaL_len(L, 2);
         for (lua_Integer i = 1; i <= n && unmanagedCount < MAX_UNMANAGED; i++) {
             lua_rawgeti(L, 2, i);
-            unmanaged[unmanagedCount++] = readRect(L, lua_gettop(L));
+            if (lua_istable(L, -1)) unmanaged[unmanagedCount++] = readRect(L, lua_gettop(L));
             lua_pop(L, 1);
         }
     }
-    expires = CFAbsoluteTimeGetCurrent() + luaL_optnumber(L, 3, 1);
+    double ttl = luaL_optnumber(L, 3, 1);
+    if (!isfinite(ttl) || ttl < 0) ttl = 0;
+    expires = monotonicNow() + ttl;
     haveSnapshot = true;
     return 0;
 }
@@ -215,12 +235,9 @@ static int number(CFDictionaryRef info, CFStringRef key, CFNumberType type, void
 // By path: its window's owner name is localized. Not UserNotificationCenter,
 // whose dialogs are real.
 static bool isNotificationCenter(pid_t pid) {
-    static pid_t known = 0;
-    if (pid == known) return true;
+    if (pid <= 0) return false;
     char path[PROC_PIDPATHINFO_MAXSIZE];
-    if (proc_pidpath(pid, path, sizeof path) <= 0 || !strstr(path, "/NotificationCenter.app/")) return false;
-    known = pid;
-    return true;
+    return proc_pidpath(pid, path, sizeof path) > 0 && strstr(path, "/NotificationCenter.app/") != NULL;
 }
 
 // Whether `bounds` spans the whole display under `p`.

@@ -51,6 +51,7 @@ static inline void luaCallbackClear(LuaCallback *cb) {
 // Pushes the callback's function; false (nothing pushed) if there is none.
 static inline bool luaCallbackPush(LuaCallback *cb) {
     if (!cb->L || cb->ref == LUA_NOREF) return false;
+    if (!lua_checkstack(cb->L, 8)) return false;
     lua_rawgeti(cb->L, LUA_REGISTRYINDEX, cb->ref);
     return true;
 }
@@ -65,13 +66,15 @@ static inline int luaCallbackTraceback(lua_State *L) {
 static inline void luaCallbackCall(LuaCallback *cb, int nargs) {
     lua_State *L = cb->L;
     int base = lua_gettop(L) - nargs;
+    lua_checkstack(L, 4);
     lua_pushcfunction(L, luaCallbackTraceback);
     lua_insert(L, base);
     if (lua_pcall(L, nargs, 0, base) != LUA_OK) {
         lua_getglobal(L, "print");
-        lua_pushvalue(L, -2);
-        lua_pcall(L, 1, 0, 0);
-        lua_pop(L, 1);
+        if (lua_isfunction(L, -1)) {
+            lua_pushvalue(L, -2);
+            lua_pcall(L, 1, 0, 0);
+        }
     }
-    lua_remove(L, base);
+    lua_settop(L, base - 1);
 }

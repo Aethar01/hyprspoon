@@ -102,7 +102,7 @@ function M.cycle(win, leaf, key, delta)
 end
 
 local function detach(leaf, list)
-    local shown = list[1]
+    local shown = preferred(leaf, list[1])
     for _, id in ipairs(list) do
         if id == leaf.windowID then shown = id break end
     end
@@ -115,7 +115,7 @@ end
 local function insert(key, beside, leaf, side)
     S.trees[key] = select(1, Scroll.insertBeside(key, S.trees[key], beside, leaf.windowID, side or "right"))
     local _, target = Tree.ancestors(S.trees[key], leaf.windowID)
-    target.members, target.kind, target.tabs = leaf.members, leaf.kind, leaf.tabs
+    if target then target.members, target.kind, target.tabs = leaf.members, leaf.kind, leaf.tabs end
 end
 
 -- The bar's order is the members' order, a member's native tabs together.
@@ -176,7 +176,7 @@ function M.moveBy(win, leaf, key, delta)
 end
 
 function M.moveOut(win, leaf, key)
-    if not key then return end
+    if not key or S.untiled[key] then return end
     local list = Tree.tabsOf(leaf, win:id()) or { win:id() }
     if #list == #leaf.members then return end
     local copy = {}
@@ -223,7 +223,7 @@ end
 function M.toggle(win)
     if not win then return end
     local _, leaf, key = Tree.findByID(win:id())
-    if not leaf then return end
+    if not leaf or not key or S.untiled[key] then return end
     if leaf.kind ~= "group" then
         if leaf.kind == "native" then
             local tabs = {}
@@ -236,14 +236,16 @@ function M.toggle(win)
     else
         local lists = units(leaf)
         local shown = leaf.windowID
+        local picks = {}
+        for i, list in ipairs(lists) do picks[i] = preferred(leaf, list[1]) end
         leaf.members, leaf.kind, leaf.tabs, leaf.groupInset = nil, nil, nil, nil
-        for _, list in ipairs(lists) do
+        for i, list in ipairs(lists) do
             local holds = false
             for _, id in ipairs(list) do if id == shown then holds = true end end
             if holds then
                 if #list > 1 then leaf.members, leaf.kind = list, "native" end
             else
-                local out = Tree.leaf(list[1])
+                local out = Tree.leaf(picks[i])
                 if #list > 1 then out.members, out.kind = list, "native" end
                 insert(key, shown, out)
                 local other = Util.windowFor(out.windowID)
@@ -263,8 +265,8 @@ function M.join(win, other, slot)
     if not win or not other then return false end
     local target, toKey = Tree.setOf(other:id())
     local _, source, key = Tree.findByID(win:id())
-    if not source or not target or target.kind ~= "group" or source == target
-       or not toKey or S.untiled[toKey] then return false end
+    if not source or not key or S.untiled[key] or not target or target.kind ~= "group"
+       or source == target or not toKey or S.untiled[toKey] then return false end
     -- Groups move one selected unit; native sets move as a unit.
     local list = Tree.tabsOf(source, win:id()) or { win:id() }
     local copy = {}

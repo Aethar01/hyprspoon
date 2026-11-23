@@ -38,7 +38,8 @@ local function appName(win)
 end
 
 local function rememberFloat(win)
-    local id = win:id()
+    local id = win and win:id()
+    if not id then return end
     savedFloats[tostring(id)] = { float = S.autoFloat[id] and true or false, app = appName(win) }
     saveFloats()
 end
@@ -77,6 +78,7 @@ local function placeFloat(win, rule, centre)
     if not screen then return end
     local sf = screen:frame()
     local f = win:frame()
+    if not f then return end
     local x, y, w, h = f.x, f.y, f.w, f.h
     local function scale(v, whole) return v > 0 and v <= 1 and v * whole or v end
     if type(size) == "table" then
@@ -108,7 +110,8 @@ local function placeFloat(win, rule, centre)
 end
 
 local function shouldFloat(win)
-    local id = win:id()
+    local id = win and win:id()
+    if not id then return false end
     if S.autoFloat[id] ~= nil then return S.autoFloat[id] end
 
     local saved = savedFloats[tostring(id)]

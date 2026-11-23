@@ -34,7 +34,8 @@ local native = false
 local kept = {}
 
 -- The key the picture of the workspace beneath a scratchpad is kept under.
-local STILL = -1
+-- Far below any negative display-local workspace ID (-1, -2, ...).
+local STILL = -100000
 
 -- The direction pictures come in from, per configured edge or axis
 -- (1 along an axis: the next workspace comes from the right, or below).
@@ -75,7 +76,7 @@ end
 
 -- The slide over `screen`'s usable area, moving as animations.workspaces says.
 local function slide(screen, t)
-    local cfg = S.cfg.slide
+    local cfg = type(S.cfg.slide) == "table" and S.cfg.slide or {}
     local mode = screen:currentMode()
     t.frame = rect(screen:frame())
     t.scale = mode and mode.scale or 1
@@ -96,7 +97,7 @@ end
 -- before the windows move: it waits for the capture. True if a slide
 -- covers the switch (this one, or the swipe's that just showed it).
 function M.switch(screen, from, to, outIds, inIds, dir)
-    if not native or not screen then return false end
+    if not native or not S.cfg.slide or not screen then return false end
     if hs.timer.secondsSinceEpoch() < panShownUntil then
         panShownUntil = 0
         return true
@@ -122,7 +123,7 @@ end
 -- `screen` (with `baseIds`). Call before its windows move. True if a
 -- slide covers it.
 function M.showScratchpad(screen, n, ids, baseIds)
-    if not native or not screen or not current(n, ids, screen) then return false end
+    if not native or not S.cfg.slide or not screen or not current(n, ids, screen) then return false end
     local dx, dy = toward(S.cfg.slide.scratchpads, 1)
     if not dx then return false end
     local still = take(nil, baseIds, screen, STILL)
@@ -133,7 +134,7 @@ end
 -- Scratchpad `n` (with `ids`) goes back off `screen`, over the workspace
 -- beneath. Call before its windows move. True if a slide covers it.
 function M.hideScratchpad(screen, n, ids)
-    if not native or not screen then return false end
+    if not native or not S.cfg.slide or not screen then return false end
     local dx, dy = toward(S.cfg.slide.scratchpads, -1)
     if not dx or not take(n, ids, screen) then return false end
     native.run(slide(screen, { out = n, dx = dx, dy = dy }))
@@ -142,7 +143,7 @@ end
 
 -- Whether swipes can drag a slide.
 function M.canPan()
-    return native and toward(S.cfg.slide.workspaces, 1) ~= nil
+    return native and S.cfg.slide and toward(S.cfg.slide.workspaces, 1) ~= nil or false
 end
 
 -- A swipe on `screen` starts from workspace `from` (showing `outIds`)
@@ -202,10 +203,10 @@ end
 -- or can't, for the windows to move then. A retile still on show is
 -- carried on from where its tiles are drawn.
 function M.retile(screen, tiles, done)
+    local mod = native or Util.native("slide")
+    if not mod or not mod.retile or not mod.onReady or not screen or not tiles or #tiles == 0 then return false end
     -- Over a scratchpad, the workspace it covers is the backdrop.
     local beneath = require("hyprspoon.spaces").beneath(screen:getUUID())
-    local mod = native or Util.native("slide")
-    if not mod or not mod.retile or not mod.onReady or not screen or #tiles == 0 then return false end
     if readyHooked ~= mod then
         mod.onReady(ready)
         readyHooked = mod
@@ -298,9 +299,12 @@ function M.home(frame, done)
 end
 
 -- A new drag begins: a picture still going home is left to it.
+-- Returns true if an active glide-home timer was cancelled.
 function M.cancelHome()
-    if homeTimer then homeTimer:stop() end
+    if not homeTimer then return false end
+    homeTimer:stop()
     homeTimer = nil
+    return true
 end
 
 -- Workspace `n` is gone: its picture with it.
@@ -319,17 +323,39 @@ function M.reset()
     for _, screen in ipairs(hs.screen.allScreens()) do native.wallpaper(rect(screen:fullFrame())) end
 end
 
+local changeHooked = nil
+
 function M.start()
-    if not S.cfg.slide then return end
-    native = Util.native("slide") or false
-    if native and native.onChange then
-        native.onChange(function(on) require("hyprspoon.groupbar").suspend("slide", on) end)
+    local wantRetile = S.cfg.experimental and S.cfg.experimental.captureRetile
+    local mod = (S.cfg.slide or wantRetile) and Util.native("slide") or false
+    if mod and mod.onChange then
+        mod.onChange(function(on) require("hyprspoon.groupbar").suspend("slide", on) end)
+        changeHooked = mod
     end
+    if not S.cfg.slide then return end
+    native = mod
     M.reset()
 end
 
 function M.stop()
-    if native and native.onChange then native.onChange(nil) end
+    M.cancelHome()
+    pending = {}
+    pan = nil
+    panShownUntil = 0
+    kept = {}
+    local mod = native or changeHooked or readyHooked
+    if mod then
+        if mod.stop then
+            mod.stop()
+        else
+            if mod.onChange then mod.onChange(nil) end
+            if mod.onReady then mod.onReady(nil) end
+            if mod.finish then mod.finish(0, 0) end
+        end
+    end
+    native = false
+    changeHooked = nil
+    readyHooked = nil
     require("hyprspoon.groupbar").suspend("slide", false)
 end
 

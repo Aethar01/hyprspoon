@@ -99,8 +99,25 @@ enum { ORDER_OUT = 0, ORDER_ABOVE = 1 };
 
 // The wallpaper is taken again once a slide is over if it's older than
 // this (seconds; 0 never): macOS can shuffle a folder of them, or change
-// one through the day, and says nothing. Set by run() and begin().
-static double wallpaperMaxAge = 0;
+// one through the day, and says nothing. Set by run(), begin(), retile().
+static _Atomic double wallpaperMaxAge = 0;
+
+static bool validRect(CGRect r) {
+    return isfinite(r.origin.x) && isfinite(r.origin.y)
+        && isfinite(r.size.width) && isfinite(r.size.height)
+        && r.size.width > 0 && r.size.height > 0;
+}
+
+static void cancelDrain(dispatch_source_t *source) {
+    if (!*source) return;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_source_set_cancel_handler(*source, ^{ dispatch_semaphore_signal(done); });
+    dispatch_source_cancel(*source);
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    dispatch_release(done);
+    dispatch_release(*source);
+    *source = NULL;
+}
 
 // Everything below belongs to `queue`, with its own connection (cid).
 static dispatch_queue_t queue = NULL;
@@ -199,24 +216,33 @@ static CGRect displaysBounds(void) {
     return all;
 }
 
-// Puts `wids` in their on-screen order, front first: a capture stacks them
-// in the order it's given, the first on top. Ones not on screen go last.
-static void sortByStacking(uint32_t *wids, int count) {
+// Keeps only the `wids` currently on screen, in their stacking order (front
+// first: a capture stacks them in the order it's given, the first on top).
+// Off-screen windows (another Space, native full screen, minimized, hidden)
+// would otherwise expand the capture bounds and draw stale or solid-black
+// backing behind the visible windows.
+static int onScreenByStacking(uint32_t *wids, int count) {
     CFArrayRef list = CGWindowListCreate(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
-    if (!list) return;
+    if (!list) return count;
     CFIndex n = CFArrayGetCount(list);
     CFIndex rank[count];
+    int kept = 0;
     for (int i = 0; i < count; i++) {
-        rank[i] = n + i;
+        CFIndex r = -1;
         for (CFIndex j = 0; j < n; j++) {
             if ((uint32_t)(uintptr_t)CFArrayGetValueAtIndex(list, j) == wids[i]) {
-                rank[i] = j;
+                r = j;
                 break;
             }
         }
+        if (r >= 0) {
+            wids[kept] = wids[i];
+            rank[kept] = r;
+            kept++;
+        }
     }
     CFRelease(list);
-    for (int i = 1; i < count; i++) {
+    for (int i = 1; i < kept; i++) {
         uint32_t wid = wids[i];
         CFIndex r = rank[i];
         int j = i - 1;
@@ -227,13 +253,18 @@ static void sortByStacking(uint32_t *wids, int count) {
         wids[j + 1] = wid;
         rank[j + 1] = r;
     }
+    return kept;
 }
 
 // One capture of `wids` together on `connection`, and where it covers
-// (retained; NULL if there's nothing to see). With `stacked`, put in their
-// on-screen order first; windows that don't overlap (tiles) needn't be.
+// (retained; NULL if there's nothing to see). With `stacked`, keep only
+// on-screen windows and put them in their stacking order first; windows
+// that don't overlap (tiles) needn't be.
 static CGImageRef captureOn(int connection, uint32_t *wids, int count, CGRect *bounds, bool stacked) {
-    if (stacked) sortByStacking(wids, count);
+    if (stacked) {
+        count = onScreenByStacking(wids, count);
+        if (count == 0) return NULL;
+    }
     CGRect screen = displaysBounds(), area = CGRectNull;
     for (int i = 0; i < count; i++) {
         CGRect b;
@@ -297,17 +328,18 @@ static Shot *wallpaperFor(CGRect display) {
 
 // Takes the wallpaper of the display at `display` (its full bounds).
 static Shot *takeWallpaper(CGRect display) {
+    if (!validRect(display)) return NULL;
     Shot *p = wallpaperFor(display);
+    uint32_t wids[2];
+    int count = desktopWindows(display, wids, 2);
+    CGRect bounds;
+    CGImageRef image = count ? capture(wids, count, &bounds) : NULL;
+    if (!image) return (p && p->image) ? p : NULL;
     if (!p) {
         if (wallpaperCount == MAX_WALLPAPERS) dropPicture(&wallpapers[--wallpaperCount]);
         p = &wallpapers[wallpaperCount++];
         memset(p, 0, sizeof(*p));
     }
-    uint32_t wids[2];
-    int count = desktopWindows(display, wids, 2);
-    CGRect bounds;
-    CGImageRef image = count ? capture(wids, count, &bounds) : NULL;
-    if (!image) return p->image ? p : NULL;
     if (p->image) CGImageRelease(p->image);
     p->image = image;
     p->bounds = display;
@@ -421,6 +453,10 @@ static uint32_t newOverlay(int connection, CAContext **contextOut, CALayer **lay
     if (region) CFRelease(region);
     if (opaque) CFRelease(opaque);
     if (!wid) {
+        beginChanges();
+        context.layer = nil;
+        commitChanges();
+        if ([context respondsToSelector:@selector(invalidate)]) [context performSelector:@selector(invalidate)];
         [root release];
         [context release];
         return 0;
@@ -562,9 +598,10 @@ static void finish(void *unused) {
     root.opacity = 1;
     commitChanges();
     // A stale wallpaper is taken again now, between slides.
-    if (wallpaperMaxAge <= 0) return;
+    double maxAge = atomic_load(&wallpaperMaxAge);
+    if (maxAge <= 0) return;
     for (int i = 0; i < wallpaperCount; i++) {
-        if (CFAbsoluteTimeGetCurrent() - wallpapers[i].taken > wallpaperMaxAge) takeWallpaper(wallpapers[i].bounds);
+        if (CFAbsoluteTimeGetCurrent() - wallpapers[i].taken > maxAge) takeWallpaper(wallpapers[i].bounds);
     }
 }
 
@@ -723,14 +760,17 @@ static double popScale = 0.8, retileHold = 0.05;
 static double retileEnds = 0; // when it's taken down (CFAbsoluteTime)
 static int refreshes = 0;
 static dispatch_source_t refresher = NULL;
+static dispatch_source_t popInTimer = NULL;
+static unsigned popGeneration = 0;
 
 // Takes the retile down no sooner than `seconds` from now.
 static void endNoSooner(double seconds) {
+    if (fadingOut) return;
     double at = CFAbsoluteTimeGetCurrent() + seconds;
     if (at <= retileEnds) return;
     retileEnds = at;
     settling = generation;
-    dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(seconds * NSEC_PER_SEC)),
+    dispatch_source_set_timer(settled, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(fmax(0, seconds) * NSEC_PER_SEC)),
         DISPATCH_TIME_FOREVER, 0);
 }
 
@@ -864,7 +904,8 @@ static CALayer *edgeExtended(CGImageRef image, CGRect area, CGRect src, CGFloat 
     CGFloat w = s.w, h = s.h;
     CGFloat pw = src.size.width, ph = src.size.height, far = 1e4;
     // Columns and rows clear of the rounded corners.
-    CGFloat ix = fmin(ceil(radius * sx) + 1, floor(w / 3)), iy = fmin(ceil(radius * sy) + 1, floor(h / 3));
+    CGFloat rad = fmax(0, radius);
+    CGFloat ix = fmin(ceil(rad * sx) + 1, floor(w / 3)), iy = fmin(ceil(rad * sy) + 1, floor(h / 3));
     // The bands: clear of the corners where there's a band at all, and no
     // more than half the window.
     CGFloat bx = band > 0 ? fmin(fmax(band, ix / sx + 1), pw / 2) : 0;
@@ -1078,8 +1119,11 @@ static double showPicture(int i, CGImageRef image, CGRect area, CGRect b) {
             }
         }
     } else {
-        NSArray *old = box.sublayers;
-        for (NSUInteger k = 0; k + 1 < old.count; k++) [old[k] removeFromSuperlayer];
+        NSArray *old = [[box.sublayers copy] autorelease];
+        for (NSUInteger k = 0; k + 1 < old.count; k++) {
+            [(CALayer *)old[k] removeAllAnimations];
+            [(CALayer *)old[k] removeFromSuperlayer];
+        }
         [box addSublayer:pic];
         took = fadeIn(pic, retileFade);
     }
@@ -1092,8 +1136,15 @@ static double showPicture(int i, CGImageRef image, CGRect area, CGRect b) {
 // at a time; a refresh that finds one running comes again.
 static dispatch_queue_t captureQueue = NULL;
 static int captureCid = 0;
+static dispatch_source_t captureDrain = NULL;
+static mach_port_t captureDrainPort = MACH_PORT_NULL;
 static bool capturing = false; // belongs to `queue`
 static atomic_bool stopping = false;
+
+static void drainCaptureEvents(void *unused) {
+    (void)unused;
+    drainConnection(captureCid, captureDrainPort);
+}
 
 typedef struct {
     int count;
@@ -1121,7 +1172,10 @@ static void showCaptured(const Wanted *w, CGImageRef image, CGRect area) {
             // app's new frame shows, whatever size it has got to.
             CALayer *pic = edgeExtended(image, area, b, shownTiles[i].radius, mirrorBand);
             if (!pic) continue;
-            for (CALayer *old in [[boxes[i].sublayers copy] autorelease]) [old removeFromSuperlayer];
+            for (CALayer *old in [[boxes[i].sublayers copy] autorelease]) {
+                [old removeAllAnimations];
+                [old removeFromSuperlayer];
+            }
             [boxes[i] addSublayer:pic];
             continue;
         }
@@ -1139,7 +1193,7 @@ static void showCaptured(const Wanted *w, CGImageRef image, CGRect area) {
 // Windows out of sight (parked, not back yet) are left for later. True if
 // a tile with nothing shown is still waiting for its window.
 static bool recapture(bool newOnly, bool every) {
-    if (retileGeneration != generation || shownCount == 0) return false;
+    if (atomic_load(&stopping) || fadingOut || retileGeneration != generation || shownCount == 0) return false;
     bool waiting = false;
     if (capturing) {
         // Its turn comes after: say whether there's a new tile to wait for.
@@ -1176,7 +1230,7 @@ static bool recapture(bool newOnly, bool every) {
         CGImageRef image = atomic_load(&stopping) ? NULL : captureOn(captureCid, wids, w->count, &area, false);
         dispatch_async(queue, ^{
             capturing = false;
-            if (image && w->generation == generation && retileGeneration == generation && shownCount > 0) {
+            if (image && !fadingOut && w->generation == generation && retileGeneration == generation && shownCount > 0) {
                 showCaptured(w, image, area);
             }
             if (image) CGImageRelease(image);
@@ -1194,12 +1248,13 @@ static bool recapture(bool newOnly, bool every) {
 #define POP_IN_TRIES 15
 static int popTries = 0;
 
-static void popInNew(void *context) {
-    if ((unsigned)(uintptr_t)context != generation) return;
+static void popInNew(void *unused) {
+    (void)unused;
+    if (atomic_load(&stopping) || fadingOut || popGeneration != generation) return;
     if (recapture(true, false) && ++popTries < POP_IN_TRIES) {
         endNoSooner(POP_IN_AGAIN + 0.1 + retileHold);
-        dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(POP_IN_AGAIN * NSEC_PER_SEC)), queue,
-            context, popInNew);
+        dispatch_source_set_timer(popInTimer, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(POP_IN_AGAIN * NSEC_PER_SEC)),
+            DISPATCH_TIME_FOREVER, 0);
     }
 }
 
@@ -1210,7 +1265,7 @@ static void popInNew(void *context) {
 
 static void refresh(void *unused) {
     (void)unused;
-    if (retileGeneration != generation || shownCount == 0 || retileRefresh == REFRESH_OFF) return;
+    if (atomic_load(&stopping) || fadingOut || retileGeneration != generation || shownCount == 0 || retileRefresh == REFRESH_OFF) return;
     if (retileRefresh == REFRESH_LIVE) {
         if (CFAbsoluteTimeGetCurrent() >= glideEnds) return;
         recapture(false, true);
@@ -1374,6 +1429,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
             CGRect was = box.frame;
             CGRect ringWas = ring ? ring.frame : CGRectNull;
             if (ring && !(t->ring && t->width > 0)) {
+                [ring removeAllAnimations];
                 [ring removeFromSuperlayer];
                 ring = nil;
             } else if (!ring && t->ring && t->width > 0) {
@@ -1437,7 +1493,9 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     // Tiles gone from the display since (closed, moved away).
     for (int j = 0; j < shownCount && carry; j++) {
         if (used[j]) continue;
+        [boxes[j] removeAllAnimations];
         [boxes[j] removeFromSuperlayer];
+        [rings[j] removeAllAnimations];
         [rings[j] removeFromSuperlayer];
     }
     commitChanges();
@@ -1455,7 +1513,8 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     orderWindow(true);
     glideEnds = fmax(glideEnds, CFAbsoluteTimeGetCurrent() + took);
     endNoSooner((refresh == REFRESH_ONCE ? fmax(took, REFRESH_AFTER + 0.1) : took) + hold);
-    dispatch_async_f(queue, (void *)(uintptr_t)generation, popInNew);
+    popGeneration = generation;
+    dispatch_source_set_timer(popInTimer, DISPATCH_TIME_NOW, DISPATCH_TIME_FOREVER, 0);
     if (refresh != REFRESH_OFF) {
         double after = refresh == REFRESH_LIVE ? LIVE_START : REFRESH_AFTER;
         dispatch_source_set_timer(refresher, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(after * NSEC_PER_SEC)),
@@ -1614,6 +1673,8 @@ static void clearLift(void) {
     }
     commitChanges();
     liftBox = nil;
+    liftShown = 0;
+    liftGoing = 0;
     orderLift(false);
 }
 
@@ -1709,12 +1770,15 @@ static void liftBegin(unsigned serial, uint32_t target, CGRect frame, LiftClaim 
 
 // Lifter.move (lift.h): only the latest of a burst is drawn. Any thread.
 static void liftMove(unsigned serial, CGRect frame) {
-    if (!liftQueue) return;
+    if (!validRect(frame)) return;
     os_unfair_lock_lock(&liftLock);
-    liftFrame = frame;
-    liftFrameSerial = serial;
+    dispatch_queue_t q = liftQueue;
+    if (q) {
+        liftFrame = frame;
+        liftFrameSerial = serial;
+        if (!atomic_exchange(&liftMoveQueued, true)) dispatch_async_f(q, NULL, liftMoveNow);
+    }
     os_unfair_lock_unlock(&liftLock);
-    if (!atomic_exchange(&liftMoveQueued, true)) dispatch_async_f(liftQueue, NULL, liftMoveNow);
 }
 
 static const Lifter lifter = { liftBegin, liftMove };
@@ -1886,6 +1950,7 @@ static int l_forget(lua_State *L) {
 // full bounds ahead of its first slide, without waiting.
 static int l_wallpaper(lua_State *L) {
     CGRect display = readRect(L, 1);
+    if (!validRect(display)) return 0;
     dispatch_async(queue, ^{
         if (!wallpaperFor(display)) takeWallpaper(display);
     });
@@ -1896,15 +1961,25 @@ static int l_wallpaper(lua_State *L) {
 // duration =, mass =, stiffness =, damping =), `fallback` for what it leaves out.
 static Motion readMotion(lua_State *L, int index, Motion fallback) {
     Motion m = fallback;
-    if (lua_type(L, index) != LUA_TTABLE) return m;
-    index = lua_absindex(L, index);
-    lua_getfield(L, index, "curve");
-    if (lua_type(L, -1) == LUA_TSTRING) m.ease = strcmp(lua_tostring(L, -1), "ease") == 0;
-    lua_pop(L, 1);
-    m.duration = numberField(L, index, "duration", m.duration);
-    m.mass = numberField(L, index, "mass", m.mass);
-    m.stiffness = numberField(L, index, "stiffness", m.stiffness);
-    m.damping = numberField(L, index, "damping", m.damping);
+    if (lua_type(L, index) == LUA_TTABLE) {
+        index = lua_absindex(L, index);
+        lua_getfield(L, index, "curve");
+        if (lua_type(L, -1) == LUA_TSTRING) m.ease = strcmp(lua_tostring(L, -1), "ease") == 0;
+        lua_pop(L, 1);
+        double v;
+        v = numberField(L, index, "duration", m.duration);
+        if (isfinite(v)) m.duration = v;
+        v = numberField(L, index, "mass", m.mass);
+        if (isfinite(v)) m.mass = v;
+        v = numberField(L, index, "stiffness", m.stiffness);
+        if (isfinite(v)) m.stiffness = v;
+        v = numberField(L, index, "damping", m.damping);
+        if (isfinite(v)) m.damping = v;
+    }
+    m.duration = fmax(0, isfinite(m.duration) ? m.duration : fallback.duration);
+    m.mass = fmax(0.01, isfinite(m.mass) ? m.mass : fallback.mass);
+    m.stiffness = fmax(1, isfinite(m.stiffness) ? m.stiffness : fallback.stiffness);
+    m.damping = fmax(1, isfinite(m.damping) ? m.damping : fallback.damping);
     return m;
 }
 
@@ -1915,16 +1990,19 @@ static Slide readSlide(lua_State *L) {
     lua_getfield(L, 1, "frame");
     s.frame = readRect(L, -1);
     lua_pop(L, 1);
-    s.scale = numberField(L, 1, "scale", 1);
+    double sc = numberField(L, 1, "scale", 1);
+    s.scale = isfinite(sc) && sc > 0 ? sc : 1;
     s.out = (int)numberField(L, 1, "out", 0);
     s.into = (int)numberField(L, 1, "into", 0);
     s.still = (int)numberField(L, 1, "still", 0);
-    s.toward = CGPointMake(numberField(L, 1, "dx", 0), numberField(L, 1, "dy", 0));
+    double dx = numberField(L, 1, "dx", 0), dy = numberField(L, 1, "dy", 0);
+    s.toward = CGPointMake(isfinite(dx) ? dx : 0, isfinite(dy) ? dy : 0);
     lua_getfield(L, 1, "backdrop");
     s.backdrop = lua_toboolean(L, -1);
     lua_pop(L, 1);
     s.motion = readMotion(L, 1, defaultMotion);
-    wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
+    double age = numberField(L, 1, "wallpaperAge", 0);
+    atomic_store(&wallpaperMaxAge, isfinite(age) && age > 0 ? age : 0);
     return s;
 }
 
@@ -1936,7 +2014,7 @@ static Slide readSlide(lua_State *L) {
 // returns, so the windows beneath can move.
 static int l_run(lua_State *L) {
     Slide s = readSlide(L);
-    if (CGRectIsEmpty(s.frame)) return 0;
+    if (!validRect(s.frame)) return 0;
     dispatch_sync(queue, ^{ run(s); });
     return 0;
 }
@@ -1946,7 +2024,7 @@ static int l_run(lua_State *L) {
 static int l_begin(lua_State *L) {
     Slide s = readSlide(L);
     __block bool up = false;
-    if (!CGRectIsEmpty(s.frame)) dispatch_sync(queue, ^{ up = build(s, 0); });
+    if (validRect(s.frame)) dispatch_sync(queue, ^{ up = build(s, 0); });
     lua_pushboolean(L, up);
     return 1;
 }
@@ -1966,7 +2044,9 @@ static void trackNow(void *unused) {
 }
 
 static int l_track(lua_State *L) {
-    atomic_store(&tracked, luaL_checknumber(L, 1));
+    double progress = luaL_checknumber(L, 1);
+    if (!isfinite(progress)) return 0;
+    atomic_store(&tracked, progress);
     if (!atomic_exchange(&trackQueued, true)) dispatch_async_f(queue, NULL, trackNow);
     return 0;
 }
@@ -1975,6 +2055,8 @@ static int l_track(lua_State *L) {
 // 0 back), starting at `velocity` (of the way along per second), and goes.
 static int l_finish(lua_State *L) {
     double to = luaL_checknumber(L, 1), velocity = luaL_optnumber(L, 2, 0);
+    if (!isfinite(to)) to = 0;
+    if (!isfinite(velocity)) velocity = 0;
     dispatch_async(queue, ^{ settle(to, velocity); });
     return 0;
 }
@@ -2004,19 +2086,25 @@ static int l_retile(lua_State *L) {
     CGRect frame = readRect(L, -1);
     lua_pop(L, 1);
     double scale = numberField(L, 1, "scale", 1);
+    if (!isfinite(scale) || scale <= 0) scale = 1;
     lua_getfield(L, 1, "move");
     Motion move = readMotion(L, -1, defaultMotion);
     lua_getfield(L, 1, "fade");
     Motion fade = readMotion(L, -1, move);
     lua_pop(L, 2);
     double hold = numberField(L, 1, "hold", 0.05);
+    if (!isfinite(hold) || hold < 0) hold = 0;
     double pop = numberField(L, 1, "popin", 0.8);
-    double band = fmax(0, numberField(L, 1, "mirror", 32));
+    if (!isfinite(pop)) pop = 0.8;
+    pop = fmin(1, fmax(0.01, pop));
+    double band = numberField(L, 1, "mirror", 32);
+    band = isfinite(band) ? fmax(0, band) : 32;
     lua_getfield(L, 1, "refresh");
     int refresh = lua_type(L, -1) == LUA_TSTRING && strcmp(lua_tostring(L, -1), "live") == 0 ? REFRESH_LIVE
         : lua_toboolean(L, -1) ? REFRESH_ONCE : REFRESH_OFF;
     lua_pop(L, 1);
-    wallpaperMaxAge = numberField(L, 1, "wallpaperAge", 0);
+    double age = numberField(L, 1, "wallpaperAge", 0);
+    atomic_store(&wallpaperMaxAge, isfinite(age) && age > 0 ? age : 0);
     static Tile tiles[MAX_TILES];
     int count = 0;
     lua_getfield(L, 1, "tiles");
@@ -2024,6 +2112,10 @@ static int l_retile(lua_State *L) {
         lua_Integer n = luaL_len(L, -1);
         for (lua_Integer i = 1; i <= n && count < MAX_TILES; i++) {
             lua_rawgeti(L, -1, i);
+            if (lua_type(L, -1) != LUA_TTABLE) {
+                lua_pop(L, 1);
+                continue;
+            }
             uint32_t w = (uint32_t)numberField(L, -1, "wid", 0);
             lua_getfield(L, -1, "appear");
             bool popIn = lua_toboolean(L, -1);
@@ -2039,22 +2131,26 @@ static int l_retile(lua_State *L) {
             lua_getfield(L, -1, "ring");
             if (lua_type(L, -1) == LUA_TTABLE) {
                 t.ring = true;
-                t.width = numberField(L, -1, "width", 0);
-                t.radius = numberField(L, -1, "radius", 0);
-                lua_getfield(L, -1, "color");
-                for (int c = 0; c < 4; c++) {
-                    lua_rawgeti(L, -1, c + 1);
-                    t.color[c] = luaL_optnumber(L, -1, c == 3 ? 1 : 0);
-                    lua_pop(L, 1);
+                double rw = numberField(L, -1, "width", 0);
+                double rr = numberField(L, -1, "radius", 0);
+                t.width = isfinite(rw) ? fmax(0, rw) : 0;
+                t.radius = isfinite(rr) ? fmax(0, rr) : 0;
+                if (lua_getfield(L, -1, "color") == LUA_TTABLE) {
+                    for (int c = 0; c < 4; c++) {
+                        lua_rawgeti(L, -1, c + 1);
+                        double cv = luaL_optnumber(L, -1, c == 3 ? 1 : 0);
+                        t.color[c] = isfinite(cv) ? cv : (c == 3 ? 1 : 0);
+                        lua_pop(L, 1);
+                    }
                 }
                 lua_pop(L, 1);
             }
             lua_pop(L, 2); // the ring and the tile
-            if (w && !CGRectIsEmpty(from) && !CGRectIsEmpty(to)) tiles[count++] = t;
+            if (w && validRect(from) && validRect(to)) tiles[count++] = t;
         }
     }
     lua_pop(L, 1);
-    if (CGRectIsEmpty(frame) || count == 0) return 0;
+    if (!validRect(frame) || count == 0) return 0;
     uint32_t underList[MAX_TILES];
     int underCount = 0;
     lua_getfield(L, 1, "beneath");
@@ -2151,6 +2247,10 @@ static int l_land(lua_State *L) {
 // Returns the seconds that takes; then dragUnpark() and land().
 static int l_home(lua_State *L) {
     CGRect to = readRect(L, 1);
+    if (!validRect(to)) {
+        lua_pushnumber(L, 0);
+        return 1;
+    }
     Motion m = readMotion(L, 2, defaultMotion);
     double took = 0;
     if (m.duration > 0 || !m.ease) took = animate(m, positionKey, @0, @1, 0).duration;
@@ -2163,6 +2263,36 @@ static int l_home(lua_State *L) {
 // overlay is up (`up`), or couldn't be put up.
 static int l_onReady(lua_State *L) {
     luaCallbackSet(&onReady, L, 1);
+    return 0;
+}
+
+// stop(): tears down any active slide, retile or drag-effect overlay and
+// clears Lua callbacks without releasing connections.
+static int l_stop(lua_State *L) {
+    (void)L;
+    luaCallbackClear(&onChange);
+    luaCallbackClear(&onReady);
+    atomic_store(&liftWanted, 0);
+    if (queue) {
+        dispatch_sync(queue, ^{
+            generation++;
+            fadingOut = false;
+            shownCount = 0;
+            plane = nil;
+            dispatch_source_set_timer(settled, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+            dispatch_source_set_timer(refresher, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+            dispatch_source_set_timer(popInTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+            clearLayers();
+            orderWindow(false);
+            dropBeneath();
+        });
+    }
+    if (liftQueue) {
+        dispatch_sync(liftQueue, ^{
+            dispatch_source_set_timer(liftGone, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+            clearLift();
+        });
+    }
     return 0;
 }
 
@@ -2194,15 +2324,15 @@ static void releaseAll(void) {
 }
 
 // Collected with the Lua state (reload, quit), before Lua unloads the
-// library: the queue is drained, and a pending finish cancelled.
+// library: the queues are drained and timers cancelled in dependency order.
 static int l_gc(lua_State *L) {
     (void)L;
     luaCallbackClear(&onChange);
     luaCallbackClear(&onReady);
-    // Captures still running hand their pictures to `queue`: let them
-    // finish first, so the queue's own drain below takes those too.
     atomic_store(&stopping, true);
-    dispatch_sync(captureQueue, ^{});
+    // Stop timers on `queue` first so no new capture can be submitted to
+    // `captureQueue`, then drain `captureQueue` (whose completion blocks go
+    // to `queue`), then drain `queue` a second time and release everything.
     dispatch_sync(queue, ^{
         dispatch_source_cancel(settled);
         dispatch_release(settled);
@@ -2210,27 +2340,37 @@ static int l_gc(lua_State *L) {
         dispatch_source_cancel(refresher);
         dispatch_release(refresher);
         refresher = NULL;
+        dispatch_source_cancel(popInTimer);
+        dispatch_release(popInTimer);
+        popInTimer = NULL;
+    });
+    dispatch_sync(captureQueue, ^{});
+    dispatch_sync(queue, ^{
         releaseAll();
-        if (drain) {
-            dispatch_source_cancel(drain);
-            dispatch_release(drain);
-            drain = NULL;
-        }
     });
+    cancelDrain(&drain);
+    cancelDrain(&captureDrain);
+    dispatch_sync(queue, ^{});
+    dispatch_sync(captureQueue, ^{});
+
+    // Clear `liftQueue` under liftLock before draining so off-main liftMove()
+    // cannot dispatch into a released queue during teardown.
     atomic_store(&liftWanted, 0);
-    dispatch_sync(liftQueue, ^{
-        dispatch_source_cancel(liftGone);
-        dispatch_release(liftGone);
-        liftGone = NULL;
-        releaseLift();
-        if (liftDrain) {
-            dispatch_source_cancel(liftDrain);
-            dispatch_release(liftDrain);
-            liftDrain = NULL;
-        }
-    });
-    dispatch_release(liftQueue);
+    os_unfair_lock_lock(&liftLock);
+    dispatch_queue_t lq = liftQueue;
     liftQueue = NULL;
+    os_unfair_lock_unlock(&liftLock);
+    if (lq) {
+        dispatch_sync(lq, ^{
+            dispatch_source_cancel(liftGone);
+            dispatch_release(liftGone);
+            liftGone = NULL;
+            releaseLift();
+        });
+        cancelDrain(&liftDrain);
+        dispatch_sync(lq, ^{});
+        dispatch_release(lq);
+    }
     SLSReleaseConnection(liftCid);
     dispatch_source_cancel(visibility);
     dispatch_release(visibility);
@@ -2292,6 +2432,13 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
     liftPlacedScale = 0;
     captureQueue = dispatch_queue_create("hyprspoon.slide.capture",
         dispatch_queue_attr_make_with_autorelease_frequency(DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM));
+    captureDrainPort = MACH_PORT_NULL;
+    if (SLSGetEventPort(captureCid, &captureDrainPort) == kCGErrorSuccess && captureDrainPort != MACH_PORT_NULL) {
+        captureDrain = dispatch_source_create(DISPATCH_SOURCE_TYPE_MACH_RECV, captureDrainPort, 0, captureQueue);
+        dispatch_source_set_event_handler_f(captureDrain, drainCaptureEvents);
+        dispatch_resume(captureDrain);
+        dispatch_async_f(captureQueue, NULL, drainCaptureEvents);
+    }
     atomic_store(&stopping, false);
     capturing = false;
     readySource = dispatch_source_create(DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, dispatch_get_main_queue());
@@ -2319,6 +2466,11 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
     dispatch_source_set_timer(refresher, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
     dispatch_source_set_event_handler_f(refresher, refresh);
     dispatch_resume(refresher);
+    popInTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+    dispatch_source_set_timer(popInTimer, DISPATCH_TIME_FOREVER, DISPATCH_TIME_FOREVER, 0);
+    dispatch_source_set_event_handler_f(popInTimer, popInNew);
+    dispatch_resume(popInTimer);
+    popGeneration = 0;
     shownCount = 0;
     retileGeneration = 0;
     memset(pictures, 0, sizeof(pictures));
@@ -2343,6 +2495,7 @@ int luaopen_hyprspoon_native_slide(lua_State *L) {
         { "lifter", l_lifter },
         { "land", l_land },
         { "home", l_home },
+        { "stop", l_stop },
         { NULL, NULL },
     };
     luaL_newlib(L, funcs);

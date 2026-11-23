@@ -56,6 +56,10 @@ end
 -- Floating windows' frames from before they were maximized.
 local unmaximizedFrames = {}
 
+function M.forget(id)
+    if id then unmaximizedFrames[id] = nil end
+end
+
 -- Fill the screen without creating a fullscreen Space, or go back. A tiled
 -- window covers the other tiles until it's toggled back or another tile
 -- takes focus (see Layout.toggleMaximized); a float fills the tiling area.
@@ -63,8 +67,11 @@ local unmaximizedFrames = {}
 function M.toggleMaximize(fill)
     fill = fill == true
     local win = Focus.currentWindow()
-    -- A column goes full width (niri's maximize-column).
-    if not fill and Scroll.toggleFullWidth(win) then return end
+    -- A filled scrolling window unmaximizes via Layout.toggleMaximized first;
+    -- otherwise a column goes full width (niri's maximize-column).
+    local _, _, key = win and Layout.locate(win)
+    local filled = key and S.filled and S.filled[key]
+    if not fill and not filled and Scroll.toggleFullWidth(win) then return end
     if not win or Layout.toggleMaximized(win, fill) then return end
 
     local id, screen = win:id(), win:screen()
@@ -75,6 +82,7 @@ function M.toggleMaximize(fill)
     local full, other = gapped, sf
     if fill then full, other = sf, gapped end
     local f = win:frame()
+    if not f then return end
     local function at(r)
         return math.abs(f.x - r.x) <= 1 and math.abs(f.y - r.y) <= 1
             and math.abs(f.w - r.w) <= 1 and math.abs(f.h - r.h) <= 1
@@ -293,8 +301,9 @@ function M.move(direction)
 
     local _, leaf, key = Layout.locate(win)
     if not leaf or not leaf.rect then
-        local screen = win:screen()
-        local f, sf = win:frame(), screen:frame()
+        local screen, f = win:screen(), win:frame()
+        if not screen or not f then return end
+        local sf = screen:frame()
         local x, y = f.x, f.y
         if direction == "left" then f.x = sf.x
         elseif direction == "right" then f.x = sf.x + sf.w - f.w
@@ -302,7 +311,7 @@ function M.move(direction)
         else f.y = sf.y + sf.h - f.h end
         local other = math.abs(f.x - x) < 1 and math.abs(f.y - y) < 1 and screenToward(screen, direction)
         if other then
-            S.windowInfo[id], S.applied[id] = nil, nil
+            if id then S.windowInfo[id], S.applied[id] = nil, nil end
             win:moveToScreen(other, false, true, 0)
             Spaces.claim(win, other:getUUID())
             Focus.focus(win)
@@ -321,12 +330,14 @@ function M.move(direction)
         x = direction == "left" and r.x - step or direction == "right" and r.x + r.w + step or r.x + r.w / 2,
         y = direction == "up" and r.y - step or direction == "down" and r.y + r.h + step or r.y + r.h / 2,
     }
-    local screen = win:screen()
+    local screen, toKey = nil, key
     if not nearestInDirection(r, id, tiles(S.trees[key]), direction) then
         -- Nothing beside it: the display that way, coming in at its near
         -- edge level with the window. (The outer gap can be wider than the
         -- step, so the point alone may not get there.)
-        screen = screenToward(screen, direction)
+        local curScreen = win:screen()
+        if not curScreen then return end
+        screen = screenToward(curScreen, direction)
         if not screen then return end
         local o = screen:frame()
         point = {
@@ -335,9 +346,9 @@ function M.move(direction)
             y = direction == "up" and o.y + o.h - 1 or direction == "down" and o.y
                 or math.max(o.y, math.min(point.y, o.y + o.h - 1)),
         }
+        toKey = Tree.keyForScreen(screen)
     end
-    local toKey = Tree.keyForScreen(screen)
-    if S.untiled[toKey] then return end
+    if not toKey or S.untiled[toKey] then return end
 
     local area = S.trees[key].rect
     S.trees[key] = Tree.removeID(S.trees[key], id)
@@ -347,7 +358,24 @@ function M.move(direction)
     end
 
     local tree = S.trees[toKey]
-    local target = tree and Tree.closestLeaf(tree, point)
+    local target = nil
+    if tree then
+        if toKey ~= key and Scroll.enabled(toKey) then
+            -- Skip scrolled-away columns whose virtual rects can overlap the source display.
+            local bestD = nil
+            for _, l in ipairs(Tree.leaves(tree)) do
+                if l.rect and not Scroll.isAway(l.windowID) then
+                    local tr = l.rect
+                    local dx = math.max(tr.x - point.x, 0, point.x - (tr.x + tr.w))
+                    local dy = math.max(tr.y - point.y, 0, point.y - (tr.y + tr.h))
+                    local d = dx * dx + dy * dy
+                    if not bestD or d < bestD then target, bestD = l, d end
+                end
+            end
+        else
+            target = Tree.closestLeaf(tree, point)
+        end
+    end
     if target and target.rect then
         local t = target.rect
         local px = math.max(t.x, math.min(point.x, t.x + t.w))
@@ -361,6 +389,8 @@ function M.move(direction)
             side = py < t.y + t.h / 2 and "top" or "bottom"
         end
         S.trees[toKey] = select(1, Scroll.insertBeside(toKey, tree, target.windowID, id, side))
+    elseif tree then
+        S.trees[toKey] = select(1, Tree.insertAt(tree, Tree.rightmostLeafID(tree), id))
     else
         S.trees[toKey] = Tree.leaf(id)
     end
@@ -370,7 +400,7 @@ function M.move(direction)
         -- looks up which display it's on afresh).
         S.keyIndex = {}
         S.applied[id], S.windowInfo[id] = nil, nil
-        win:setFrame(target and target.rect or screen:frame(), 0)
+        win:setFrame(screen:frame(), 0)
         Layout.tileNow()
     else
         Layout.tileNow(false, Tree.keyUUID(key))
@@ -384,6 +414,7 @@ end
 -- floats and tiles as one: whichever of its windows shows is a float.
 local function setFloat(win, float)
     local id = win:id()
+    if not id then return end
     for _, m in ipairs(Tree.membersOf(id)) do
         local w = m == id and win or Util.windowFor(m)
         S.autoFloat[m] = float
@@ -392,8 +423,10 @@ local function setFloat(win, float)
 
     if float then
         local screen, f = win:screen(), win:frame()
-        local sf = screen:frame()
-        win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2, y = sf.y + (sf.h - f.h) / 2 })
+        if screen and f then
+            local sf = screen:frame()
+            win:setTopLeft({ x = sf.x + (sf.w - f.w) / 2, y = sf.y + (sf.h - f.h) / 2 })
+        end
         win:raise()
     else
         Spaces.setPinned(win, false)
@@ -465,17 +498,18 @@ end
 -- Floating windows are centred and kept above the tiles.
 function M.toggleFloat()
     local win = Focus.currentWindow()
-    if not win or not S.tilingEnabled then return end
+    local id = win and win:id()
+    if not id or not S.tilingEnabled then return end
     Float.shouldFloat(win) -- load any saved decision before overriding it
-    setFloat(win, not S.autoFloat[win:id()])
+    setFloat(win, not S.autoFloat[id])
 end
 
 -- Pin the focused window to every workspace of its display, or unpin it,
 -- like Hyprland's pin. A tile floats first.
 function M.togglePin()
     local win = Focus.currentWindow()
-    if not win then return end
-    local id = win:id()
+    local id = win and win:id()
+    if not id then return end
     local pin = not Spaces.isPinned(id)
     if pin then
         Float.shouldFloat(win) -- load any saved decision before overriding it
@@ -526,15 +560,18 @@ local function onSet(action, ...)
     local win = Focus.currentWindow()
     if not win then return end
     local leaf, key = Tree.setOf(win:id())
+    if leaf and leaf.kind == "group" and not S.tilingEnabled then return end
     local handler = leaf and Tree.kinds[leaf.kind]
     if handler and handler[action] then handler[action](win, leaf, key, ...) end
 end
 
 function M.toggleGroup()
+    if not S.tilingEnabled then return end
     require("hyprspoon.group").toggle(Focus.currentWindow())
 end
 
 function M.moveIntoGroup(direction)
+    if not S.tilingEnabled then return end
     local win = Focus.currentWindow()
     if win then require("hyprspoon.group").join(win, neighbourInDirection(win, direction)) end
 end
@@ -573,6 +610,7 @@ function M.togglePseudo()
         leaf.pseudo = nil
     else
         local f = S.floatingFrames[win:id()] or win:frame()
+        if not f then return end
         leaf.pseudo = { w = f.w, h = f.h }
     end
     Layout.tileNow(false, Tree.keyUUID(key))
@@ -679,8 +717,10 @@ function M.toggleWorkspaceTiling()
     local screen = (win and win:screen()) or hs.mouse.getCurrentScreen()
     if not screen then return end
     local key = Tree.keyForScreen(screen)
+    if not key then return end
     local on = Layout.toggleWorkspaceTiling(key)
-    hs.alert.show(string.format("Workspace %s tiling %s", key:match("%d+"), on and "on" or "off"))
+    local label = Spaces.label(tonumber(key:match("^ws(%-?%d+)$"))) or key
+    hs.alert.show(string.format("Workspace %s tiling %s", label, on and "on" or "off"))
 end
 
 -- Resize the focused window by a percentage of its own size, e.g.
@@ -693,6 +733,7 @@ function M.resize(xPct, yPct)
     if Resize.resizePercent(win, xPct, yPct) then return end
 
     local f = win:frame()
+    if not f then return end
     if xPct ~= 0 then
         f.w = math.max(S.cfg.minWidth, f.w + f.w * xPct / 100)
     end

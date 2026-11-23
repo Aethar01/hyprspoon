@@ -16,8 +16,18 @@ static CFArrayRef (*windowSpaces)(int, int, CFArrayRef);
 static CFTypeRef attribute(AXUIElementRef el, CFStringRef name) {
     AXUIElementSetMessagingTimeout(el, 0.05);
     CFTypeRef value = NULL;
-    AXUIElementCopyAttributeValue(el, name, &value);
+    if (AXUIElementCopyAttributeValue(el, name, &value) != kAXErrorSuccess) return NULL;
     return value;
+}
+
+static CFArrayRef arrayAttribute(AXUIElementRef el, CFStringRef name) {
+    CFTypeRef value = attribute(el, name);
+    if (!value) return NULL;
+    if (CFGetTypeID(value) != CFArrayGetTypeID()) {
+        CFRelease(value);
+        return NULL;
+    }
+    return (CFArrayRef)value;
 }
 
 static bool equalsAttribute(AXUIElementRef el, CFStringRef name, CFStringRef expected) {
@@ -43,10 +53,20 @@ static AXUIElementRef remoteWindow(pid_t pid, uint64_t index) {
 }
 
 static void pushString(lua_State *L, CFTypeRef value) {
+    if (!value || CFGetTypeID(value) != CFStringGetTypeID()) {
+        lua_pushliteral(L, "");
+        return;
+    }
     char text[4096];
-    if (value && CFGetTypeID(value) == CFStringGetTypeID()
-        && CFStringGetCString(value, text, sizeof(text), kCFStringEncodingUTF8)) lua_pushstring(L, text);
+    if (CFStringGetCString(value, text, sizeof(text), kCFStringEncodingUTF8)) {
+        lua_pushstring(L, text);
+        return;
+    }
+    CFIndex max = CFStringGetMaximumSizeForEncoding(CFStringGetLength(value), kCFStringEncodingUTF8) + 1;
+    char *buf = max > 0 ? malloc((size_t)max) : NULL;
+    if (buf && CFStringGetCString(value, buf, max, kCFStringEncodingUTF8)) lua_pushstring(L, buf);
     else lua_pushliteral(L, "");
+    free(buf);
 }
 
 // Results cross back through a run-loop source, never through Lua on a
@@ -65,14 +85,21 @@ typedef struct TabQuery {
     CFStringRef title;
 } TabQuery;
 static TabQuery *queries;
+static os_unfair_lock queriesLock = OS_UNFAIR_LOCK_INIT;
 static atomic_bool cancelling;
 
 static void pushDictionary(lua_State *L, CFDictionaryRef dict) {
     lua_newtable(L);
     if (!dict) return;
     CFIndex count = CFDictionaryGetCount(dict);
+    if (count <= 0) return;
     const void **keys = calloc((size_t)count, sizeof(void *));
     const void **values = calloc((size_t)count, sizeof(void *));
+    if (!keys || !values) {
+        free(keys);
+        free(values);
+        return;
+    }
     CFDictionaryGetKeysAndValues(dict, keys, values);
     for (CFIndex i = 0; i < count; i++) {
         int64_t key = 0;
@@ -135,9 +162,11 @@ static void freeQuery(TabQuery *q) {
 
 static void queryDone(void *context) {
     TabQuery *q = context;
+    os_unfair_lock_lock(&queriesLock);
     TabQuery **link = &queries;
     while (*link && *link != q) link = &(*link)->next;
     if (*link) *link = q->next;
+    os_unfair_lock_unlock(&queriesLock);
     if (luaCallbackPush(&q->callback)) {
         if (q->result) pushDictionary(q->callback.L, q->result);
         else lua_pushnil(q->callback.L);
@@ -147,8 +176,10 @@ static void queryDone(void *context) {
 }
 
 void tabsCancelApp(pid_t pid) {
+    os_unfair_lock_lock(&queriesLock);
     for (TabQuery *q = queries; q; q = q->next)
         if (q->pid == pid) atomic_store(&q->cancelled, true);
+    os_unfair_lock_unlock(&queriesLock);
 }
 
 void tabsCancel(void) {
@@ -162,9 +193,13 @@ void tabsStop(void) {
     closeListConnection();
     if (cachedWindows) CFRelease(cachedWindows);
     cachedWindows = NULL;
-    while (queries) {
-        TabQuery *q = queries;
-        queries = q->next;
+    os_unfair_lock_lock(&queriesLock);
+    TabQuery *list = queries;
+    queries = NULL;
+    os_unfair_lock_unlock(&queriesLock);
+    while (list) {
+        TabQuery *q = list;
+        list = q->next;
         freeQuery(q);
     }
 }
@@ -188,8 +223,10 @@ static TabQuery *newQuery(lua_State *L, pid_t pid, int callback) {
     context.perform = queryDone;
     q->source = CFRunLoopSourceCreate(NULL, 0, &context);
     CFRunLoopAddSource(CFRunLoopGetMain(), q->source, kCFRunLoopCommonModes);
+    os_unfair_lock_lock(&queriesLock);
     q->next = queries;
     queries = q;
+    os_unfair_lock_unlock(&queriesLock);
     return q;
 }
 
@@ -253,11 +290,18 @@ static void scanWindows(void *context) {
 static int l_tabWindows(lua_State *L) {
     pid_t pid = (pid_t)luaL_checkinteger(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TFUNCTION);
+    // Validate keys before allocating a TabQuery so a Lua error cannot leak it.
+    lua_pushnil(L);
+    while (lua_next(L, 2)) {
+        luaL_checkinteger(L, -2);
+        lua_pop(L, 1);
+    }
     TabQuery *q = newQuery(L, pid, 3);
     q->wanted = dictionary();
     lua_pushnil(L);
     while (lua_next(L, 2)) {
-        put(q->wanted, luaL_checkinteger(L, -2), kCFBooleanTrue);
+        put(q->wanted, lua_tointeger(L, -2), kCFBooleanTrue);
         lua_pop(L, 1);
     }
     if (q->queue) dispatch_async_f(q->queue, q, scanWindows);
@@ -349,7 +393,11 @@ static void openListConnection(void) {
 
 static void closeListConnection(void) {
     if (listDrain) {
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        dispatch_source_set_cancel_handler(listDrain, ^{ dispatch_semaphore_signal(done); });
         dispatch_source_cancel(listDrain);
+        dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+        dispatch_release(done);
         dispatch_release(listDrain);
         listDrain = NULL;
     }
@@ -445,6 +493,7 @@ static CFMutableDictionaryRef snapshot(void) {
         uint32_t wid = 0;
         CFNumberRef n = CFDictionaryGetValue(row, kCGWindowOwnerPID);
         if (n) CFNumberGetValue(n, kCFNumberIntType, &owner);
+        if (owner <= 0) continue;
         n = CFDictionaryGetValue(row, kCGWindowLayer);
         if (n) CFNumberGetValue(n, kCFNumberIntType, &layer);
         n = CFDictionaryGetValue(row, kCGWindowNumber);
@@ -458,7 +507,7 @@ static CFMutableDictionaryRef snapshot(void) {
 
 static void readSnapshot(void *context) {
     TabQuery *q = context;
-    q->result = snapshot();
+    if (!atomic_load(&cancelling) && !atomic_load(&q->cancelled)) q->result = snapshot();
     finishQuery(q);
 }
 
@@ -511,7 +560,7 @@ static AXUIElementRef tabGroup(AXUIElementRef win) {
 static AXUIElementRef groupFor(pid_t pid, uint32_t wid) {
     AXUIElementRef app = AXUIElementCreateApplication(pid);
     AXUIElementSetMessagingTimeout(app, 0.1);
-    CFArrayRef windows = attribute(app, kAXWindowsAttribute);
+    CFArrayRef windows = arrayAttribute(app, kAXWindowsAttribute);
     AXUIElementRef group = NULL;
     if (windows) {
         double end = CFAbsoluteTimeGetCurrent() + 0.1;
@@ -529,7 +578,7 @@ static AXUIElementRef groupFor(pid_t pid, uint32_t wid) {
 
 bool tabsSelect(pid_t pid, uint32_t shown, CFStringRef title) {
     AXUIElementRef group = groupFor(pid, shown);
-    CFArrayRef tabs = group ? attribute(group, CFSTR("AXTabs")) : NULL;
+    CFArrayRef tabs = group ? arrayAttribute(group, CFSTR("AXTabs")) : NULL;
     bool ok = false;
     if (tabs) {
         CFIndex count = CFArrayGetCount(tabs), match = -1;
@@ -561,8 +610,10 @@ static int l_tabShow(lua_State *L) {
     CFStringRef title = CFStringCreateWithCString(NULL, luaL_optstring(L, 4, ""), kCFStringEncodingUTF8);
     // Only tabShow (a known background member) can request remote lookup.
     // Ordinary closed-window/other-Space frame misses never scan tokens.
+    os_unfair_lock_lock(&queriesLock);
     for (TabQuery *old = queries; old; old = old->next)
         if (old->pid == pid && old->raise) atomic_store(&old->cancelled, true);
+    os_unfair_lock_unlock(&queriesLock);
     TabQuery *q = newQuery(L, pid, 0);
     q->wanted = dictionary();
     put(q->wanted, wid, kCFBooleanTrue);
@@ -579,7 +630,7 @@ static int l_tabButtons(lua_State *L) {
     uint32_t wid = (uint32_t)luaL_checkinteger(L, 2);
     int delta = (int)luaL_optinteger(L, 3, 0);
     AXUIElementRef group = groupFor(pid, wid);
-    CFArrayRef tabs = group ? attribute(group, CFSTR("AXTabs")) : NULL;
+    CFArrayRef tabs = group ? arrayAttribute(group, CFSTR("AXTabs")) : NULL;
     lua_newtable(L);
     if (tabs) {
         CFIndex count = CFArrayGetCount(tabs), selected = -1, checked = 0;

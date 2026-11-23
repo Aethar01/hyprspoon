@@ -166,9 +166,9 @@ local function loadState()
         end
         return
     end
-    for id, d in pairs(saved.info) do info[tonumber(id)] = d end
+    for id, d in pairs(saved.info or {}) do info[tonumber(id)] = d end
     for uuid, n in pairs(saved.active or {}) do active[uuid] = tonumber(n) end
-    for uuid, n in pairs(saved.under) do under[uuid] = tonumber(n) end
+    for uuid, n in pairs(saved.under or {}) do under[uuid] = tonumber(n) end
     for n, uuid in pairs(saved.home or {}) do home[tonumber(n)] = uuid end
     for id, n in pairs(saved.of or {}) do of[tonumber(id)] = tonumber(n) end
     for id, f in pairs(saved.parked or {}) do
@@ -263,12 +263,16 @@ local function pickFor(uuid)
 end
 
 local function forgetWorkspace(n)
+    local key = "ws" .. n
     home[n] = nil
     Slide.forget(n)
-    S.trees["ws" .. n] = nil
-    S.maximized["ws" .. n] = nil
-    S.untiled["ws" .. n] = nil
-    S.layouts["ws" .. n] = nil
+    S.trees[key] = nil
+    S.maximized[key] = nil
+    if S.filled then S.filled[key] = nil end
+    S.untiled[key] = nil
+    if S.layouts then S.layouts[key] = nil end
+    local Scroll = package.loaded["hyprspoon.scroll"]
+    if Scroll and Scroll.forgetWorkspace then Scroll.forgetWorkspace(key) end
 end
 
 local function refresh()
@@ -448,11 +452,13 @@ end
 -- replace a tiling animation still running (or queued for a busy app)
 -- instead of being undone by it when switching back and forth quickly.
 local function park(win, n)
-    local id = win:id()
+    local id = win and win:id()
+    if not id then return end
     if nativeBackground(id) then parked[id] = nil return end
     local frame = parked[id]
     if not frame then
         local f = Tree.rectFor(id) or win:frame()
+        if not f then return end
         frame = { x = f.x, y = f.y, w = f.w, h = f.h }
         parked[id] = frame
     end
@@ -461,7 +467,9 @@ local function park(win, n)
     S.windowInfo[id] = nil
     settle()
     Border.forget(id)
-    local p = parkPoint(displayOf(n), frame)
+    local uuid = displayOf(n)
+    if not (uuid and connected[uuid]) then return end
+    local p = parkPoint(uuid, frame)
     Util.setFrame(win, { x = p.x, y = p.y, w = frame.w, h = frame.h }, 0)
 end
 
@@ -469,7 +477,8 @@ end
 -- anything else returns to its frame, centred on its display if that frame
 -- is on a display that has gone.
 local function unpark(win)
-    local id = win:id()
+    local id = win and win:id()
+    if not id then return end
     if nativeBackground(id) then parked[id] = nil return end
     local frame = parked[id]
     parked[id] = nil
@@ -478,10 +487,14 @@ local function unpark(win)
     S.windowInfo[id] = nil
     if not frame or (S.tilingEnabled and not S.autoFloat[id] and Tree.findByID(id)) then return end
 
-    local sf = connected[shown[of[id]]]:frame()
-    if not Util.pointInFrame({ x = frame.x + frame.w / 2, y = frame.y + frame.h / 2 }, sf) then
-        frame.x = sf.x + (sf.w - frame.w) / 2
-        frame.y = sf.y + (sf.h - frame.h) / 2
+    local uuid = of[id] and shown[of[id]]
+    local screen = uuid and connected[uuid]
+    if screen then
+        local sf = screen:frame()
+        if not Util.pointInFrame({ x = frame.x + frame.w / 2, y = frame.y + frame.h / 2 }, sf) then
+            frame.x = sf.x + (sf.w - frame.w) / 2
+            frame.y = sf.y + (sf.h - frame.h) / 2
+        end
     end
     settle()
     Util.setFrame(win, frame, 0)
@@ -509,7 +522,7 @@ end
 
 -- Parks the windows of workspaces not showing and brings back the rest.
 -- Parked windows stay put unless `force` (displays changed, so corners did).
-local function sync(force)
+local function sync(force, keepScratchpads)
     -- A missed window-filter event can leave a dead window ID in `of` or
     -- `parked`, keeping its workspace alive. Reconcile those IDs against
     -- WindowServer whenever workspace state is synced.
@@ -529,11 +542,14 @@ local function sync(force)
         for id in pairs(stale) do
             of[id], parked[id], pins[id], pinned[id], info[id] = nil, nil, nil, nil, nil
             for key, maxID in pairs(S.maximized) do
-                if maxID == id then S.maximized[key] = nil end
+                if maxID == id then
+                    S.maximized[key] = nil
+                    if S.filled then S.filled[key] = nil end
+                end
             end
         end
         save()
-        hideEmptyScratchpads()
+        if not keepScratchpads then hideEmptyScratchpads() end
     end
 
     -- Every pinned window, not just those listed: a hidden app's too.
@@ -594,8 +610,11 @@ end
 -- the one showing on its display `uuid` if it has none yet, or if it has
 -- since moved to that display. A window we've just sent to another
 -- display keeps its workspace while it gets there.
+local ruleSwitchTimer = nil
+
 local function claim(win, uuid)
-    local id = win:id()
+    local id = win and win:id()
+    if not id then return nil end
     if nativeBackground(id) then return nil end
     local n = of[id]
     if not connected[uuid] or not active[uuid] then refresh() end
@@ -621,6 +640,7 @@ local function claim(win, uuid)
     end
     if wanted and wanted ~= 0 and wanted ~= active[uuid] then
         of[id] = wanted
+        if focusedEmpty and active[focusedEmpty] == wanted then focusedEmpty = nil end
         if not home[wanted] then home[wanted] = homeFor(wanted) end
         local to = shown[wanted]
         if to and to ~= uuid then
@@ -632,7 +652,12 @@ local function claim(win, uuid)
         end
         if not rule.silent then
             S.spaceFocusWin = win
-            hs.timer.doAfter(0, function() M.gotoWorkspace(wanted) end)
+            if ruleSwitchTimer then ruleSwitchTimer:stop() end
+            local target = wanted
+            ruleSwitchTimer = hs.timer.doAfter(0, function()
+                ruleSwitchTimer = nil
+                M.gotoWorkspace(target)
+            end)
         end
         save()
         return to
@@ -641,6 +666,7 @@ local function claim(win, uuid)
         local was = n
         n = active[uuid]
         of[id] = n
+        if uuid == focusedEmpty then focusedEmpty = nil end
         -- Moved to another display: its set comes along.
         if was then bringMembers(id, n) end
         save()
@@ -720,12 +746,20 @@ local function focusWorkspace(n, warp, skip)
     end
 end
 
--- The windows of workspace `n` that slide with it: not the pinned ones,
--- which stay where they are.
+-- The windows of workspace `n` that slide with it: only visible windows on
+-- the current Space, not pinned, group-hidden, scrolled-away, or off-Space
+-- ones (an off-Space full-screen window captures as a full-display black box).
 local function windowsOf(n)
+    local Scroll = package.loaded["hyprspoon.scroll"]
     local ids = {}
-    for id, m in pairs(of) do
-        if m == n and not pinned[id] and not nativeBackground(id) then ids[#ids + 1] = id end
+    for _, win in ipairs(Util.managedWindows()) do
+        local id = win:id()
+        if id and of[id] == n and not pinned[id] and not nativeBackground(id)
+           and not groupHidden(id) and not (S.fullscreen and S.fullscreen[id])
+           and not (S.offSpace and S.offSpace[id])
+           and not (Scroll and Scroll.isAway and Scroll.isAway(id)) then
+            ids[#ids + 1] = id
+        end
     end
     return ids
 end
@@ -782,7 +816,7 @@ local function showScratchpad(n, uuid)
         home[n] = uuid
         refresh()
         lastSwitch = hs.timer.secondsSinceEpoch()
-        sync(false)
+        sync(false, true)
     end
     tileUnder(slid)
     -- A maximized (or full-screen) window covers the rest: it alone is
@@ -793,7 +827,10 @@ local function showScratchpad(n, uuid)
     local top = S.maximized["ws" .. n]
     for _, win in ipairs(Util.managedWindows()) do
         local id = win:id()
-        if of[id] == n and not nativeBackground(id) and (not top or id == top) then wins[#wins + 1] = win end
+        if id and of[id] == n and not nativeBackground(id) and not groupHidden(id)
+           and (not top or id == top) then
+            wins[#wins + 1] = win
+        end
     end
     for i, id in ipairs(Util.focusHistory) do rank[id] = rank[id] or i end
     table.sort(wins, function(a, b) return (rank[a:id()] or math.huge) > (rank[b:id()] or math.huge) end)
@@ -893,9 +930,11 @@ function M.moveToWorkspace(n)
     claimAll()
 
     local id = win:id()
-    if of[id] == n then return end
+    if not id or of[id] == n then return end
     local from = (of[id] and shown[of[id]]) or pointerUUID()
     local to = n > NAMED_BASE and from or targetDisplay(n)
+    -- Set home before bringMembers so parked members know the target display.
+    if not home[n] and to then home[n] = to end
     of[id] = n
     bringMembers(id, n)
     save()
@@ -920,6 +959,7 @@ function M.moveToWorkspaceSilent(n)
     claimAll()
 
     local id = win:id()
+    if not id then return end
     local current = of[id]
     if current == n then return end
     local from = (current and shown[current]) or pointerUUID()
@@ -1065,7 +1105,7 @@ function M.focusDisplayToward(direction)
     local win = Focus.currentWindow()
     local n = win and of[win:id()]
     local from = (n and shown[n]) or pointerUUID()
-    local to = from and displayToward(from, direction)
+    local to = from and connected[from] and displayToward(from, direction)
     if not to then return false end
     focusWorkspace(active[to], true)
     return true
@@ -1114,7 +1154,8 @@ function M.moveWorkspaceToDisplay(delta)
     n = active[from]
     local replacement = nil
     for m, uuid in pairs(home) do
-        if uuid == from and m ~= n and not shown[m] and (not replacement or m < replacement) then
+        if uuid == from and m ~= n and m <= NAMED_BASE and not shown[m]
+           and (not replacement or m < replacement) then
             replacement = m
         end
     end
@@ -1170,7 +1211,7 @@ function M.place(win, force)
         -- Our own parking echoes back as moves too.
         local f = win:frame()
         local uuid = displayOf(n)
-        if not inCorner(f, parkPoint(uuid, f), uuid) then park(win, n) end
+        if f and uuid and connected[uuid] and not inCorner(f, parkPoint(uuid, f), uuid) then park(win, n) end
     end
 end
 
@@ -1179,6 +1220,8 @@ end
 -- or we switched it's macOS choosing a replacement, so focus stays on the
 -- workspace showing.
 function M.focusedParked(win)
+    local id = win and win:id()
+    if not id then return end
     local now = hs.timer.secondsSinceEpoch()
     local going = Focus.goneBefore(win)
     if going or now - lastSwitch < 0.5 or now - S.lastGoneTime < 1 then
@@ -1187,27 +1230,36 @@ function M.focusedParked(win)
         return
     end
     local leaf, key
-    if Tree.setOf then leaf, key = Tree.setOf(win:id()) end
+    if Tree.setOf then leaf, key = Tree.setOf(id) end
     if leaf and leaf.kind == "group" then
-        Layout.showMember(leaf, win:id(), key)
+        Layout.showMember(leaf, id, key)
         -- gotoWorkspace does nothing when this workspace already shows.
         -- Clear parking before the immediate pass places the selected tile.
-        if not isHidden(win:id()) then
+        if not isHidden(id) then
             unpark(win)
             Layout.tileNow(false)
         end
     end
-    S.spaceFocusWin = win
-    local n = of[win:id()]
+    local n = of[id]
     -- Beneath a scratchpad: that goes.
     for uuid, base in pairs(under) do
         if base == n and behind[n] then
+            S.spaceFocusWin = win
             tileUnder(hideScratchpad(uuid, true))
             focusWorkspace(n, false)
             Hud.switched(uuid)
             return
         end
     end
+    -- Already showing on the pointer's display (e.g., a hidden group member
+    -- on the active workspace): gotoWorkspace would return early and leave
+    -- S.spaceFocusWin dangling without noting focus.
+    local ptr = pointerUUID()
+    if n and active[ptr] == n and not under[ptr] then
+        if Focus.noteFocus then Focus.noteFocus(win) end
+        return
+    end
+    S.spaceFocusWin = win
     M.gotoWorkspace(n)
 end
 
@@ -1254,8 +1306,10 @@ end
 
 -- The tree key of the workspace showing on a display, and back.
 function M.keyForUUID(uuid)
+    if not uuid then return nil end
     if not connected[uuid] or not active[uuid] then refresh() end
-    return "ws" .. tostring(active[uuid])
+    local n = active[uuid]
+    return n and ("ws" .. tostring(n)) or nil
 end
 
 -- The share of the area a workspace's tiles are laid out in: less than
@@ -1378,7 +1432,7 @@ function M.rescue()
 
     local missing = 0
     for _ in pairs(frames) do missing = missing + 1 end
-    active, under, home, of, pins, info, parked = {}, {}, {}, {}, {}, {}, frames
+    active, under, home, of, pins, pinned, info, parked = {}, {}, {}, {}, {}, {}, {}, frames
     previous, lastNumbered, focusedEmpty = nil, nil, nil
     saveNow()
     Restore.forget()
@@ -1510,16 +1564,19 @@ end
 
 -- Flushes a pending save (reload, shutdown).
 function M.stop()
+    if ruleSwitchTimer then ruleSwitchTimer:stop() ruleSwitchTimer = nil end
     if saveTimer then saveNow() end
 end
 
 M.park = function(win, n, force)
-    if n and (force or not parked[win:id()]) then park(win, n) save() end
+    local id = win and win:id()
+    if id and n and (force or not parked[id]) then park(win, n) save() end
 end
 M.unpark = function(win)
     -- A user can select a group member from the Dock on a workspace that
     -- is still hidden. Its workspace switch will unpark it after refresh.
-    if not isHidden(win:id()) then unpark(win) end
+    local id = win and win:id()
+    if id and not isHidden(id) then unpark(win) end
 end
 M.isHidden = isHidden
 -- Where a window `size` big is parked on display `uuid` (hyprspoon/scroll.lua

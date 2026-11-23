@@ -72,8 +72,10 @@ local function handFocusBack(goneID, win)
     local path, leaf, key = Tree.findByID(goneID)
     if not path or S.autoFloat[goneID] then return false end
     if leaf.members and #leaf.members > 1 then return false end
-    if leaf.rect and win:pid() == (Util.pidByID[goneID] or win:pid()) then
-        if Tabs.centredIn(win:frame(), leaf.rect) then return false end
+    local gonePid = Util.pidByID[goneID]
+    if leaf.rect and gonePid and win:pid() == gonePid then
+        local f = win:frame()
+        if f and Tabs.centredIn(f, leaf.rect) then return false end
     end
     local tree = S.trees[key]
     local valid = {}
@@ -105,6 +107,7 @@ end
 local signatures = {}
 
 local pendingRefocus = nil -- window id to focus once the next retile is done
+local refocusTimer = nil
 
 -- Window id -> { key =, seq =, slot = (Tree.slotOf) }: where a window that
 -- went full screen or to another Space sat, to go back to on its return.
@@ -337,7 +340,7 @@ local function reconcileTree(key, windows)
                 -- Nothing left to show: a maximized tile kept for the
                 -- next member (see init.lua's windowDestroyed) isn't.
                 for k, maxID in pairs(S.maximized) do
-                    if maxID == old then S.maximized[k] = nil end
+                    if maxID == old then S.maximized[k], S.filled[k] = nil, nil end
                 end
             end
         end
@@ -578,11 +581,12 @@ local function verifyLayout(win, rect, rectKey, animating)
                or S.autoFloat[id] or S.dragState or hs.mouse.getButtons().left
                or S.lastMouseTime > pending.started
                or not leaf or not leaf.rect
-               or not framesMatch(leaf.fullRect or leaf.pseudoRect or leaf.rect, rect) then
+               or not framesMatch(leaf.windowRect or leaf.fullRect or leaf.pseudoRect or leaf.rect, rect) then
                 Discover.layoutChecks[id] = nil
                 return
             end
-            if framesMatch(win:frame(), rect) then
+            local curFrame = win:frame()
+            if curFrame and framesMatch(curFrame, rect) then
                 S.applied[id] = rectKey
                 Discover.layoutChecks[id] = nil
             elseif step < #delays then
@@ -651,8 +655,10 @@ local function applyTree(node, rect, byID, full, opts)
             local moved, resized = true, false
             if not (opts and native) then
                 local f = win:frame()
-                moved = math.abs(f.x - rect.x) > 1 or math.abs(f.y - rect.y) > 1
-                resized = math.abs(f.w - rect.w) > 1 or math.abs(f.h - rect.h) > 1
+                if f then
+                    moved = math.abs(f.x - rect.x) > 1 or math.abs(f.y - rect.y) > 1
+                    resized = math.abs(f.w - rect.w) > 1 or math.abs(f.h - rect.h) > 1
+                end
             end
             -- setFrame is size, position, size; one call is enough when only
             -- one of them changes. Only setFrame animates. hyprspoon.native.frames
@@ -862,7 +868,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
         if key and not S.untiled[key] then
             local usableFrame = inset(screen:frame(), S.cfg.tiling.outerGap)
             local scale = Spaces.layoutScale(key)
-            if scale and scale < 1 then
+            if scale and scale > 0 and scale < 1 then
                 usableFrame = hs.geometry.rect(
                     usableFrame.x + usableFrame.w * (1 - scale) / 2,
                     usableFrame.y + usableFrame.h * (1 - scale) / 2,
@@ -887,7 +893,7 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
                 -- reload); a closed one is forgotten as it closes.
                 local maxID = S.maximized[key]
                 if maxID and not byID[maxID] and S.openIDs[maxID] and not Tree.treeContains(tree, maxID) then
-                    S.maximized[key], maxID = nil, nil
+                    S.maximized[key], S.filled[key], maxID = nil, nil, nil
                     Border.sync()
                 end
                 local fullRect = S.filled[key] and screen:frame() or usableFrame
@@ -929,13 +935,18 @@ local function tileNow(onlyIfChanged, onlyScreenUUID)
     pendingRefocus = nil
     if pick then
         local function refocus()
+            if not S.running.windowFilter or Spaces.isHidden(pick) then return end
             local win = Util.winByID[pick]
             if not win or win:id() ~= pick then return end
             local cur = Util.focusedWindow()
             if not cur or cur:id() ~= pick then Focus.focus(win) else Focus.noteFocus(win) end
         end
         refocus()
-        hs.timer.doAfter(0.1, refocus)
+        if refocusTimer then refocusTimer:stop() end
+        refocusTimer = hs.timer.doAfter(0.1, function()
+            refocusTimer = nil
+            refocus()
+        end)
     end
 end
 
@@ -947,9 +958,11 @@ local BSP_RETILE_DELAY = 0.06
 local function mayBeTab(win)
     local id, pid = win:id(), win:pid()
     local f = win:frame()
+    if not id or not pid or not f then return false end
     for _, other in ipairs(Util.managedWindows()) do
-        if other:pid() == pid and other:id() ~= id and framesMatch(other:frame(), f) then
-            return true
+        if other:pid() == pid and other:id() ~= id then
+            local of = other:frame()
+            if of and framesMatch(of, f) then return true end
         end
     end
     return false
@@ -995,6 +1008,10 @@ local function scheduleRetile(force, immediate, delay)
 
     if immediate and not force and not retileTimer then
         tileNow(true)
+        if retileTimer then
+            retileTimer:stop()
+            if retileDue > due then due = retileDue end
+        end
     else
         retilePending = true
         retileForce = retileForce or force or false
@@ -1163,7 +1180,7 @@ local function focused(id)
     local _, _, key = Tree.findByID(id)
     local maxID = key and S.maximized[key]
     if not maxID or maxID == id then return end
-    S.maximized[key] = nil
+    S.maximized[key], S.filled[key] = nil, nil
     Border.sync()
     tileNow(false, Tree.keyUUID(key))
 end
@@ -1179,18 +1196,26 @@ local function toggleWorkspaceTiling(key)
         return true
     end
     S.untiled[key] = true
+    if S.presel and S.presel.key == key then
+        S.presel = nil
+        showPresel()
+    end
     Scroll.bringBack(key)
     Groupbar.update()
-    S.maximized[key] = nil
+    S.maximized[key], S.filled[key] = nil, nil
     S.keyIndex = {}
     signatures[key] = nil
     for id in pairs(Tree.collectIDs(S.trees[key])) do
         Discover.cancelLayoutCheck(id)
         local win, frame = Util.winByID[id], S.floatingFrames[id]
         S.floatingFrames[id], S.applied[id] = nil, nil
-        if frame and win and win:id() == id and not Spaces.isHidden(id) then
-            S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE + Anim.windowDuration()
-            Util.setFrame(win, frame, Anim.windowDuration())
+        if frame then
+            if Spaces.isHidden(id) then
+                if Spaces.setParkedFrame then Spaces.setParkedFrame(id, frame) end
+            elseif win and win:id() == id then
+                S.settleUntil = hs.timer.secondsSinceEpoch() + BSP_SETTLE + Anim.windowDuration()
+                Util.setFrame(win, frame, Anim.windowDuration())
+            end
         end
     end
     Tree.saveTrees()
@@ -1219,13 +1244,19 @@ local function stop()
     S.presel = nil
     showPresel()
     if retileTimer then retileTimer:stop() end
+    if refocusTimer then refocusTimer:stop() refocusTimer = nil end
     if waitTimer then waitTimer:stop() waitTimer = nil end
     if spaceMoveTimer then spaceMoveTimer:stop() spaceMoveTimer = nil end
     if S.recheckTimer then S.recheckTimer:stop() S.recheckTimer = nil end
     retileTimer, retilePending, retileForce = nil, false, false
 end
 
+local function forget(id)
+    if id then pseudoRuled[id] = nil end
+end
+
 M.stop = stop
+M.forget = forget
 M.tileNow = tileNow
 M.layOut = layOut
 M.applyTree = applyTree

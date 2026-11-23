@@ -22,9 +22,14 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "luacall.h"
 #include "skylight.h"
+
+static double monotonicNow(void) {
+    return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) * 1e-9;
+}
 
 #define SL_FUNCS(X)                                                       \
     X(int, SLSMainConnectionID, (void))                                   \
@@ -69,10 +74,11 @@ static bool buttonHeld(void) {
 static void deliver(void *unused) {
     (void)unused;
     if (pendingCount == 0) return;
-    double now = CFAbsoluteTimeGetCurrent();
+    double now = monotonicNow();
     double wait = lastDelivered + HELD_INTERVAL - now;
     if (wait > 0 && buttonHeld()) {
         if (!laterArmed) {
+            if (wait > HELD_INTERVAL) wait = HELD_INTERVAL;
             dispatch_source_set_timer(later, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)),
                 DISPATCH_TIME_FOREVER, NSEC_PER_SEC / 1000);
             dispatch_resume(later);
@@ -157,14 +163,16 @@ static const uint32_t events[] = { SL_EVENT_WINDOW_MOVE, SL_EVENT_WINDOW_RESIZE,
     SL_EVENT_WINDOW_HIDE, SL_EVENT_WINDOW_UNHIDE, SL_EVENT_WINDOW_REORDER };
 #define EVENT_COUNT (sizeof(events) / sizeof(events[0]))
 
-static bool registered = false;
+static bool registered[EVENT_COUNT];
 
 static void registerEvents(bool on) {
-    if (on == registered) return;
-    registered = on;
     for (size_t i = 0; i < EVENT_COUNT; i++) {
-        if (on) SLSRegisterNotifyProc((void *)onWindowEvent, events[i], NULL);
-        else SLSRemoveNotifyProc((void *)onWindowEvent, events[i], NULL);
+        if (on && !registered[i]) {
+            registered[i] = SLSRegisterNotifyProc((void *)onWindowEvent, events[i], NULL) == kCGErrorSuccess;
+        } else if (!on && registered[i]) {
+            SLSRemoveNotifyProc((void *)onWindowEvent, events[i], NULL);
+            registered[i] = false;
+        }
     }
 }
 
@@ -172,7 +180,7 @@ static void registerEvents(bool on) {
 // pass later, so a window the window filter has just taken in can be placed
 // at once instead of behind the coalescing delay. The filter reports most
 // new windows as allowed, which a Space switch also does, so it can't tell.
-#define MAX_CREATED 32
+#define MAX_CREATED 256
 static LuaCallback onCreated = LUA_CALLBACK_NONE;
 static uint32_t created[MAX_CREATED];
 static int createdCount = 0;
@@ -193,8 +201,9 @@ static void deliverCreated(void *unused) {
 }
 
 // Carries { uint64_t space; uint32_t window; } (see skylight.h).
-static void onWindowCreated(uint32_t event, void *data, size_t length, int connection) {
+static void onWindowCreated(uint32_t event, void *data, size_t length, void *context, int connection) {
     (void)event;
+    (void)context;
     (void)connection;
     if (!data || length < 12 || !pthread_main_np()) return;
     uint32_t wid;
@@ -235,9 +244,10 @@ static void stop(void) {
         delivery = NULL;
     }
     if (later) {
-        // A suspended source can't be cancelled.
-        if (!laterArmed) dispatch_resume(later);
+        // Cancel before resuming so the timer cannot fire before release;
+        // a suspended source cannot be released.
         dispatch_source_cancel(later);
+        if (!laterArmed) dispatch_resume(later);
         dispatch_release(later);
         later = NULL;
         laterArmed = false;

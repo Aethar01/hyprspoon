@@ -36,10 +36,20 @@ local function adoptFrame(win)
         return
     end
 
-    -- A maximized window isn't in its tile: nothing to adopt.
-    if leaf.fullRect then return end
+    -- A maximized window isn't in its tile: snap back so it stays maximized.
+    if leaf.fullRect then
+        local f = win:frame()
+        local r = leaf.windowRect or leaf.fullRect
+        if f and (math.abs(f.x - r.x) > BSP_EDGE_TOLERANCE or math.abs(f.y - r.y) > BSP_EDGE_TOLERANCE
+                  or math.abs(f.w - r.w) > BSP_EDGE_TOLERANCE or math.abs(f.h - r.h) > BSP_EDGE_TOLERANCE) then
+            S.applied[win:id()] = nil
+            Layout.tileNow(false, Tree.keyUUID(key))
+        end
+        return
+    end
 
     local f = win:frame()
+    if not f then return end
     local outer = leaf.pseudoRect or leaf.rect
     local r = leaf.windowRect or outer
     local inset = r.y - outer.y
@@ -142,10 +152,18 @@ local function beginResize(win, point)
     resizeState = nil
 
     local f = win:frame()
+    if not f then return end
     local path, leaf, key = Layout.locate(win)
     if path and Scroll.enabled(key) then
-        -- A column: the edge nearest the pointer, width only.
-        resizeState = { win = win, frame = f, xBranch = point.x > f.x + f.w / 2 and "a" or "b" }
+        -- A column: width from the nearer horizontal edge, plus height when
+        -- the window shares its column with others (a vertical ancestor split).
+        local hasRow = Tree.boundingSplit(path, "horizontal", "a") or Tree.boundingSplit(path, "horizontal", "b")
+        resizeState = {
+            win = win,
+            frame = f,
+            xBranch = point.x > f.x + f.w / 2 and "a" or "b",
+            yBranch = hasRow and (point.y > f.y + f.h / 2 and "a" or "b") or nil,
+        }
         return
     end
     if not path or leaf.pseudo then
@@ -215,7 +233,9 @@ local function finishResize()
     resizeState = nil
     if not state or state.floating then return false end
 
-    S.applied[state.win:id()] = nil
+    local id = state.win and state.win:id()
+    if not id then return true end
+    S.applied[id] = nil
     adoptFrame(state.win)
     return true
 end
@@ -262,10 +282,10 @@ local function onWindowMoved(win)
     adoptFrame(win)
 end
 
--- Drops the pending native-resize check (reload, shutdown).
+-- Drops the pending native-resize check and any in-progress mouse resize.
 local function stop()
     if moveWaitTimer then moveWaitTimer:stop() end
-    moveWaitTimer, moveWaitWin = nil, nil
+    moveWaitTimer, moveWaitWin, resizeState = nil, nil, nil
 end
 
 M.stop = stop

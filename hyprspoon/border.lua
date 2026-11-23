@@ -176,8 +176,9 @@ local function maskOptions()
     return { drags = opt.drags == "show" and "show" or "mask" }
 end
 
-local function rgba(color)
-    local rgb = hs.drawing.color.asRGB(type(color) == "string" and { hex = color } or color)
+local function rgba(color, fallback)
+    local rgb = color and hs.drawing.color.asRGB(type(color) == "string" and { hex = color } or color)
+    if not rgb then return fallback or { 0, 0, 0, 0 } end
     return { rgb.red, rgb.green, rgb.blue, rgb.alpha or 1 }
 end
 
@@ -242,6 +243,7 @@ function M.stop()
     masking = false
     barred = {}
     if native then native.stop() end
+    native = false
 end
 
 return M

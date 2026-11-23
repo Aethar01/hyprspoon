@@ -47,10 +47,10 @@ local eventWindows = {}
 local BSP_DIRTY_FOR = 3
 
 local function markDirty(win)
-    local pid = win and win:pid()
-    if pid then
+    local pid, id = win and win:pid(), win and win:id()
+    if pid and id then
         eventWindows[pid] = eventWindows[pid] or {}
-        eventWindows[pid][win:id()] = win
+        eventWindows[pid][id] = win
         dirtyPids[pid] = hs.timer.secondsSinceEpoch() + BSP_DIRTY_FOR
         if M.observe then M.observe() end
     end
@@ -152,17 +152,19 @@ local function withRecentlyChangedApps(windows)
     for _, name in ipairs(S.cfg.ignoreApps or {}) do ignored[name] = true end
     for _, win in ipairs(candidates) do
         local pid, id = win:pid(), win:id()
-        pids[pid], filtered[pid] = true, filtered[pid] or {}
-        filtered[pid][#filtered[pid] + 1] = win
-        if not nativeWindows[id] and win:isStandard() then
-            nativeWindows[id] = { pid = pid, title = win:title() }
-        end
-        local leaf = Tree.setOf(id)
-        if leaf and leaf.kind == "native" then
-            -- Saved membership survives a reload even though AXWindows
-            -- has never exposed the background members in this Lua state.
-            for _, member in ipairs(leaf.members) do
-                nativeWindows[member] = nativeWindows[member] or { pid = pid }
+        if pid and id then
+            pids[pid], filtered[pid] = true, filtered[pid] or {}
+            filtered[pid][#filtered[pid] + 1] = win
+            if not nativeWindows[id] and win:isStandard() then
+                nativeWindows[id] = { pid = pid, title = win:title() }
+            end
+            local leaf = Tree.setOf(id)
+            if leaf and leaf.kind == "native" then
+                -- Saved membership survives a reload even though AXWindows
+                -- has never exposed the background members in this Lua state.
+                for _, member in ipairs(leaf.members) do
+                    nativeWindows[member] = nativeWindows[member] or { pid = pid }
+                end
             end
         end
     end
@@ -188,11 +190,13 @@ local function withRecentlyChangedApps(windows)
                 local listed = appWindows(pid, app)
                 local wins, included = {}, {}
                 for _, win in ipairs(listed or filtered[pid] or {}) do
-                    wins[#wins + 1], included[win:id()] = win, true
+                    local id = win:id()
+                    if id then wins[#wins + 1], included[id] = win, true end
                 end
                 for _, win in ipairs(filtered[pid] or {}) do
-                    if states and states[win:id()] == "shown" and not included[win:id()] then
-                        wins[#wins + 1], included[win:id()] = win, true
+                    local id = win:id()
+                    if id and states and states[id] == "shown" and not included[id] then
+                        wins[#wins + 1], included[id] = win, true
                     end
                 end
                 cached = { time = now, signature = signature, shown = {}, wins = wins,
@@ -200,7 +204,7 @@ local function withRecentlyChangedApps(windows)
                 appCache[pid] = cached
                 for _, win in ipairs(wins) do
                     local id = win:id()
-                    if (not states or states[id] == "shown" or states[id] == "unknown")
+                    if id and (not states or states[id] == "shown" or states[id] == "unknown")
                        and win:isStandard() and win:isVisible() and not win:isMinimized() then
                         nativeWindows[id] = { pid = pid, title = win:title() }
                         local titles = frames and frames.tabButtons and frames.tabButtons(pid, id) or {}
@@ -247,7 +251,7 @@ local function withRecentlyChangedApps(windows)
             for _, list in ipairs({ cached.wins, filtered[pid] or {} }) do
                 for _, win in ipairs(list) do
                     local id = win:id()
-                    if not seen[id] and (not states or states[id] == "shown"
+                    if id and not seen[id] and (not states or states[id] == "shown"
                        or states[id] == "unknown" or background[id]) then
                         out[#out + 1], seen[id] = win, true
                     end
@@ -339,6 +343,7 @@ end
 
 local function windowInfoFor(win)
     local id = win:id()
+    if not id then return {} end
     local info = S.windowInfo[id]
     if info then return info end
     local screen = win:screen()
@@ -409,10 +414,13 @@ local function windowsByScreen(onlyUUID)
     -- Parked windows are only counted as open.
     local allWindows = {}
     for _, win in ipairs(withRecentlyChangedApps(Util.managedWindows())) do
-        if Spaces.isHidden(win:id()) then
-            S.openIDs[win:id()] = true
-        else
-            allWindows[#allWindows + 1] = win
+        local id = win:id()
+        if id then
+            if Spaces.isHidden(id) then
+                S.openIDs[id] = true
+            else
+                allWindows[#allWindows + 1] = win
+            end
         end
     end
     learnTabs()
@@ -420,15 +428,17 @@ local function windowsByScreen(onlyUUID)
     for id in pairs(S.nativeBackground) do S.openIDs[id] = true end
 
     for _, win in ipairs(allWindows) do
-        if S.nativeBackground[win:id()] or isBackgroundTab(win) then
+        local id = win:id()
+        if not id then goto continue end
+        if S.nativeBackground[id] or isBackgroundTab(win) then
             S.ghosts[#S.ghosts + 1] = win
             goto continue
         end
-        S.openIDs[win:id()] = true
+        S.openIDs[id] = true
         local info = windowInfoFor(win)
         -- The filter only passes visible, manageable windows. One scrolled
         -- out of sight is in a corner, but stays on its own display.
-        local on = Scroll.awayUUID(win:id()) or info.uuid
+        local on = Scroll.awayUUID(id) or info.uuid
         local uuid = on and not info.full and Spaces.claim(win, on)
         if uuid and (not onlyUUID or uuid == onlyUUID) and not Float.shouldFloat(win) then
             byScreen[uuid] = byScreen[uuid] or {}
@@ -440,7 +450,7 @@ local function windowsByScreen(onlyUUID)
     -- Stable order for initial tree construction.
     for _, list in pairs(byScreen) do
         table.sort(list, function(a, b)
-            return a:id() < b:id()
+            return (a:id() or 0) < (b:id() or 0)
         end)
     end
 
@@ -454,10 +464,24 @@ end
 
 -- Cancels every pending frame verification (reload, shutdown).
 local switchTimers = {}
+local function start()
+    stopped = false
+end
+
 local function stop()
     stopped = true
     generation = generation + 1
     snapshotPending = false
+    snapshot = nil
+    dirtyPids = {}
+    eventWindows = {}
+    appCache = {}
+    repairBackoff = {}
+    S.nativeBackground = {}
+    S.nativeShown = {}
+    S.ghosts = {}
+    S.openIDs = {}
+    S.nativeTornBeside = nil
     for _, timer in pairs(switchTimers) do timer:stop() end
     switchTimers = {}
     for id in pairs(layoutChecks) do cancelLayoutCheck(id) end
@@ -473,6 +497,7 @@ local function shownSignature(states)
 end
 
 local function pollSwitch(pid, remaining, before)
+    if not pid or stopped then return end
     local frames = Util.native("frames")
     remaining = remaining or 25
     if not before then
@@ -483,12 +508,16 @@ local function pollSwitch(pid, remaining, before)
     if switchTimers[pid] then switchTimers[pid]:stop() end
     switchTimers[pid] = hs.timer.doAfter(0.01, function()
         switchTimers[pid] = nil
+        if stopped then return end
         requestSnapshot(frames)
         local states = snapshot and snapshot[pid]
         if not states then
             states = {}
             local app = hs.application.applicationForPID(pid)
-            for _, win in ipairs(app and appWindows(pid, app) or {}) do states[win:id()] = "shown" end
+            for _, win in ipairs(app and appWindows(pid, app) or {}) do
+                local id = win:id()
+                if id then states[id] = "shown" end
+            end
         end
         if shownSignature(states) ~= before or remaining == 1 then
             require("hyprspoon.layout").tileNow(true)
@@ -500,18 +529,20 @@ end
 
 Tree.registerKind("native", {
     cycle = function(win, leaf, key, delta)
+        local pid, id = win:pid(), win:id()
         local frames = Util.native("frames")
-        if frames and frames.tabButtons then
-            frames.tabButtons(win:pid(), win:id(), delta)
+        if frames and frames.tabButtons and pid and id then
+            frames.tabButtons(pid, id, delta)
         else
             -- The standard menu shortcuts remain useful without frames.so.
             local app = win:application()
-            app:selectMenuItem({ "Window", delta > 0 and "Show Next Tab" or "Show Previous Tab" })
+            if app then app:selectMenuItem({ "Window", delta > 0 and "Show Next Tab" or "Show Previous Tab" }) end
         end
-        pollSwitch(win:pid())
+        pollSwitch(pid)
     end,
     moveOut = function(win)
-        win:application():selectMenuItem({ "Window", "Move Tab to New Window" })
+        local app = win:application()
+        if app then app:selectMenuItem({ "Window", "Move Tab to New Window" }) end
         pollSwitch(win:pid())
     end,
     show = function(leaf, key, from, to)
@@ -534,12 +565,14 @@ Tree.registerKind("native", {
 })
 
 function M.isNativeTab(win)
-    local states = win and snapshot and snapshot[win:pid()]
-    return states and states[win:id()] == "tab"
+    local pid, id = win and win:pid(), win and win:id()
+    local states = pid and snapshot and snapshot[pid]
+    return states and id and states[id] == "tab" or false
 end
 
 function M.nativePeer(win)
     local pid = win and win:pid()
+    if not pid then return false end
     for _, d in pairs(S.nativeBackground) do if d.pid == pid then return true end end
     return false
 end
@@ -550,6 +583,7 @@ end
 
 M.handoff = handoff
 M.nativeWindows = nativeWindows
+M.start = start
 M.stop = stop
 M.layoutChecks = layoutChecks
 M.cancelLayoutCheck = cancelLayoutCheck

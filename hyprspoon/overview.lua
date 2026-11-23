@@ -96,34 +96,41 @@ local function draw(screen, list)
         })
         for _, w in ipairs(ws.windows) do
             local f = w.frame
-            local r = {
-                x = cx + (f.x - ff.x) * scale, y = cy + (f.y - ff.y) * scale,
-                w = math.max(8, f.w * scale), h = math.max(8, f.h * scale),
-            }
-            local winID = "win" .. w.id
-            targets[winID] = { n = ws.n, win = w.win }
-            canvas:appendElements({
-                id = winID, type = "rectangle", action = "strokeAndFill",
-                frame = r, roundedRectRadii = { xRadius = 6, yRadius = 6 },
-                fillColor = { white = 0.28, alpha = 0.95 },
-                strokeColor = { white = 1, alpha = 0.35 }, strokeWidth = 1,
-                trackMouseDown = true,
-            })
-            local size = math.min(48, r.w * 0.5, r.h * 0.5)
-            local icon = iconFor(w.win)
-            if icon and size >= 12 then
+            local rx = cx + (f.x - ff.x) * scale
+            local ry = cy + (f.y - ff.y) * scale
+            local rw = math.max(8, f.w * scale)
+            local rh = math.max(8, f.h * scale)
+            -- Clip to the workspace card so off-screen scrolling columns don't
+            -- spill onto neighbouring cards.
+            local x1, y1 = math.max(cx, rx), math.max(cy, ry)
+            local x2, y2 = math.min(cx + cellW, rx + rw), math.min(cy + cellH, ry + rh)
+            if x2 - x1 >= 4 and y2 - y1 >= 4 then
+                local r = { x = x1, y = y1, w = x2 - x1, h = y2 - y1 }
+                local winID = "win" .. w.id
+                targets[winID] = { n = ws.n, win = w.win }
                 canvas:appendElements({
-                    type = "image", image = icon, imageScaling = "scaleProportionally",
-                    frame = { x = r.x + (r.w - size) / 2, y = r.y + (r.h - size) / 2 - 8, w = size, h = size },
+                    id = winID, type = "rectangle", action = "strokeAndFill",
+                    frame = r, roundedRectRadii = { xRadius = 6, yRadius = 6 },
+                    fillColor = { white = 0.28, alpha = 0.95 },
+                    strokeColor = { white = 1, alpha = 0.35 }, strokeWidth = 1,
+                    trackMouseDown = true,
                 })
-            end
-            if r.h > size + 30 then
-                canvas:appendElements({
-                    type = "text", text = w.win:title() or "",
-                    textSize = 11, textAlignment = "center", textLineBreak = "truncateTail",
-                    textColor = { white = 1, alpha = 0.85 },
-                    frame = { x = r.x + 4, y = r.y + (r.h + size) / 2 - 4, w = r.w - 8, h = 16 },
-                })
+                local size = math.min(48, r.w * 0.5, r.h * 0.5)
+                local icon = iconFor(w.win)
+                if icon and size >= 12 then
+                    canvas:appendElements({
+                        type = "image", image = icon, imageScaling = "scaleProportionally",
+                        frame = { x = r.x + (r.w - size) / 2, y = r.y + (r.h - size) / 2 - 8, w = size, h = size },
+                    })
+                end
+                if r.h > size + 30 then
+                    canvas:appendElements({
+                        type = "text", text = w.win:title() or "",
+                        textSize = 11, textAlignment = "center", textLineBreak = "truncateTail",
+                        textColor = { white = 1, alpha = 0.85 },
+                        frame = { x = r.x + 4, y = r.y + (r.h + size) / 2 - 4, w = r.w - 8, h = 16 },
+                    })
+                end
             end
         end
     end
@@ -144,11 +151,12 @@ local function go(target)
     close()
     if not target then return end
     local win = target.win
-    if win and not Spaces.isHidden(win:id()) then
+    local id = win and win:id()
+    if id and not Spaces.isHidden(id) then
         Focus.focus(win)
         Util.warpToWindow(win)
     else
-        S.spaceFocusWin = win
+        S.spaceFocusWin = id and win or nil
         Spaces.gotoWorkspace(target.n)
     end
 end

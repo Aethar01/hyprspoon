@@ -165,7 +165,9 @@ local function currentWindow()
     end
     local id = Util.focusHistory[1]
     local win = id and Util.winByID[id]
-    if win and win:id() == id and not Spaces.isHidden(id) then
+    if win and win:id() == id and not Spaces.isHidden(id)
+       and not (S.fullscreen and S.fullscreen[id]) and not (S.offSpace and S.offSpace[id])
+       and not Scroll.isAway(id) and not (win.isMinimized and win:isMinimized()) then
         local front = hs.application.frontmostApplication()
         local pid = Util.pidByID[id]
         if front and pid and front:pid() == pid then return win end
@@ -197,7 +199,8 @@ local function windowSnapshot(fresh)
         local unmanaged = {}
         if S.running.pipFilter then
             for _, win in ipairs(S.running.pipFilter:getWindows() or {}) do
-                unmanaged[#unmanaged + 1] = win:frame()
+                local f = win:frame()
+                if f then unmanaged[#unmanaged + 1] = f end
             end
         end
         -- orderedWindows() enumerates every app over AX, even though the
@@ -232,7 +235,7 @@ local function windowSnapshot(fresh)
                 return entries
             end
             entries = {}
-            for _, info in ipairs(hs.window.list(true)) do
+            for _, info in ipairs(hs.window.list(true) or {}) do
                 local id = info.kCGWindowNumber
                 local win = byID[id]
                 if win then
@@ -245,7 +248,8 @@ local function windowSnapshot(fresh)
             -- Some accessory windows don't appear in WindowServer's list.
             for id, win in pairs(byID) do
                 if S.autoFloat[id] and not seen[id] then
-                    table.insert(entries, { win = win, id = id, frame = win:frame() })
+                    local f = win:frame()
+                    if f then table.insert(entries, { win = win, id = id, frame = f }) end
                 end
             end
         end

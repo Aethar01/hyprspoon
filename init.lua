@@ -84,6 +84,7 @@ local Float = require("hyprspoon.float")
 local Focus = require("hyprspoon.focus")
 local Discover = require("hyprspoon.discover")
 local Layout = require("hyprspoon.layout")
+local Drop = require("hyprspoon.drop")
 local Resize = require("hyprspoon.resize")
 local Mouse = require("hyprspoon.mouse")
 local Ffm = require("hyprspoon.ffm")
@@ -232,11 +233,15 @@ local function hotkeyActions()
     end
     for _, n in ipairs(workspaces) do
         -- Named workspaces toggle: again to go back to where you were.
-        actions["workspace" .. n] = type(n) == "number"
-            and function() M.gotoWorkspace(n) end
-            or function() M.toggleWorkspace(n) end
-        actions["moveToWorkspace" .. n] = function() M.moveToWorkspace(n) end
-        actions["moveToWorkspaceSilent" .. n] = function() M.moveToWorkspaceSilent(n) end
+        -- Never let a named workspace overwrite a numbered one's action.
+        local key = "workspace" .. n
+        if not actions[key] then
+            actions[key] = type(n) == "number"
+                and function() M.gotoWorkspace(n) end
+                or function() M.toggleWorkspace(n) end
+            actions["moveToWorkspace" .. n] = function() M.moveToWorkspace(n) end
+            actions["moveToWorkspaceSilent" .. n] = function() M.moveToWorkspaceSilent(n) end
+        end
     end
     for suffix, delta in pairs({ Prev = -1, Next = 1 }) do
         actions["focusDisplay" .. suffix] = function() M.focusDisplay(delta) end
@@ -339,10 +344,12 @@ function M.hotkeysFor(super, ctrlSuper)
         map["moveToWorkspaceSilent" .. i] = { ctrlSuper, key }
     end
     for _, name in ipairs((S.cfg or S.defaults).namedWorkspaces or {}) do
-        local key = name:lower()
-        map["workspace" .. name] = { super, key }
-        map["moveToWorkspace" .. name] = { superShift, key }
-        map["moveToWorkspaceSilent" .. name] = { ctrlSuper, key }
+        if type(name) == "string" and #name == 1 and not name:match("^%d$") then
+            local key = name:lower()
+            map["workspace" .. name] = { super, key }
+            map["moveToWorkspace" .. name] = { superShift, key }
+            map["moveToWorkspaceSilent" .. name] = { ctrlSuper, key }
+        end
     end
     for suffix, key in pairs({ Prev = ",", Next = "." }) do
         map["focusDisplay" .. suffix] = { super, key }
@@ -352,29 +359,31 @@ function M.hotkeysFor(super, ctrlSuper)
     return map
 end
 
--- Option as SUPER. Option+letter types characters like å and ß, which these
--- take over; ctrlAltCmdHotkeys leaves typing alone.
-M.defaultHotkeys = M.hotkeysFor({ "alt" })
+local function buildDefaultHotkeys()
+    -- Option as SUPER. Option+letter types characters like å and ß, which these
+    -- take over; ctrlAltCmdHotkeys leaves typing alone.
+    M.defaultHotkeys = M.hotkeysFor({ "alt" })
 
--- Ctrl+Option+Cmd as SUPER, with Ctrl+Option+Shift for the
--- third layer since Ctrl is already part of SUPER.
-M.ctrlAltCmdHotkeys = M.hotkeysFor({ "ctrl", "alt", "cmd" }, { "ctrl", "alt", "shift" })
--- Nearby keys avoid the contrast shortcuts and Shift+SUPER+. (sysdiagnose).
--- Keep the same keys across all three layers.
-for suffix, key in pairs({ Prev = "[", Next = "]" }) do
-    for _, action in ipairs({ "focusDisplay", "moveToDisplay", "moveWorkspaceToDisplay" }) do
-        M.ctrlAltCmdHotkeys[action .. suffix][2] = key
+    -- Ctrl+Option+Cmd as SUPER, with Ctrl+Option+Shift for the
+    -- third layer since Ctrl is already part of SUPER.
+    M.ctrlAltCmdHotkeys = M.hotkeysFor({ "ctrl", "alt", "cmd" }, { "ctrl", "alt", "shift" })
+    -- Nearby keys avoid the contrast shortcuts and Shift+SUPER+. (sysdiagnose).
+    -- Keep the same keys across all three layers.
+    for suffix, key in pairs({ Prev = "[", Next = "]" }) do
+        for _, action in ipairs({ "focusDisplay", "moveToDisplay", "moveWorkspaceToDisplay" }) do
+            M.ctrlAltCmdHotkeys[action .. suffix][2] = key
+        end
     end
-end
--- Consume-or-expel and move-column on the third layer: SUPER+, and . are
--- the contrast shortcuts, and the brackets are the displays'.
-do
+    -- Consume-or-expel and move-column on the third layer: SUPER+, and . are
+    -- the contrast shortcuts, and the brackets are the displays'.
     local third = M.ctrlAltCmdHotkeys.previousWorkspace[1]
     M.ctrlAltCmdHotkeys.consumeOrExpelLeft = { third, "," }
     M.ctrlAltCmdHotkeys.consumeOrExpelRight = { third, "." }
     M.ctrlAltCmdHotkeys.moveColumnLeft = { third, ";" }
     M.ctrlAltCmdHotkeys.moveColumnRight = { third, "'" }
 end
+
+buildDefaultHotkeys()
 
 -- Binds `mapping` (action name -> { mods, key }, as from hotkeysFor),
 -- replacing whatever an earlier call bound. Resizes repeat while held.
@@ -397,12 +406,16 @@ end
 -- ---------------------------------------------------------------------------
 
 local shutdownHooked = false
+local destroyTimers = {}
 
 -- Stops everything start() started (also run on reload and quit).
 function M.stop()
     Discover.stop()
+    for t in pairs(destroyTimers) do t:stop() end
+    destroyTimers = {}
     if S.running.mouseTap then S.running.mouseTap:stop() end
     Mouse.stop()
+    if Drop.stop then Drop.stop() end
     if S.running.moveTap then S.running.moveTap:stop() end
     if S.running.events then S.running.events.stop() end
     if S.running.gestureTap then S.running.gestureTap:stop() end
@@ -416,6 +429,7 @@ function M.stop()
     if S.running.menuBarWatcher then S.running.menuBarWatcher:stop() end
     for _, t in ipairs(S.running.screenTimers or {}) do t:stop() end
     if S.running.ffmTimer then S.running.ffmTimer:stop() end
+    if Util.stop then Util.stop() end
     Slide.stop()
     Groupbar.stop()
     Layout.stop()
@@ -452,6 +466,10 @@ function M.rescue()
     Layout.restoreFloatingFrames()
     M.stop()
     local back, missing = Spaces.rescue()
+    -- Clear kept trees and group sets so rescued group members are not
+    -- treated as group-hidden and re-parked when hyprspoon restarts.
+    S.trees, S.setsAway, S.keyIndex, S.maximized, S.filled = {}, {}, {}, {}, {}
+    Tree.saveTrees()
     print(string.format("hyprspoon: brought back %d parked window(s), tiling off", back))
     if missing > 0 then
         print(string.format("hyprspoon: %d more on another Space; go there and run rescue() again", missing))
@@ -462,8 +480,11 @@ end
 
 function M:start(opts)
     M.stop()
+    if Discover.start then Discover.start() end
+    for k in pairs(Util.windowRules) do Util.windowRules[k] = nil end
     Util.forgetManagedWindows()
     S.cfg = Util.deepMerge(S.defaults, opts or {})
+    buildDefaultHotkeys()
 
     hs.window.animationDuration = 0
 
@@ -477,10 +498,12 @@ function M:start(opts)
         shutdownHooked = true
         local previous = hs.shutdownCallback
         hs.shutdownCallback = function()
-            Spaces.rememberTitles()
-            Spaces.unparkAll()
-            Scroll.bringBack()
-            M.stop()
+            if S.running.windowFilter then
+                Spaces.rememberTitles()
+                Spaces.unparkAll()
+                Scroll.bringBack()
+                M.stop()
+            end
             if previous then previous() end
         end
     end
@@ -585,16 +608,17 @@ function M:start(opts)
 
     -- A window moved or resized (each step of our own animations too).
     local function onWindowMoved(win)
+        local id = win and win:id()
         -- A parked window that its app moved back into view.
-        if win and Spaces.isHidden(win:id()) then
+        if id and Spaces.isHidden(id) then
             if hs.timer.secondsSinceEpoch() > S.settleUntil then Spaces.place(win, true) end
             return
         end
         -- Our own layout moves echo back here; only other moves (e.g. to
         -- another display) can change which screen a window is on.
-        if win and hs.timer.secondsSinceEpoch() > S.settleUntil then
-            S.windowInfo[win:id()] = nil
-            S.applied[win:id()] = nil
+        if id and hs.timer.secondsSinceEpoch() > S.settleUntil then
+            S.windowInfo[id] = nil
+            S.applied[id] = nil
         end
         Focus.invalidateWindowCache()
         Float.raiseFloating()
@@ -642,24 +666,31 @@ function M:start(opts)
             local set = Tree.setOf(id)
             local handedOn = set and set.windowID == id and #set.members > 1
             for key, maxID in pairs(S.maximized) do
-                if maxID == id and not handedOn then S.maximized[key] = nil end
+                if maxID == id and not handedOn then S.maximized[key], S.filled[key] = nil, nil end
             end
             Spaces.forget(id)
             Float.forgetFloat(id)
+            if Layout.forget then Layout.forget(id) end
+            if Scroll.forget then Scroll.forget(id) end
+            if Actions.forget then Actions.forget(id) end
             Util.windowKinds[id] = nil
             Util.windowRules[id] = nil
             S.floatingFrames[id] = nil
             Util.winByID[id] = nil
+            Util.pidByID[id] = nil
             S.windowInfo[id] = nil
             S.applied[id] = nil
             -- Kept briefly: the retile that notices the close still needs it
             -- to tell whether this was the focused window.
-            hs.timer.doAfter(1, function()
+            local timer
+            timer = hs.timer.doAfter(1, function()
+                destroyTimers[timer] = nil
                 for i = #Util.focusHistory, 1, -1 do
                     if Util.focusHistory[i] == id then table.remove(Util.focusHistory, i) end
                 end
                 Util.focusTimes[id] = nil
             end)
+            if timer then destroyTimers[timer] = true end
         end
     end)
 
@@ -672,17 +703,18 @@ function M:start(opts)
         hs.window.filter.windowUnfullscreened,
         hs.window.filter.windowInCurrentSpace,
     }, function(win, appName, event)
-        Util.dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
+        local id = win and win:id()
+        Util.dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(id))
         Util.forgetManagedWindows()
-        if win then
-            S.windowInfo[win:id()] = nil
-            if event == hs.window.filter.windowInCurrentSpace then S.offSpace[win:id()] = nil end
-            if event == hs.window.filter.windowUnfullscreened then S.fullscreen[win:id()] = nil end
+        if id then
+            S.windowInfo[id] = nil
+            if event == hs.window.filter.windowInCurrentSpace then S.offSpace[id] = nil end
+            if event == hs.window.filter.windowUnfullscreened then S.fullscreen[id] = nil end
             -- Back from full screen with focus, so no focus event comes to
             -- light its ring again (it arrives on the desktop's Space first).
             if (event == hs.window.filter.windowInCurrentSpace
                 or event == hs.window.filter.windowUnfullscreened)
-               and Util.focusHistory[1] == win:id() and not win:isFullScreen() then
+               and Util.focusHistory[1] == id and not win:isFullScreen() then
                 Border.focused(win)
             end
             if event == hs.window.filter.windowVisible then Discover.handoff(win) end
@@ -713,11 +745,11 @@ function M:start(opts)
         hs.window.filter.windowFullscreened,
         hs.window.filter.windowNotInCurrentSpace,
     }, function(win, appName, event)
-        Util.dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(win and win:id()))
+        local id = win and win:id()
+        Util.dlog("event %s %s id=%s", tostring(event), tostring(appName), tostring(id))
         Util.forgetManagedWindows()
         S.lastGoneTime = hs.timer.secondsSinceEpoch()
-        if win then
-            local id = win:id()
+        if id then
             S.windowInfo[id] = nil
             if event == hs.window.filter.windowFullscreened then S.fullscreen[id] = true end
             if event == hs.window.filter.windowNotInCurrentSpace then
@@ -749,8 +781,8 @@ function M:start(opts)
         if event == hs.window.filter.windowNotInCurrentSpace then
             -- Also how a tab swap looks, with the new tab arriving a moment
             -- later: wait for it instead of treating this as a close.
-            if Discover.isNativeTab(win) then
-                S.offSpace[win:id()] = nil
+            if id and Discover.isNativeTab(win) then
+                S.offSpace[id] = nil
                 Layout.scheduleRetile(false, true)
             else
                 Layout.scheduleRetile(false, false, Layout.BSP_TAB_SETTLE)
@@ -777,6 +809,7 @@ function M:start(opts)
     -- macOS moves windows off a removed display (and back onto a returning
     -- one) a while after announcing the change, so look again once it has.
     S.running.screenWatcher = hs.screen.watcher.new(function()
+        Overview.stop()
         Hooks.fire("display")
         Spaces.screensChanged()
         Layout.scheduleRetile(true)
@@ -790,10 +823,10 @@ function M:start(opts)
         end
     end):start()
 
-    Bar.start()
-    Hud.start()
     Slide.start()
     Spaces.start()
+    Bar.start()
+    Hud.start()
     Border.start()
     Groupbar.start()
     Util.watchWindows()

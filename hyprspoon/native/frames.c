@@ -38,6 +38,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "frames.h"
@@ -45,7 +46,11 @@
 extern AXError _AXUIElementGetWindow(AXUIElementRef, CGWindowID *);
 
 static double now(void) {
-    return CFAbsoluteTimeGetCurrent();
+    return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) * 1e-9;
+}
+
+static bool rectFinite(CGRect r) {
+    return isfinite(r.origin.x) && isfinite(r.origin.y) && isfinite(r.size.width) && isfinite(r.size.height);
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +66,7 @@ typedef struct {
     double duration;
     uint64_t generation; // bumped by each request
     bool pending;        // not yet taken up by the app's loop
+    bool animating;      // actively easing in appLoop
     bool sole;           // see framesSet
     CGRect given;        // the frame last applied
     bool haveGiven;
@@ -71,6 +77,7 @@ typedef struct {
 #define MAX_REQUESTS 512
 static Request requests[MAX_REQUESTS];
 static int requestCount = 0;
+static int evictCursor = 0;
 static os_unfair_lock requestsLock = OS_UNFAIR_LOCK_INIT;
 
 // Set while Lua closes: runs return at once so the queues drain.
@@ -88,9 +95,13 @@ static Request *requestFor(uint32_t wid, bool create) {
         r->wid = wid;
         return r;
     }
-    // Full: take over one that's done.
-    for (int i = 0; i < requestCount; i++) {
-        if (!requests[i].pending) {
+    // Full: take over an idle slot round-robin, avoiding active animations and drags.
+    for (int pass = 0; pass < 2; pass++) {
+        for (int n = 0; n < requestCount; n++) {
+            int i = (evictCursor + n) % requestCount;
+            if (requests[i].pending || requests[i].animating) continue;
+            if (pass == 0 && requests[i].sole) continue;
+            evictCursor = (i + 1) % requestCount;
             memset(&requests[i], 0, sizeof(requests[i]));
             requests[i].wid = wid;
             return &requests[i];
@@ -132,8 +143,9 @@ typedef struct {
 } App;
 
 #define MAX_APPS 64
-static App *apps[MAX_APPS]; // made and found on the main thread
+static App *apps[MAX_APPS]; // guarded by appsLock (always acquired before requestsLock)
 static int appCount = 0;
+static os_unfair_lock appsLock = OS_UNFAIR_LOCK_INIT;
 
 static void releaseApp(void *context) {
     App *app = context;
@@ -156,11 +168,14 @@ static void drop(App *app) {
     free(app);
 }
 
-static App *appFor(pid_t pid, bool create) {
+// With appsLock held. Returns any evicted dead App via *evicted for the
+// caller to drop() after releasing appsLock.
+static App *appForLocked(pid_t pid, bool create, App **evicted) {
+    if (evicted) *evicted = NULL;
     // Hammerspoon's own windows (the Console) never: accessibility calls to
     // our own process run AppKit in place, and AppKit off the main thread
     // crashes. Lua moves them through hs.window instead.
-    if (pid == getpid()) return NULL;
+    if (pid == getpid() || atomic_load(&stopping)) return NULL;
     for (int i = 0; i < appCount; i++) {
         if (apps[i]->pid == pid) return apps[i];
     }
@@ -171,27 +186,35 @@ static App *appFor(pid_t pid, bool create) {
         slot = -1;
         for (int i = 0; i < appCount; i++) {
             if (kill(apps[i]->pid, 0) != 0 && errno == ESRCH) {
-                drop(apps[i]);
+                if (evicted) *evicted = apps[i];
                 slot = i;
                 break;
             }
         }
         if (slot < 0) return NULL;
-    } else {
-        appCount++;
     }
     App *app = calloc(1, sizeof(App));
+    if (!app) {
+        if (evicted) *evicted = NULL;
+        return NULL;
+    }
     app->pid = pid;
     char label[64];
     snprintf(label, sizeof(label), "hyprspoon.frames.%d", pid);
     app->queue = dispatch_queue_create(label, DISPATCH_QUEUE_SERIAL);
     apps[slot] = app;
+    if (slot == appCount) appCount++;
     return app;
 }
 
 dispatch_queue_t framesWorker(pid_t pid) {
-    App *app = appFor(pid, true);
-    return app ? app->queue : NULL;
+    App *evicted = NULL;
+    os_unfair_lock_lock(&appsLock);
+    App *app = appForLocked(pid, true, &evicted);
+    dispatch_queue_t q = app ? app->queue : NULL;
+    os_unfair_lock_unlock(&appsLock);
+    if (evicted) drop(evicted);
+    return q;
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +329,15 @@ typedef struct {
 
 #define MAX_ANIMATIONS 64
 
+static void setAnimating(uint32_t wid, uint64_t generation, bool on) {
+    os_unfair_lock_lock(&requestsLock);
+    Request *r = requestFor(wid, false);
+    if (r && r->generation == generation) r->animating = on;
+    os_unfair_lock_unlock(&requestsLock);
+}
+
 static void removeAnimation(Animation *anims, int *count, int i) {
+    setAnimating(anims[i].wid, anims[i].generation, false);
     CFRelease(anims[i].win);
     anims[i] = anims[--*count];
 }
@@ -373,6 +404,7 @@ static void appLoop(void *context) {
         if (raise) {
             AXUIElementRef win = windowElement(app, raiseWid);
             AXError result = win ? AXUIElementPerformAction(win, kAXRaiseAction) : kAXErrorFailure;
+            if (win && result != kAXErrorSuccess) forgetWindow(app, raiseWid);
             if (result != kAXErrorSuccess && tabShown) tabsSelect(app->pid, tabShown, tabTitle);
         }
 
@@ -405,6 +437,7 @@ static void appLoop(void *context) {
             if (t->duration > 0 && !CGRectEqualToRect(from, t->target) && animCount < MAX_ANIMATIONS) {
                 if (animCount == 0) tick = now();
                 CFRetain(win);
+                setAnimating(t->wid, t->generation, true);
                 anims[animCount++] = (Animation){ t->wid, win, from, t->target, now(), t->duration, t->generation };
             } else {
                 applyFrame(win, t->target, from);
@@ -422,6 +455,7 @@ static void appLoop(void *context) {
                 continue;
             }
             double p = (t - a->start) / a->duration;
+            if (p < 0) p = 0;
             if (p >= 1) {
                 // The steps went through every intermediate frame: finish
                 // as a full set.
@@ -457,6 +491,7 @@ static void appLoop(void *context) {
         if (animCount > 0) {
             tick += step;
             double wait = tick - done;
+            if (wait > step) wait = step;
             if (wait > 0) usleep((useconds_t)(wait * 1e6));
             else tick = now(); // the app is slower than the frame rate
         }
@@ -475,24 +510,32 @@ static bool wake(App *app) {
 
 static void request(pid_t pid, uint32_t wid, CGRect target, double duration, bool sole,
         const CGRect *from) {
-    App *app = appFor(pid, true);
-    if (!app) return;
-    os_unfair_lock_lock(&requestsLock);
-    Request *r = requestFor(wid, true);
-    bool start = false;
-    if (r) {
-        r->pid = pid;
-        r->target = target;
-        r->duration = duration;
-        r->sole = sole;
-        r->haveFrom = from != NULL;
-        if (from) r->from = *from;
-        r->generation++;
-        r->pending = true;
-        start = wake(app);
+    if (!rectFinite(target)) return;
+    if (from && !rectFinite(*from)) from = NULL;
+    if (!isfinite(duration) || duration < 0) duration = 0;
+    App *evicted = NULL;
+    os_unfair_lock_lock(&appsLock);
+    App *app = appForLocked(pid, true, &evicted);
+    if (app) {
+        os_unfair_lock_lock(&requestsLock);
+        Request *r = requestFor(wid, true);
+        bool start = false;
+        if (r) {
+            r->pid = pid;
+            r->target = target;
+            r->duration = duration;
+            r->sole = sole;
+            r->haveFrom = from != NULL;
+            if (from) r->from = *from;
+            r->generation++;
+            r->pending = true;
+            start = wake(app);
+        }
+        os_unfair_lock_unlock(&requestsLock);
+        if (start) dispatch_async_f(app->queue, app, appLoop);
     }
-    os_unfair_lock_unlock(&requestsLock);
-    if (start) dispatch_async_f(app->queue, app, appLoop);
+    os_unfair_lock_unlock(&appsLock);
+    if (evicted) drop(evicted);
 }
 
 void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sole) {
@@ -506,17 +549,22 @@ void framesSet(pid_t pid, uint32_t wid, CGRect target, double duration, bool sol
 // Hammerspoon's main thread's included, waited behind them. So a raise
 // still waiting is replaced by the next one for the same app.
 void framesShowTab(pid_t pid, uint32_t wid, uint32_t shown, CFStringRef title) {
-    App *app = appFor(pid, true);
-    if (!app) return;
-    os_unfair_lock_lock(&requestsLock);
-    app->raise = wid;
-    if (app->tabTitle) CFRelease(app->tabTitle);
-    app->tabTitle = title ? CFRetain(title) : NULL;
-    app->tabShown = shown;
-    app->raiseQueued = true;
-    bool start = wake(app);
-    os_unfair_lock_unlock(&requestsLock);
-    if (start) dispatch_async_f(app->queue, app, appLoop);
+    App *evicted = NULL;
+    os_unfair_lock_lock(&appsLock);
+    App *app = appForLocked(pid, true, &evicted);
+    if (app) {
+        os_unfair_lock_lock(&requestsLock);
+        app->raise = wid;
+        if (app->tabTitle) CFRelease(app->tabTitle);
+        app->tabTitle = title ? CFRetain(title) : NULL;
+        app->tabShown = shown;
+        app->raiseQueued = true;
+        bool start = wake(app);
+        os_unfair_lock_unlock(&requestsLock);
+        if (start) dispatch_async_f(app->queue, app, appLoop);
+    }
+    os_unfair_lock_unlock(&appsLock);
+    if (evicted) drop(evicted);
 }
 
 void framesRaise(pid_t pid, uint32_t wid) {
@@ -528,8 +576,15 @@ static void nothing(void *context) {
 }
 
 void framesWait(pid_t pid) {
-    App *app = appFor(pid, false);
-    if (app) dispatch_sync_f(app->queue, NULL, nothing);
+    os_unfair_lock_lock(&appsLock);
+    App *app = appForLocked(pid, false, NULL);
+    dispatch_queue_t q = app ? app->queue : NULL;
+    if (q) dispatch_retain(q);
+    os_unfair_lock_unlock(&appsLock);
+    if (q) {
+        dispatch_sync_f(q, NULL, nothing);
+        dispatch_release(q);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -578,21 +633,23 @@ static int l_set(lua_State *L) {
 // longer than a 60Hz frame, so the next was skipped.
 static int l_stats(lua_State *L) {
     bool reset = lua_toboolean(L, 1);
-    lua_newtable(L);
+    struct {
+        pid_t pid;
+        uint64_t steps, late;
+        double total, worst;
+    } snap[MAX_APPS];
+    int count = 0;
+    os_unfair_lock_lock(&appsLock);
     os_unfair_lock_lock(&requestsLock);
     for (int i = 0; i < appCount; i++) {
         App *app = apps[i];
         if (app->steps > 0) {
-            lua_newtable(L);
-            lua_pushinteger(L, (lua_Integer)app->steps);
-            lua_setfield(L, -2, "steps");
-            lua_pushinteger(L, (lua_Integer)app->late);
-            lua_setfield(L, -2, "late");
-            lua_pushnumber(L, app->stepTotal * 1000 / (double)app->steps);
-            lua_setfield(L, -2, "avgMs");
-            lua_pushnumber(L, app->stepWorst * 1000);
-            lua_setfield(L, -2, "worstMs");
-            lua_rawseti(L, -2, app->pid);
+            snap[count].pid = app->pid;
+            snap[count].steps = app->steps;
+            snap[count].late = app->late;
+            snap[count].total = app->stepTotal;
+            snap[count].worst = app->stepWorst;
+            count++;
         }
         if (reset) {
             app->steps = app->late = 0;
@@ -600,6 +657,20 @@ static int l_stats(lua_State *L) {
         }
     }
     os_unfair_lock_unlock(&requestsLock);
+    os_unfair_lock_unlock(&appsLock);
+    lua_newtable(L);
+    for (int i = 0; i < count; i++) {
+        lua_newtable(L);
+        lua_pushinteger(L, (lua_Integer)snap[i].steps);
+        lua_setfield(L, -2, "steps");
+        lua_pushinteger(L, (lua_Integer)snap[i].late);
+        lua_setfield(L, -2, "late");
+        lua_pushnumber(L, snap[i].total * 1000 / (double)snap[i].steps);
+        lua_setfield(L, -2, "avgMs");
+        lua_pushnumber(L, snap[i].worst * 1000);
+        lua_setfield(L, -2, "worstMs");
+        lua_rawseti(L, -2, snap[i].pid);
+    }
     return 1;
 }
 
@@ -610,10 +681,18 @@ static int l_gc(lua_State *L) {
     dragStop();
     atomic_store(&stopping, true);
     tabsCancel();
-    for (int i = 0; i < appCount; i++) drop(apps[i]);
-    tabsStop();
+    App *list[MAX_APPS];
+    os_unfair_lock_lock(&appsLock);
+    int n = appCount;
+    memcpy(list, apps, sizeof(App *) * (size_t)n);
     appCount = 0;
+    os_unfair_lock_unlock(&appsLock);
+    for (int i = 0; i < n; i++) drop(list[i]);
+    tabsStop();
+    os_unfair_lock_lock(&requestsLock);
     requestCount = 0;
+    evictCursor = 0;
+    os_unfair_lock_unlock(&requestsLock);
     return 0;
 }
 
@@ -621,6 +700,7 @@ int luaopen_hyprspoon_native_frames(lua_State *L) {
     atomic_store(&stopping, false);
     appCount = 0;
     requestCount = 0;
+    evictCursor = 0;
 
     static const luaL_Reg funcs[] = {
         { "liveIDs", l_liveIDs },

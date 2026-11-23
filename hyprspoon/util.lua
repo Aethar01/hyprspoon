@@ -11,10 +11,18 @@ local Border = require("hyprspoon.border")
 -- Helpers
 -- ---------------------------------------------------------------------------
 
+-- hs.drawing.color tables are leaf values, not nested option groups:
+-- merging `{ hex = ... }` with `{ red = ... }` would leave `hex` intact.
+local function isColorTable(t)
+    return t.hex ~= nil or t.red ~= nil or t.green ~= nil or t.blue ~= nil
+        or t.white ~= nil or t.hue ~= nil or t.list ~= nil
+end
+
 local function deepMerge(base, override)
     local out = {}
     for k, v in pairs(base) do
-        if type(v) == "table" and next(v) ~= nil and v[1] == nil and type(override[k]) == "table" then
+        if type(v) == "table" and next(v) ~= nil and v[1] == nil and not isColorTable(v)
+           and type(override[k]) == "table" then
             out[k] = deepMerge(v, override[k])
         elseif override[k] ~= nil then
             out[k] = override[k]
@@ -131,7 +139,8 @@ local function rulesFor(win, uncached)
             end
             if match and rule.title then
                 title = title or win:title() or ""
-                match = title:match(rule.title) ~= nil
+                local ok, hit = pcall(string.match, title, rule.title)
+                match = ok and hit ~= nil
             end
             if match then
                 for k, v in pairs(rule) do
@@ -172,9 +181,12 @@ local function managedWindows()
     if managedCache then return managedCache end
     local out, complete, seen = {}, true, {}
     for _, win in ipairs(S.running.windowFilter and S.running.windowFilter:getWindows() or {}) do
-        seen[win:id()] = true
-        if windowKind(win) ~= "ignored" then out[#out + 1] = win end
-        if not windowKinds[win:id()] then complete = false end
+        local id = win:id()
+        if id then
+            seen[id] = true
+            if windowKind(win) ~= "ignored" then out[#out + 1] = win end
+            if not windowKinds[id] then complete = false end
+        end
     end
     -- The filter never reports some windows an app shows: the window left
     -- holding the other tabs after a native tab is torn off. Discovery finds
@@ -240,7 +252,7 @@ local function setFrame(win, rect, duration, from)
     local pid = id and (pidByID[id] or win:pid())
     -- Hammerspoon's own windows (the Console) are AppKit's in this process,
     -- which only the main thread may move: never on frames' queues.
-    if frames and id and pid ~= OWN_PID then
+    if frames and id and pid and pid ~= OWN_PID then
         if from then
             frames.set(pid, id, rect.x, rect.y, rect.w, rect.h, duration or 0,
                 from.x, from.y, from.w, from.h)
@@ -254,8 +266,12 @@ local function setFrame(win, rect, duration, from)
 end
 
 watchTimer = hs.timer.delayed.new(0.01, function()
+    if not S.running.windowFilter then return end
     local ids = {}
-    for _, win in ipairs(managedWindows()) do ids[#ids + 1] = win:id() end
+    for _, win in ipairs(managedWindows()) do
+        local id = win:id()
+        if id then ids[#ids + 1] = id end
+    end
     if S.running.events then S.running.events.watch(ids) end
     Border.watch(ids)
 end)
@@ -269,17 +285,20 @@ end)
 local function focusWindow(win, raise)
     local frames = native("frames")
     local id = win:id()
-    if frames and id and frames.focus(pidByID[id] or win:pid(), id, raise ~= false) then return end
+    local pid = id and (pidByID[id] or win:pid())
+    if frames and id and pid and frames.focus(pid, id, raise ~= false) then return end
     win:focus()
 end
 
 local WARP_MOUSE_EVENT = 0x425350
+local warpTimer = nil
 
 local function warpToWindow(win)
     if not win then return end
     -- Tiled windows warp to where their tile is, not where the app currently
     -- reports the window (which lags while it resizes).
     local f = Tree.rectFor and Tree.rectFor(win:id()) or win:frame()
+    if not f then return end
     local point = {
         x = f.x + f.w / 2,
         y = f.y + f.h / 2,
@@ -293,13 +312,21 @@ local function warpToWindow(win)
 end
 
 local function warpToFocusedWindow(delay)
+    if warpTimer then warpTimer:stop() warpTimer = nil end
     if delay and delay > 0 then
-        hs.timer.doAfter(delay, function()
+        warpTimer = hs.timer.doAfter(delay, function()
+            warpTimer = nil
             warpToWindow(focusedWindow())
         end)
     else
         warpToWindow(focusedWindow())
     end
+end
+
+local function stop()
+    if watchTimer then watchTimer:stop() end
+    if warpTimer then warpTimer:stop() warpTimer = nil end
+    managedCache = nil
 end
 
 local function pointInFrame(point, frame)
@@ -343,5 +370,6 @@ M.warpToFocusedWindow = warpToFocusedWindow
 M.pointInFrame = pointInFrame
 M.FFM_SNAPSHOT_TTL = FFM_SNAPSHOT_TTL
 M.FFM_HOVER_DELAY = FFM_HOVER_DELAY
+M.stop = stop
 
 return M

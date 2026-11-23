@@ -60,7 +60,9 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <libproc.h>
+#include <pthread.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "lauxlib.h"
@@ -264,7 +266,11 @@ static void startDrain(Drain *d) {
 
 static void stopDrain(Drain *d) {
     if (!d->source) return;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_source_set_cancel_handler(d->source, ^{ dispatch_semaphore_signal(done); });
     dispatch_source_cancel(d->source);
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    dispatch_release(done);
     dispatch_release(d->source);
     d->source = NULL;
 }
@@ -336,7 +342,7 @@ typedef struct {
 static RingStyle style = { { 0.42, 0.6, 0.73, 1 }, { 0.35, 0.35, 0.35, 0.67 }, 3, 12, 1 };
 
 static double now(void) {
-    return CFAbsoluteTimeGetCurrent();
+    return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) * 1e-9;
 }
 
 static Ring *ringFor(uint32_t target) {
@@ -367,12 +373,14 @@ static CGColorRef colorAt(float mix) {
 // How active the ring looks at time `t`.
 static float mixAt(Ring *ring, double t) {
     double p = ring->duration > 0 ? (t - ring->start) / ring->duration : 1;
+    if (p < 0) p = 0;
     return p >= 1 ? ring->to : ring->from + (ring->to - ring->from) * (float)p;
 }
 
 // How active the group bar's shown tab looks at time `t`.
 static float tabMixAt(Ring *ring, double t) {
     double p = ring->tabDuration > 0 ? (t - ring->tabStart) / ring->tabDuration : 1;
+    if (p < 0) p = 0;
     return p >= 1 ? ring->to : ring->tabFrom + (ring->to - ring->tabFrom) * (float)p;
 }
 
@@ -488,7 +496,7 @@ static void layoutBar(Ring *ring) {
     ring->bar.frame = CGRectOffset(area, ring->margin.x, ring->margin.y);
     CGFloat barH = area.size.height, total = area.size.width;
     CGFloat inset = fmin(bar->inset, total / 4), span = total - 2 * inset;
-    CGFloat lineH = CTFontGetAscent(bar->font) + CTFontGetDescent(bar->font) + CTFontGetLeading(bar->font);
+    CGFloat lineH = bar->font ? CTFontGetAscent(bar->font) + CTFontGetDescent(bar->font) + CTFontGetLeading(bar->font) : 14;
     CGColorRef inactive = tabColorAt(bar, 0), text = CGColorCreateSRGB(bar->text[0], bar->text[1], bar->text[2], bar->text[3]);
     CGColorRef current = tabColorAt(bar, ring->to);
     ring->shownFill = nil;
@@ -518,7 +526,7 @@ static void layoutBar(Ring *ring) {
         label.frame = CGRectMake(x + pad, fmax(0, top + (visible - lineH) / 2), fmax(0, w - 2 * pad), lineH);
         // Each of these redraws the text when set, so only when changed.
         if (![label.string isEqual:bar->titles[i]]) label.string = bar->titles[i];
-        if (label.font != (CFTypeRef)bar->font) {
+        if (bar->font && label.font != (CFTypeRef)bar->font) {
             label.font = bar->font;
             label.fontSize = CTFontGetSize(bar->font);
         }
@@ -536,7 +544,7 @@ static void layoutBar(Ring *ring) {
         CGFloat w = style.width;
         CGSize size = ring->bounds.size;
         CGRect hole = CGRectMake(bar->outset - w, bar->above - w, size.width + 2 * w, size.height + 2 * w);
-        CGFloat r = fmin(ring->radius + w, fmin(hole.size.width, hole.size.height) / 2);
+        CGFloat r = fmax(0, fmin(ring->radius + w, fmin(hole.size.width, hole.size.height) / 2));
         CGMutablePathRef path = CGPathCreateMutable();
         CGPathAddRect(path, NULL, ring->bar.bounds);
         CGPathAddRoundedRect(path, NULL, hole, r, r);
@@ -655,6 +663,12 @@ static bool makeWindow(Ring *ring) {
     if (region) CFRelease(region);
     if (opaque) CFRelease(opaque);
     if (!wid) {
+        beginChanges();
+        context.layer = nil;
+        commitChanges();
+        if ([context respondsToSelector:@selector(invalidate)]) {
+            [context performSelector:@selector(invalidate)];
+        }
         [bar release];
         [layer release];
         [content release];
@@ -844,6 +858,7 @@ static Ring *newRing(uint32_t target) {
     beginChanges();
     CGColorRef color = colorAt(ring->to);
     [ring->layer removeAllAnimations];
+    for (CALayer *fill in ring->tabLayers) [fill removeAllAnimations];
     ring->layer.borderColor = color;
     CGColorRelease(color);
     ring->content.mask = nil;
@@ -1044,22 +1059,34 @@ static int coversOf(Ring *ring, Cover *covers) {
     return count;
 }
 
+static void hashBytes(uint64_t *h, const void *data, size_t len) {
+    const unsigned char *p = (const unsigned char *)data;
+    for (size_t i = 0; i < len; i++) *h = (*h ^ p[i]) * 1099511628211ULL;
+}
+
 // A key for what the mask is worked out from, to skip working out the
 // same one again (most rings, most updates). Never 0.
 static uint64_t maskKey(Ring *ring, const Cover *covers, int count) {
     uint64_t h = 1469598103934665603ULL;
-    CGRect frame = { ring->margin, ring->bounds.size };
-    const unsigned char *p = (const unsigned char *)&frame;
-    for (size_t i = 0; i < sizeof(CGRect); i++) h = (h ^ p[i]) * 1099511628211ULL;
-    p = (const unsigned char *)&ring->canvas;
-    for (size_t i = 0; i < sizeof(CGSize); i++) h = (h ^ p[i]) * 1099511628211ULL;
-    p = (const unsigned char *)covers;
-    for (size_t i = 0; i < sizeof(Cover) * count; i++) h = (h ^ p[i]) * 1099511628211ULL;
+    CGFloat vals[6] = {
+        ring->margin.x, ring->margin.y,
+        ring->bounds.size.width, ring->bounds.size.height,
+        ring->canvas.width, ring->canvas.height,
+    };
+    hashBytes(&h, vals, sizeof(vals));
+    for (int i = 0; i < count; i++) {
+        CGFloat cv[6] = {
+            covers[i].rect.origin.x, covers[i].rect.origin.y,
+            covers[i].rect.size.width, covers[i].rect.size.height,
+            covers[i].radius, covers[i].shows,
+        };
+        hashBytes(&h, cv, sizeof(cv));
+    }
     return h ? h : 1;
 }
 
 static void addOutline(CGMutablePathRef path, const Cover *cover) {
-    CGFloat r = fmin(cover->radius, fmin(cover->rect.size.width, cover->rect.size.height) / 2);
+    CGFloat r = fmax(0, fmin(cover->radius, fmin(cover->rect.size.width, cover->rect.size.height) / 2));
     CGPathAddRoundedRect(path, NULL, cover->rect, r, r);
 }
 
@@ -1398,6 +1425,7 @@ static void onWindowCreatedOrDestroyed(uint32_t event, void *data, size_t length
     (void)data;
     (void)length;
     (void)cid;
+    if (!pthread_main_np()) return;
     if (queue && !atomic_exchange(&overviewCheckQueued, true)) dispatch_async_f(queue, NULL, checkOverview);
     // It may cover a ring, or uncover one (watchAsk exists only with masks on).
     if (watchAsk) noteCovering();
@@ -1493,8 +1521,16 @@ static void handleEvent(uint32_t event, uint32_t wid) {
     }
 }
 
-// What changed since the queue last looked, noted from the main thread.
+// What changed since the queue last looked, noted from the main thread (or
+// drag.c's tap thread for previews). `notedLock` also guards `queue`
+// against teardown so off-main previewRing() cannot dispatch to a freed queue.
 #define MAX_NOTED 256
+#define MAX_PREVIEWS 16
+typedef struct {
+    bool on;
+    uint32_t wid;
+    CGRect frame;
+} PreviewNote;
 static os_unfair_lock notedLock = OS_UNFAIR_LOCK_INIT;
 static struct {
     uint32_t moved[MAX_NOTED]; // moved or resized, each once
@@ -1502,7 +1538,8 @@ static struct {
     struct { uint32_t event, wid; } other[MAX_NOTED]; // hide, unhide, close
     int otherCount;
     bool restack;  // a window was restacked or changed level
-    struct { bool changed, on; uint32_t wid; CGRect frame; } preview; // the latest
+    PreviewNote previews[MAX_PREVIEWS]; // latest per window
+    int previewCount;
     bool queued;   // catchUp is on the queue
 } noted;
 
@@ -1511,13 +1548,13 @@ static void catchUp(void *unused) {
     os_unfair_lock_lock(&notedLock);
     uint32_t moved[MAX_NOTED];
     struct { uint32_t event, wid; } other[MAX_NOTED];
-    int movedCount = noted.movedCount, otherCount = noted.otherCount;
+    PreviewNote previews[MAX_PREVIEWS];
+    int movedCount = noted.movedCount, otherCount = noted.otherCount, previewCount = noted.previewCount;
     bool restack = noted.restack;
-    __typeof__(noted.preview) preview = noted.preview;
-    noted.preview.changed = false;
     memcpy(moved, noted.moved, sizeof(uint32_t) * movedCount);
     memcpy(other, noted.other, sizeof(other[0]) * otherCount);
-    noted.movedCount = noted.otherCount = 0;
+    memcpy(previews, noted.previews, sizeof(PreviewNote) * previewCount);
+    noted.movedCount = noted.otherCount = noted.previewCount = 0;
     noted.restack = noted.queued = false;
     os_unfair_lock_unlock(&notedLock);
 
@@ -1525,11 +1562,11 @@ static void catchUp(void *unused) {
     // burst. Moves of windows without rings count only for this.
     beginMasking();
     for (int i = 0; i < otherCount; i++) handleEvent(other[i].event, other[i].wid);
-    if (preview.changed) {
-        Ring *ring = ringFor(preview.wid);
+    for (int i = 0; i < previewCount; i++) {
+        Ring *ring = ringFor(previews[i].wid);
         if (ring) {
-            ring->previewing = preview.on;
-            ring->preview = preview.frame;
+            ring->previewing = previews[i].on;
+            ring->preview = previews[i].frame;
             place(ring, false);
         }
     }
@@ -1549,24 +1586,38 @@ static void catchUp(void *unused) {
 // A window came or went: an update for the masks alone.
 static void noteCovering(void) {
     os_unfair_lock_lock(&notedLock);
-    bool enqueue = !noted.queued && queue;
-    noted.queued = true;
+    dispatch_queue_t q = queue;
+    if (q && !noted.queued) {
+        noted.queued = true;
+        dispatch_async_f(q, NULL, catchUp);
+    }
     os_unfair_lock_unlock(&notedLock);
-    if (enqueue) dispatch_async_f(queue, NULL, catchUp);
 }
 
 // The RingPreview handed to drag.c (see preview.h).
 static void previewRing(uint32_t wid, const CGRect *frame) {
-    if (!queue) return;
     os_unfair_lock_lock(&notedLock);
-    noted.preview.changed = true;
-    noted.preview.on = frame != NULL;
-    noted.preview.wid = wid;
-    if (frame) noted.preview.frame = *frame;
-    bool enqueue = !noted.queued;
-    noted.queued = true;
+    dispatch_queue_t q = queue;
+    if (q) {
+        int slot = -1;
+        for (int i = 0; i < noted.previewCount; i++) {
+            if (noted.previews[i].wid == wid) {
+                slot = i;
+                break;
+            }
+        }
+        if (slot < 0 && noted.previewCount < MAX_PREVIEWS) slot = noted.previewCount++;
+        if (slot >= 0) {
+            noted.previews[slot].on = frame != NULL;
+            noted.previews[slot].wid = wid;
+            noted.previews[slot].frame = frame ? *frame : CGRectZero;
+        }
+        if (!noted.queued) {
+            noted.queued = true;
+            dispatch_async_f(q, NULL, catchUp);
+        }
+    }
     os_unfair_lock_unlock(&notedLock);
-    if (enqueue) dispatch_async_f(queue, NULL, catchUp);
 }
 
 static void onWindowEvent(uint32_t event, void *data, size_t length, void *context) {
@@ -1574,26 +1625,30 @@ static void onWindowEvent(uint32_t event, void *data, size_t length, void *conte
     if (!data || length < sizeof(uint32_t)) return;
     uint32_t wid = *(uint32_t *)data;
     os_unfair_lock_lock(&notedLock);
-    if (event == SL_EVENT_WINDOW_REORDER || event == SL_EVENT_WINDOW_LEVEL) {
-        noted.restack = true;
-    } else if (event == SL_EVENT_WINDOW_MOVE || event == SL_EVENT_WINDOW_RESIZE) {
-        bool listed = false;
-        for (int i = 0; i < noted.movedCount; i++) {
-            if (noted.moved[i] == wid) {
-                listed = true;
-                break;
+    dispatch_queue_t q = queue;
+    if (q) {
+        if (event == SL_EVENT_WINDOW_REORDER || event == SL_EVENT_WINDOW_LEVEL) {
+            noted.restack = true;
+        } else if (event == SL_EVENT_WINDOW_MOVE || event == SL_EVENT_WINDOW_RESIZE) {
+            bool listed = false;
+            for (int i = 0; i < noted.movedCount; i++) {
+                if (noted.moved[i] == wid) {
+                    listed = true;
+                    break;
+                }
             }
+            if (!listed && noted.movedCount < MAX_NOTED) noted.moved[noted.movedCount++] = wid;
+        } else if (noted.otherCount < MAX_NOTED) {
+            noted.other[noted.otherCount].event = event;
+            noted.other[noted.otherCount].wid = wid;
+            noted.otherCount++;
         }
-        if (!listed && noted.movedCount < MAX_NOTED) noted.moved[noted.movedCount++] = wid;
-    } else if (noted.otherCount < MAX_NOTED) {
-        noted.other[noted.otherCount].event = event;
-        noted.other[noted.otherCount].wid = wid;
-        noted.otherCount++;
+        if (!noted.queued) {
+            noted.queued = true;
+            dispatch_async_f(q, NULL, catchUp);
+        }
     }
-    bool enqueue = !noted.queued && queue;
-    noted.queued = true;
     os_unfair_lock_unlock(&notedLock);
-    if (enqueue) dispatch_async_f(queue, NULL, catchUp);
 }
 
 // Registered while a Lua state has the module loaded: Lua unloads the
@@ -1818,6 +1873,7 @@ static bool readRGBA(lua_State *L, const char *key, CGFloat *out) {
 
 static int l_bar(lua_State *L) {
     uint32_t wid = (uint32_t)luaL_checkinteger(L, 1);
+    if (!wid) return 0;
     __block Bar next;
     memset(&next, 0, sizeof(next));
     bool on = lua_istable(L, 2);
@@ -1839,17 +1895,7 @@ static int l_bar(lua_State *L) {
         lua_getfield(L, 2, "under");
         next.under = lua_toboolean(L, -1);
         lua_pop(L, 1);
-        CGFloat size = field(L, "size", 12);
-        lua_getfield(L, 2, "font");
-        const char *name = lua_tostring(L, -1);
-        if (name) {
-            CFStringRef font = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
-            next.font = CTFontCreateWithName(font, size, NULL);
-            CFRelease(font);
-        } else {
-            next.font = CTFontCreateUIFontForLanguage(kCTFontUIFontMenuItem, size, NULL);
-        }
-        lua_pop(L, 1);
+        CGFloat size = fmax(1, field(L, "size", 12));
         next.text[0] = next.text[1] = next.text[2] = next.text[3] = 1;
         if (lua_getfield(L, 2, "text") == LUA_TTABLE) {
             for (int i = 0; i < 4; i++) {
@@ -1871,10 +1917,25 @@ static int l_bar(lua_State *L) {
         lua_pop(L, 1);
         next.hasActive = readRGBA(L, "active", next.active);
         next.hasInactive = readRGBA(L, "inactive", next.inactive);
+        // Allocate CoreText/Foundation objects after all Lua checks so a
+        // Lua error cannot longjmp past their release.
+        int titleCount = 0;
+        if (lua_getfield(L, 2, "titles") == LUA_TTABLE) titleCount = (int)luaL_len(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, 2, "font");
+        const char *name = lua_tostring(L, -1);
+        if (name) {
+            CFStringRef font = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
+            if (font) {
+                next.font = CTFontCreateWithName(font, size, NULL);
+                CFRelease(font);
+            }
+        }
+        if (!next.font) next.font = CTFontCreateUIFontForLanguage(kCTFontUIFontMenuItem, size, NULL);
+        lua_pop(L, 1);
         NSMutableArray *titles = [[NSMutableArray alloc] init];
         if (lua_getfield(L, 2, "titles") == LUA_TTABLE) {
-            int n = (int)luaL_len(L, -1);
-            for (int i = 1; i <= n; i++) {
+            for (int i = 1; i <= titleCount; i++) {
                 lua_rawgeti(L, -1, i);
                 const char *title = lua_tostring(L, -1);
                 [titles addObject:[NSString stringWithUTF8String:title ? title : ""] ?: @""];
@@ -1981,11 +2042,11 @@ static int l_style(lua_State *L) {
     readColor(L, "active", next.active);
     readColor(L, "inactive", next.inactive);
     lua_getfield(L, 1, "width");
-    next.width = luaL_optnumber(L, -1, next.width);
+    next.width = fmax(0, luaL_optnumber(L, -1, next.width));
     lua_getfield(L, 1, "radius");
-    next.radius = luaL_optnumber(L, -1, next.radius);
+    next.radius = fmax(0, luaL_optnumber(L, -1, next.radius));
     lua_getfield(L, 1, "resolution");
-    next.resolution = luaL_optnumber(L, -1, next.resolution);
+    next.resolution = fmax(1, luaL_optnumber(L, -1, next.resolution));
     lua_pop(L, 3);
     dispatch_sync(queue, ^{
         releaseAll();
@@ -1997,11 +2058,28 @@ static int l_style(lua_State *L) {
 static int l_stop(lua_State *L) {
     (void)L;
     activeAsked = 0;
+    os_unfair_lock_lock(&notedLock);
+    noted.movedCount = noted.otherCount = noted.previewCount = 0;
+    noted.restack = false;
+    os_unfair_lock_unlock(&notedLock);
     dispatch_sync(queue, ^{
+        if (overviewCheck && overviewCheckRunning) {
+            dispatch_suspend(overviewCheck);
+            overviewCheckRunning = false;
+        }
+        overview = false;
+        masks.on = false;
+        if (releaseCheck && releaseCheckRunning) {
+            dispatch_suspend(releaseCheck);
+            releaseCheckRunning = false;
+        }
         releaseAll();
         for (int i = 0; i < MAX_BARS; i++) freeBar(&bars[i]);
         active = 0;
+        opacityCount = radiusCount = askedCount = seenCount = 0;
+        snapshotTaken = snapshotTruncated = false;
     });
+    stopWatchAsk();
     return 0;
 }
 
@@ -2010,31 +2088,43 @@ static int l_stop(lua_State *L) {
 static int l_gc(lua_State *L) {
     (void)L;
     registerEvents(false);
-    dispatch_sync(queue, ^{
-        if (overviewCheck) {
-            if (!overviewCheckRunning) dispatch_resume(overviewCheck);
-            dispatch_source_cancel(overviewCheck);
-            dispatch_release(overviewCheck);
-            overviewCheck = NULL;
-            overviewCheckRunning = false;
-        }
-        overview = false;
-        masks.on = false;
-        if (releaseCheck) {
-            if (!releaseCheckRunning) dispatch_resume(releaseCheck); // can't cancel a suspended source
-            dispatch_source_cancel(releaseCheck);
-            dispatch_release(releaseCheck);
-            releaseCheck = NULL;
-            releaseCheckRunning = false;
-        }
-        releaseAll();
-        for (int i = 0; i < MAX_BARS; i++) freeBar(&bars[i]);
+    // Clear `queue` under notedLock before draining so off-main previewRing()
+    // cannot dispatch into a released queue during teardown.
+    os_unfair_lock_lock(&notedLock);
+    dispatch_queue_t q = queue;
+    queue = NULL;
+    noted.movedCount = noted.otherCount = noted.previewCount = 0;
+    noted.restack = noted.queued = false;
+    os_unfair_lock_unlock(&notedLock);
+    if (q) {
+        dispatch_sync(q, ^{
+            if (overviewCheck) {
+                dispatch_source_cancel(overviewCheck);
+                if (!overviewCheckRunning) dispatch_resume(overviewCheck);
+                dispatch_release(overviewCheck);
+                overviewCheck = NULL;
+                overviewCheckRunning = false;
+            }
+            overview = false;
+            masks.on = false;
+            if (releaseCheck) {
+                dispatch_source_cancel(releaseCheck);
+                if (!releaseCheckRunning) dispatch_resume(releaseCheck);
+                dispatch_release(releaseCheck);
+                releaseCheck = NULL;
+                releaseCheckRunning = false;
+            }
+            releaseAll();
+            for (int i = 0; i < MAX_BARS; i++) freeBar(&bars[i]);
+        });
+        // Cancel Mach port drains outside `q` so their cancel handlers run
+        // on `q` and finish before SLSReleaseConnection closes the ports.
         stopDrain(&drains[0]);
         stopDrain(&drains[1]);
-    });
+        dispatch_sync(q, ^{});
+        dispatch_release(q);
+    }
     stopWatchAsk(); // after masks.on went false on the queue
-    dispatch_release(queue);
-    queue = NULL;
     SLSReleaseConnection(drawCid);
     if (listCid) SLSReleaseConnection(listCid);
     listCid = 0;
@@ -2062,8 +2152,8 @@ int luaopen_hyprspoon_native_border(lua_State *L) {
     else listCid = 0;
     ringCount = 0;
     active = activeAsked = 0;
-    noted.movedCount = noted.otherCount = 0;
-    noted.restack = noted.queued = noted.preview.changed = false;
+    noted.movedCount = noted.otherCount = noted.previewCount = 0;
+    noted.restack = noted.queued = false;
     memset(&masks, 0, sizeof(masks));
     snapshotTruncated = false;
     snapshotTaken = false;

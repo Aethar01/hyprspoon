@@ -69,7 +69,10 @@ static int l_focus(lua_State *L) {
         lua_pushboolean(L, false);
         return 1;
     }
-    _SLPSSetFrontProcessWithOptions(&psn, wid, USER_GENERATED);
+    if (_SLPSSetFrontProcessWithOptions(&psn, wid, USER_GENERATED) != kCGErrorSuccess) {
+        lua_pushboolean(L, false);
+        return 1;
+    }
     makeKeyWindow(&psn, wid);
     if (raise) framesRaise(pid, wid);
     lua_pushboolean(L, true);

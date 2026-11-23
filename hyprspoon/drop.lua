@@ -108,15 +108,20 @@ local function beginDrag(win, member)
     for _, s in ipairs(hs.screen.allScreens()) do
         local sKey = Tree.keyForScreen(s)
         for _, w in ipairs(not S.untiled[sKey] and byScreen[s:getUUID()] or {}) do
-            local set = Tree.setOf(w:id())
-            local frame = Tree.rectFor(w:id()) or w:frame()
-            if own and set == own then
-                table.insert(targets, { win = w, frame = frame, key = sKey, own = true })
-            elseif w:id() ~= win:id() then
-                -- A group's shown window stands for the group; `bar` is the
-                -- height of its bar (0 without one), and marks it a group.
-                local bar = set and set.kind == "group" and (set.groupInset or 0) or nil
-                table.insert(targets, { win = w, frame = frame, key = sKey, bar = bar })
+            local wid = w:id()
+            if wid and not Scroll.isAway(wid) and not Tree.behindMaximized(wid) then
+                local set = Tree.setOf(wid)
+                local frame = Tree.rectFor(wid) or w:frame()
+                if frame then
+                    if own and set == own then
+                        table.insert(targets, { win = w, frame = frame, key = sKey, own = true })
+                    elseif wid ~= win:id() then
+                        -- A group's shown window stands for the group; `bar` is the
+                        -- height of its bar (0 without one), and marks it a group.
+                        local bar = set and set.kind == "group" and (set.groupInset or 0) or nil
+                        table.insert(targets, { win = w, frame = frame, key = sKey, bar = bar })
+                    end
+                end
             end
         end
     end
@@ -163,6 +168,14 @@ end
 local function cancelDrag()
     preview(nil)
     dropState = nil
+end
+
+local function stop()
+    cancelDrag()
+    if dropPreview then
+        dropPreview:delete()
+        dropPreview = nil
+    end
 end
 
 -- Whether dropping the dragged tile at `point` leaves the layout as it
@@ -232,5 +245,6 @@ M.updateDrag = updateDrag
 M.cancelDrag = cancelDrag
 M.finishDrag = finishDrag
 M.wouldStay = wouldStay
+M.stop = stop
 
 return M

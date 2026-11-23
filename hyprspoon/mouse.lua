@@ -38,10 +38,13 @@ local function followInLua(on)
     end
 end
 
-local function beginMouseDrag(mode, point)
+local function beginMouseDrag(mode, point, button)
+    if S.dragState then return false end
     local win = Focus.windowUnderPoint(point, true)
     if not win then return false end
 
+    local frame = win:frame()
+    if not frame then return false end
     Util.focusWindow(win)
     -- Resizes are paced to the display's refresh rate (see onMouseEvent).
     local screen = win:screen()
@@ -49,9 +52,10 @@ local function beginMouseDrag(mode, point)
     local hz = display and display.freq or 0
     S.dragState = {
         mode = mode,
+        button = button,
         win = win,
         mouse = point,
-        frame = win:frame(),
+        frame = frame,
         interval = 1 / (hz > 0 and hz or 60),
     }
 
@@ -63,12 +67,18 @@ local function beginMouseDrag(mode, point)
 
     -- hyprspoon.native.frames follows the pointer from here, off the main thread;
     -- the drags below are then never seen here.
-    -- A picture still on its way back from the last drop: its window is
-    -- sent home by this drag's begin.
-    Slide.cancelHome()
+    -- A picture still on its way back from the last drop: if this drag won't
+    -- hand off to frames.dragBegin (which unlifts any parked window), bring
+    -- the old window back and land its overlay now.
+    local cancelledHome = Slide.cancelHome()
     local frames = Util.native("frames")
+    local useNative = frames and win:pid() ~= (hs.processInfo and hs.processInfo.processID)
+    if cancelledHome and not useNative then
+        if frames and frames.dragUnpark then frames.dragUnpark() end
+        Slide.land()
+    end
     -- Not Hammerspoon's own windows: see Util.setFrame.
-    if frames and win:pid() ~= (hs.processInfo and hs.processInfo.processID) then
+    if useNative then
         local f = S.dragState.frame
         local xBranch, yBranch = Resize.resizeBranches()
         -- mouse.dragEffect: a move drags a shrunk, see-through picture of
@@ -85,6 +95,7 @@ local function beginMouseDrag(mode, point)
             pid = win:pid(),
             wid = win:id(),
             mode = mode,
+            button = button,
             frame = { x = f.x, y = f.y, w = f.w, h = f.h },
             point = { x = point.x, y = point.y },
             xBranch = xBranch,
@@ -101,6 +112,7 @@ local function beginMouseDrag(mode, point)
             park = park and { x = park.x, y = park.y } or nil,
         })
         S.dragState.lifted = S.dragState.native and lift ~= nil or nil
+        if cancelledHome and not S.dragState.lifted then Slide.land() end
         -- The window's own reports of each frame would only keep the main
         -- thread busy mid-drag; it's looked at once when the drag ends.
         if S.dragState.native and S.running.events then S.running.events.mute(win:id()) end
@@ -147,17 +159,17 @@ function onMouseEvent(event)
     local point = event:location()
     local flags = event:getFlags()
 
-    if eventType == mouseTypes.leftMouseDown
+    if not S.dragState and eventType == mouseTypes.leftMouseDown
        and modsMatch(flags, S.cfg.mouse.move) then
-        return beginMouseDrag("move", point)
-    elseif (eventType == mouseTypes.leftMouseDown
+        return beginMouseDrag("move", point, "left")
+    elseif not S.dragState and ((eventType == mouseTypes.leftMouseDown
             and modsMatch(flags, S.cfg.mouse.resize))
         or (eventType == mouseTypes.rightMouseDown
-            and modsMatch(flags, S.cfg.mouse.rightResize)) then
-        return beginMouseDrag("resize", point)
+            and modsMatch(flags, S.cfg.mouse.rightResize))) then
+        return beginMouseDrag("resize", point, eventType == mouseTypes.leftMouseDown and "left" or "right")
     elseif S.dragState
-       and (eventType == mouseTypes.leftMouseDragged
-            or eventType == mouseTypes.rightMouseDragged) then
+       and ((S.dragState.button == "left" and eventType == mouseTypes.leftMouseDragged)
+            or (S.dragState.button == "right" and eventType == mouseTypes.rightMouseDragged)) then
         if S.dragState.native then return true end
         -- A move is one cheap position call, so it follows every event.
         if S.dragState.mode == "move" then
@@ -185,8 +197,8 @@ function onMouseEvent(event)
         applyDrag(point)
         return true
     elseif S.dragState
-       and (eventType == mouseTypes.leftMouseUp
-            or eventType == mouseTypes.rightMouseUp) then
+       and ((S.dragState.button == "left" and eventType == mouseTypes.leftMouseUp)
+            or (S.dragState.button == "right" and eventType == mouseTypes.rightMouseUp)) then
         local win = S.dragState.win
         local mode = S.dragState.mode
         local lifted = S.dragState.lifted
@@ -210,16 +222,18 @@ function onMouseEvent(event)
             -- picture fades. Nothing flashes where it was dropped. The drop
             -- (a retile that leaves it be) waits for it too.
             Drop.preview(nil)
+            S.settleUntil = hs.timer.secondsSinceEpoch() + 1
             Slide.home(home, function()
                 local frames = Util.native("frames")
                 if frames and frames.dragUnpark then frames.dragUnpark() end
-                S.windowInfo[win:id()], S.applied[win:id()] = nil, nil
+                local wid = win and win:id()
+                if wid then S.windowInfo[wid], S.applied[wid] = nil, nil end
                 -- At once: WindowServer may still have it parked, and a
                 -- captureRetile would glide it in from there over the
                 -- whole display.
                 local was = S.instantLayout
                 S.instantLayout = true
-                Drop.finishDrag(win, point)
+                if wid then pcall(Drop.finishDrag, win, point) end
                 S.instantLayout = was
                 Slide.land()
             end)
@@ -228,18 +242,24 @@ function onMouseEvent(event)
         if mode == "move" and win then
             -- Its own move reports were muted (or taken for ours) during the
             -- drag, so which display it's on is looked up afresh.
-            S.windowInfo[win:id()], S.applied[win:id()] = nil, nil
-            if Drop.finishDrag(win, point) then
-                -- The picture fades once the window is in its place.
-                if lifted then Slide.land() end
-                return true
+            local wid = win:id()
+            if wid then
+                S.windowInfo[wid], S.applied[wid] = nil, nil
+                if Drop.finishDrag(win, point) then
+                    -- The picture fades once the window is in its place.
+                    if lifted then Slide.land() end
+                    return true
+                end
+            elseif Drop.cancelDrag then
+                Drop.cancelDrag()
             end
         end
         if mode == "resize" and Resize.finishResize() then
             return true
         end
-        if win then
-            win:setFrameInScreenBounds(win:frame(), 0)
+        if win and win:id() then
+            local f = win:frame()
+            if f then win:setFrameInScreenBounds(f, 0) end
             -- A float (or any window, with tiling off) dropped on another
             -- display joins the workspace showing there.
             if mode == "move" then
@@ -254,9 +274,26 @@ function onMouseEvent(event)
     return false
 end
 
--- Stops following a drag in Lua (reload, shutdown).
+-- Stops any drag in progress (reload, shutdown).
 function M.stop()
     followInLua(false)
+    local cancelledHome = Slide.cancelHome and Slide.cancelHome()
+    local state = S.dragState
+    S.dragState = nil
+    if state then
+        if state.trailing then state.trailing:stop() end
+        if state.native then
+            local frames = Util.native("frames")
+            if frames and frames.dragEnd then frames.dragEnd() end
+            if S.running.events then S.running.events.mute(nil) end
+        end
+        if state.mode == "move" and Drop.cancelDrag then Drop.cancelDrag() end
+        if state.lifted then Slide.land() end
+    elseif cancelledHome then
+        local frames = Util.native("frames")
+        if frames and frames.dragUnpark then frames.dragUnpark() end
+        Slide.land()
+    end
 end
 
 M.mouseTypes = mouseTypes

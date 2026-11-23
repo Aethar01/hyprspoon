@@ -35,15 +35,16 @@ local warned = {}
 
 local function valid(field, v)
     if field == "curve" then return CURVES[v] == true end
-    return type(v) == "number" and v >= 0 and (field == "duration" or v > 0)
+    return type(v) == "number" and v == v and v ~= math.huge and v >= 0 and (field == "duration" or v > 0)
 end
 
 local function older(kind)
+    local cfg = S.cfg or S.defaults
     if kind == "workspaces" then
-        local s = type(S.cfg.slide) == "table" and S.cfg.slide or {}
+        local s = type(cfg.slide) == "table" and cfg.slide or {}
         return { mass = s.mass, stiffness = s.stiffness, damping = s.damping }
     end
-    return { duration = S.cfg.tiling and S.cfg.tiling.animationDuration }
+    return { duration = cfg.tiling and cfg.tiling.animationDuration }
 end
 
 -- How `kind` moves: { curve = "spring" or "ease", duration =, mass =,

@@ -37,6 +37,18 @@ local FLICK = 1.5
 -- the slide's progress and recent samples of it, whether its slide is up
 -- (`ready`), and whether the fingers have lifted (`ended`).
 local swipe = nil
+local epoch = 0
+local timers = {}
+
+local function defer(fn)
+    local tag = epoch
+    local t
+    t = hs.timer.doAfter(0, function()
+        timers[t] = nil
+        if tag == epoch then fn() end
+    end)
+    if t then timers[t] = true end
+end
 
 local function clamp(v, lo, hi)
     return math.max(lo, math.min(hi, v))
@@ -79,7 +91,7 @@ end
 local function lifted(s)
     if not s or not s.dir or not s.following or s.ended then return end
     s.ended = true
-    if s.started then hs.timer.doAfter(0, function() settle(s) end) end
+    if s.started then defer(function() settle(s) end) end
 end
 
 -- The axis workspaces are swiped along: `swipe.direction`, else the
@@ -101,10 +113,24 @@ end
 local function scrollLifted(s)
     local v = velocity(s)
     local key = s.scroll
-    hs.timer.doAfter(0, function() Scroll.panEnd(key, v) end)
+    defer(function() Scroll.panEnd(key, v) end)
+end
+
+local function endActive()
+    if not swipe then return end
+    if swipe.scroll then
+        scrollLifted(swipe)
+    else
+        lifted(swipe)
+    end
+    swipe = nil
 end
 
 local function onGesture(event)
+    if S.overviewOpen or S.dragState or S.barDragging then
+        endActive()
+        return false
+    end
     local touches = event:getTouches()
     if not touches then return false end
 
@@ -121,32 +147,37 @@ local function onGesture(event)
     -- Sideways swipes scroll columns, unless they switch workspaces.
     local columns = n == Scroll.swipeFingers() and not (workspaces and axis() == "horizontal")
     if not workspaces and not columns then
-        if swipe and swipe.scroll then
-            scrollLifted(swipe)
-        else
-            lifted(swipe)
-        end
-        swipe = nil
+        endActive()
+        return false
+    end
+    -- Changing finger count between workspace and column swipes ends the
+    -- previous gesture cleanly rather than jumping the centroid.
+    if swipe and swipe.fingers and swipe.fingers ~= n then
+        endActive()
         return false
     end
 
     local x, y = sumX / n, sumY / n
     if not swipe then
-        swipe = { x = x, y = y, fired = false }
+        swipe = { x = x, y = y, fingers = n, fired = false }
         return false
     end
     local s = swipe
     local dx, dy = x - s.x, y - s.y
 
     if s.scroll then
+        local span = Scroll.swipeSpan()
+        if not span or span <= 0 then return false end
         local p = s.x0 - x
-        s.samples[#s.samples + 1] = { t = hs.timer.secondsSinceEpoch(), p = p / Scroll.swipeSpan() }
+        s.samples[#s.samples + 1] = { t = hs.timer.secondsSinceEpoch(), p = p / span }
         if #s.samples > 8 then table.remove(s.samples, 1) end
         Scroll.panTo(s.scroll, s.view0, p)
         return false
     end
     if s.following then
-        local p = clamp((along(x, y) - s.a0) * s.dir / cfg.span, 0, 1)
+        local span = cfg and cfg.span or 0
+        if span <= 0 then return false end
+        local p = clamp((along(x, y) - s.a0) * s.dir / span, 0, 1)
         s.progress = p
         s.samples[#s.samples + 1] = { t = hs.timer.secondsSinceEpoch(), p = p }
         if #s.samples > 8 then table.remove(s.samples, 1) end
@@ -179,7 +210,7 @@ local function onGesture(event)
             s.a0, s.progress, s.samples, s.following = along(x, y), 0, {}, true
             -- Switching makes accessibility calls; a slow app must not hold
             -- up the event tap (macOS disables taps that take too long).
-            hs.timer.doAfter(0, function()
+            defer(function()
                 s.started = true
                 begin(s)
             end)
@@ -187,14 +218,20 @@ local function onGesture(event)
     elseif math.abs(da) >= cfg.distance and math.abs(da) > 2 * math.abs(db) then
         s.fired = true
         local delta = da > 0 and 1 or -1
-        hs.timer.doAfter(0, function() Spaces.gotoWorkspaceRelative(delta) end)
+        defer(function() Spaces.gotoWorkspaceRelative(delta) end)
     end
     return false
 end
 
 -- Forgets a swipe in progress (reload, shutdown).
 local function stop()
-    if swipe and swipe.scroll then Scroll.panEnd(swipe.scroll, 0) end
+    epoch = epoch + 1
+    for t in pairs(timers) do t:stop() end
+    timers = {}
+    if swipe then
+        if swipe.scroll then Scroll.panEnd(swipe.scroll, 0)
+        elseif swipe.following and swipe.ready then Slide.endPan(false, 0) end
+    end
     swipe = nil
 end
 

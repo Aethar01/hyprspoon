@@ -265,7 +265,6 @@ S.defaults = {
     --   workspaces = { [3] = { layout = "scrolling" }, A = { layout = "bsp" } }
     -- cycleLayout and setLayout choose another while running; that's kept
     -- with the workspace, over a reload, and wins over this and `layout`.
-    -- Scratchpads are always "bsp".
     workspaces = {},
 
     -- niri's scrollable tiling, for workspaces whose layout is "scrolling"

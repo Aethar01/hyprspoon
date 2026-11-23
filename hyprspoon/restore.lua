@@ -205,17 +205,22 @@ function M.rebuild(key, tree, valid)
         if #rest > 0 then
             local shown = inBuilt[old.windowID] and rest[1] or old.windowID
             built = (Tree.insertAt(built, Tree.rightmostLeafID(built), shown))
-            if old.members and (#rest > 1 or old.kind == "group") then
-                local _, leaf = Tree.ancestors(built, shown)
-                leaf.members, leaf.kind, leaf.pseudo = rest, old.kind, old.pseudo
-                for _, list in ipairs(old.tabs or {}) do
-                    local tabs = {}
-                    for _, id in ipairs(list) do
-                        if not inBuilt[id] then tabs[#tabs + 1] = id end
-                    end
-                    if #tabs > 1 then
-                        leaf.tabs = leaf.tabs or {}
-                        leaf.tabs[#leaf.tabs + 1] = tabs
+            local _, leaf = Tree.ancestors(built, shown)
+            if leaf then
+                leaf.pseudo = leaf.pseudo or old.pseudo
+                leaf.columnWidth, leaf.fullWidth = old.columnWidth, old.fullWidth
+                leaf.windowHeight, leaf.solo = old.windowHeight, old.solo
+                if old.members and (#rest > 1 or old.kind == "group") then
+                    leaf.members, leaf.kind = rest, old.kind
+                    for _, list in ipairs(old.tabs or {}) do
+                        local tabs = {}
+                        for _, id in ipairs(list) do
+                            if not inBuilt[id] then tabs[#tabs + 1] = id end
+                        end
+                        if #tabs > 1 then
+                            leaf.tabs = leaf.tabs or {}
+                            leaf.tabs[#leaf.tabs + 1] = tabs
+                        end
                     end
                 end
             end

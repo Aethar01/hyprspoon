@@ -24,17 +24,23 @@
 #include <os/lock.h>
 #include <pthread.h>
 #include <string.h>
+#include <time.h>
 
 #include "frames.h"
 #include "lift.h"
 #include "luacall.h"
 #include "preview.h"
 
+static double monotonicNow(void) {
+    return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) * 1e-9;
+}
+
 typedef struct {
     bool active;
     pid_t pid;
     uint32_t wid;
     bool move;
+    int button;    // 0: any (legacy), 1: left, 2: right
     CGRect frame;  // the window's frame when the drag began
     CGPoint start; // the pointer then
     char xBranch, yBranch; // 'a': the right/bottom edge follows, 'b': the left/top, 0: neither
@@ -279,7 +285,7 @@ static void give(CGPoint p) {
         framesSet(drag.pid, drag.wid, drag.last, 0, drag.given);
     }
     drag.given = true;
-    drag.lastGiven = CFAbsoluteTimeGetCurrent();
+    drag.lastGiven = monotonicNow();
     drag.haveWaiting = false;
     if (drag.preview && !drag.lifter) drag.preview(drag.wid, &drag.last);
     if (drag.move && drag.tellLua) tellMove(p);
@@ -295,16 +301,17 @@ static void giveWaiting(CFRunLoopTimerRef timer, void *info) {
 // A pointer position: given now if a refresh has passed since the last,
 // else when one has.
 static void pace(CGPoint p) {
-    double now = CFAbsoluteTimeGetCurrent();
+    double now = monotonicNow();
     double wait = drag.lastGiven + drag.interval - now;
     if (wait <= 0) {
         give(p);
         return;
     }
+    if (wait > drag.interval) wait = drag.interval;
     drag.waiting = p;
     drag.haveWaiting = true;
     if (drag.trailingArmed) return;
-    CFRunLoopTimerSetNextFireDate(trailing, now + wait);
+    CFRunLoopTimerSetNextFireDate(trailing, CFAbsoluteTimeGetCurrent() + wait);
     drag.trailingArmed = true;
 }
 
@@ -334,11 +341,17 @@ static void end(void) {
 static CGEventRef onEvent(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *context) {
     (void)proxy;
     (void)context;
-    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
-        if (tap) CGEventTapEnable(tap, true);
+    if (type == kCGEventTapDisabledByTimeout) {
+        if (tap && drag.active) CGEventTapEnable(tap, true);
         return event;
     }
+    if (type == kCGEventTapDisabledByUserInput) return event;
     if (!drag.active) return event;
+    bool isLeft = type == kCGEventLeftMouseDragged || type == kCGEventLeftMouseUp;
+    bool isRight = type == kCGEventRightMouseDragged || type == kCGEventRightMouseUp;
+    if (drag.button == 1 && !isLeft) return event;
+    if (drag.button == 2 && !isRight) return event;
+    if (!drag.button && (isLeft || isRight)) drag.button = isLeft ? 1 : 2;
     CGPoint p = CGEventGetLocation(event);
     if (type == kCGEventLeftMouseDragged || type == kCGEventRightMouseDragged) {
         pace(p);
@@ -377,7 +390,7 @@ static CGFloat number(lua_State *L, int index, const char *key, CGFloat fallback
     lua_getfield(L, index, key);
     CGFloat v = luaL_optnumber(L, -1, fallback);
     lua_pop(L, 1);
-    return v;
+    return isfinite(v) ? v : fallback;
 }
 
 // dragBegin{ pid =, wid =, mode = "move" | "resize", frame = {x, y, w, h},
@@ -403,6 +416,11 @@ static int l_begin(lua_State *L) {
     lua_getfield(L, 1, "mode");
     next.move = lua_tostring(L, -1) && strcmp(lua_tostring(L, -1), "move") == 0;
     lua_pop(L, 1);
+    lua_getfield(L, 1, "button");
+    const char *btn = lua_tostring(L, -1);
+    if (btn && strcmp(btn, "left") == 0) next.button = 1;
+    else if (btn && strcmp(btn, "right") == 0) next.button = 2;
+    lua_pop(L, 1);
     lua_getfield(L, 1, "frame");
     luaL_checktype(L, -1, LUA_TTABLE);
     int f = lua_gettop(L);
@@ -415,9 +433,10 @@ static int l_begin(lua_State *L) {
     lua_pop(L, 1);
     next.xBranch = branch(L, "xBranch");
     next.yBranch = branch(L, "yBranch");
-    next.minW = number(L, 1, "minW", 0);
-    next.minH = number(L, 1, "minH", 0);
+    next.minW = fmax(0, number(L, 1, "minW", 0));
+    next.minH = fmax(0, number(L, 1, "minH", 0));
     next.interval = number(L, 1, "interval", 1.0 / 60);
+    if (next.interval <= 0) next.interval = 1.0 / 60;
     lua_getfield(L, 1, "preview");
     next.preview = lua_islightuserdata(L, -1) ? (RingPreview)lua_touserdata(L, -1) : NULL;
     lua_pop(L, 1);
@@ -467,6 +486,12 @@ static int l_begin(lua_State *L) {
         tap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault, mask, onEvent, NULL);
         if (!tap) return;
         tapSource = CFMachPortCreateRunLoopSource(NULL, tap, 0);
+        if (!tapSource) {
+            CFMachPortInvalidate(tap);
+            CFRelease(tap);
+            tap = NULL;
+            return;
+        }
         CFRunLoopAddSource(CFRunLoopGetCurrent(), tapSource, kCFRunLoopCommonModes);
         CGEventTapEnable(tap, true);
         drag.active = true;
@@ -513,6 +538,8 @@ static int l_end(lua_State *L) {
         });
     }
     stopTellingLua();
+    bool given = drag.given;
+    drag.given = false;
     if (home) {
         os_unfair_lock_lock(&liftLock);
         bool kept = liftState == LIFT_TAKEN;
@@ -520,17 +547,23 @@ static int l_end(lua_State *L) {
             liftKept = true;
             liftLast = drag.frame;
             liftPreview = NULL;
+        } else {
+            // Cancel any in-flight capture under the same lock so claimLift
+            // cannot transition to LIFT_TAKEN after we decide not to keep it.
+            liftKept = false;
+            liftState = LIFT_NONE;
+            liftPreview = NULL;
         }
         os_unfair_lock_unlock(&liftLock);
         if (kept) {
             endPreview();
-            if (drag.given) pushRect(L, drag.last); else lua_pushnil(L);
+            if (given) pushRect(L, drag.last); else lua_pushnil(L);
             pushRect(L, drag.frame);
             return 2;
         }
     }
-    bool lifted = unlift(drag.given ? &drag.last : &drag.frame);
-    if (!drag.given) {
+    bool lifted = unlift(given ? &drag.last : &drag.frame);
+    if (!given) {
         if (lifted) framesWait(drag.pid);
         endPreview();
         lua_pushnil(L);
