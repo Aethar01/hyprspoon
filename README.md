@@ -324,6 +324,7 @@ pure-Lua fallback renders the same niri layout with app icons and titles.
 | `overview.workspaceRadius` | `12` | Corner radius of each workspace surface, in points |
 | `overview.showLabels` | `true` | Workspace number/name badge on each workspace |
 | `overview.emptyWorkspace` | `true` | Include a trailing empty workspace slot to switch to or drop windows onto |
+| `overview.scratchpads` | `false` | How named scratchpads (e.g. A/S/D) appear in overview: `false` (hidden), `"shelf"` (floating bottom dock bar with clickable and droppable cards), or `"stack"` (inline rows in the vertical stack) |
 | `overview.captures` | `true` | Use live/cached window and wallpaper captures via `hyprspoon.native.slide` when available |
 | `overview.swipe` | `false` | Number of fingers (e.g. `4`) whose vertical trackpad swipe opens/closes the overview |
 

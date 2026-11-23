@@ -37,6 +37,7 @@
 #define MAX_OVERVIEW_DISPLAYS 8
 #define MAX_OVERVIEW_WS 32
 #define MAX_OVERVIEW_WINS 64
+#define MAX_OVERVIEW_SHELF 16
 #define MAX_FLOAT_CAPTURES 8
 
 typedef struct {
@@ -59,6 +60,16 @@ typedef struct {
 } OvWsSpec;
 
 typedef struct {
+    int n;
+    bool showing;
+    int winCount;
+    uint32_t previewWid;
+    CGRect rect; // display-local card frame computed by Lua computeShelfLayout
+    char label[48];
+    char app[64];
+} OvShelfSpec;
+
+typedef struct {
     CGRect frame; // display fullFrame
     double scale;
     char wallpaperPath[512];
@@ -67,6 +78,11 @@ typedef struct {
     uint32_t selectedWin;
     uint32_t hoveredWin;
     int dropWs;     // 0-based drop target workspace index, or -1
+    int hoveredShelf; // 0-based hovered shelf card index, or -1
+    int dropShelf;    // 0-based drop target shelf card index, or -1
+    CGRect shelfFrame; // display-local floating dock capsule frame
+    int shelfCount;
+    OvShelfSpec shelf[MAX_OVERVIEW_SHELF];
     int wsCount;
     OvWsSpec ws[MAX_OVERVIEW_WS];
 } OvDisplaySpec;
@@ -118,6 +134,13 @@ typedef struct {
     OvWinView wins[MAX_OVERVIEW_WINS];
 } OvWsView;
 
+typedef struct {
+    int n;
+    bool showing;
+    CALayer *cardLayer;
+    CALayer *badgeBg;
+} OvShelfView;
+
 // Live CoreAnimation layer state for one display's overview window.
 typedef struct {
     uint32_t wid;
@@ -135,13 +158,18 @@ typedef struct {
     uint32_t selectedWin;
     uint32_t hoveredWin;
     int dropWs;
+    int hoveredShelf;
+    int dropShelf;
 
     CALayer *backdropLayer;
     CALayer *stackLayer;
     CALayer *rowsLayer;
+    CALayer *shelfLayer;
     CALayer *dragLayer;
     uint32_t dragWid;
 
+    int shelfCount;
+    OvShelfView shelf[MAX_OVERVIEW_SHELF];
     int wsCount;
     OvWsView ws[MAX_OVERVIEW_WS];
 } OvDisplayView;
@@ -336,8 +364,11 @@ static void clearDisplayLayers(OvDisplayView *d) {
     d->backdropLayer = nil;
     d->stackLayer = nil;
     d->rowsLayer = nil;
+    d->shelfLayer = nil;
     d->dragLayer = nil;
     d->dragWid = 0;
+    d->shelfCount = 0;
+    memset(d->shelf, 0, sizeof(d->shelf));
     d->wsCount = 0;
     memset(d->ws, 0, sizeof(d->ws));
 }
@@ -440,6 +471,17 @@ static void captureVisibleWindows(const OvOpenSpec *spec) {
                         }
                     }
                 }
+                CGImageRelease(img);
+            }
+        }
+        for (int si = 0; si < ds->shelfCount; si++) {
+            const OvShelfSpec *sp = &ds->shelf[si];
+            if (!sp->showing || !sp->previewWid) continue;
+            uint32_t one[1] = { sp->previewWid };
+            CGRect area = CGRectNull;
+            CGImageRef img = slideCaptureWindows(one, 1, &area, false);
+            if (img) {
+                slideThumbStore(sp->previewWid, img, area, area);
                 CGImageRelease(img);
             }
         }
@@ -559,6 +601,19 @@ static void updateWsStyles(OvDisplayView *d, double zoom) {
         }
     }
 
+    for (int si = 0; si < d->shelfCount; si++) {
+        OvShelfView *sv = &d->shelf[si];
+        bool isDrop = (si == d->dropShelf);
+        bool isHover = (si == d->hoveredShelf);
+        if (sv->cardLayer) {
+            sv->cardLayer.borderColor = isDrop ? dropCol : ((isHover || sv->showing) ? activeCol : subtleCol);
+            sv->cardLayer.borderWidth = isDrop ? 3.0 : (isHover ? 2.5 : (sv->showing ? 2.0 : 1.0));
+        }
+        if (sv->badgeBg) {
+            sv->badgeBg.backgroundColor = isDrop ? dropPill : ((isHover || sv->showing) ? activePill : pillBg);
+        }
+    }
+
     CGColorRelease(activeCol);
     CGColorRelease(dropCol);
     CGColorRelease(subtleCol);
@@ -590,6 +645,9 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
     d->selectedWin = ds->selectedWin;
     d->hoveredWin = ds->hoveredWin;
     d->dropWs = ds->dropWs;
+    d->hoveredShelf = ds->hoveredShelf;
+    d->dropShelf = ds->dropShelf;
+    d->shelfCount = ds->shelfCount;
     d->wsCount = ds->wsCount;
 
     Shot *wall = (spec->captures && slideCanCapture()) ? slideWallpaper(ds->frame) : NULL;
@@ -814,7 +872,175 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
         }
     }
 
-    // 4. Drag ghost layer (hidden until drag starts).
+    // 4. Floating scratchpad shelf / dock at the bottom of the display (optional).
+    if (ds->shelfCount > 0 && slideValidRect(ds->shelfFrame)) {
+        CALayer *shelf = [CALayer layer];
+        shelf.frame = ds->shelfFrame;
+        shelf.cornerRadius = 18.0;
+        shelf.cornerCurve = kCACornerCurveContinuous;
+        CGColorRef shelfBg = makeRGBA(0.08, 0.09, 0.11, 0.82);
+        CGColorRef shelfBorder = makeRGBA(1.0, 1.0, 1.0, 0.16);
+        shelf.backgroundColor = shelfBg;
+        shelf.borderColor = shelfBorder;
+        shelf.borderWidth = 1.0;
+        CGColorRelease(shelfBg);
+        CGColorRelease(shelfBorder);
+        if (spec->shadow) {
+            shelf.shadowColor = blackCol;
+            shelf.shadowOpacity = 0.50f;
+            shelf.shadowRadius = 20.0;
+            shelf.shadowOffset = CGSizeMake(0, 8.0);
+            CGPathRef sp = CGPathCreateWithRoundedRect(shelf.bounds, 18.0, 18.0, NULL);
+            shelf.shadowPath = sp;
+            CGPathRelease(sp);
+        }
+
+        CGColorRef cardFilledBg = makeRGBA(0.15, 0.16, 0.19, 0.96);
+        CGColorRef cardEmptyBg = makeRGBA(0.11, 0.12, 0.14, 0.72);
+        CGColorRef badgeBorder = makeRGBA(1.0, 1.0, 1.0, 0.22);
+        CGColorRef countBg = makeRGBA(0.06, 0.07, 0.09, 0.84);
+        CGColorRef capBarBg = makeRGBA(0.05, 0.06, 0.08, 0.74);
+        CGColorRef textBright = makeRGBA(1.0, 1.0, 1.0, 0.95);
+        CGColorRef textMuted = makeRGBA(1.0, 1.0, 1.0, 0.45);
+
+        for (int si = 0; si < ds->shelfCount; si++) {
+            const OvShelfSpec *sp = &ds->shelf[si];
+            OvShelfView *sv = &d->shelf[si];
+            sv->n = sp->n;
+            sv->showing = sp->showing;
+
+            CGRect cardRect = CGRectMake(
+                sp->rect.origin.x - ds->shelfFrame.origin.x,
+                sp->rect.origin.y - ds->shelfFrame.origin.y,
+                sp->rect.size.width,
+                sp->rect.size.height);
+            CGFloat cw = cardRect.size.width;
+            CGFloat ch = cardRect.size.height;
+
+            CALayer *card = [CALayer layer];
+            card.frame = cardRect;
+            card.cornerRadius = 12.0;
+            card.cornerCurve = kCACornerCurveContinuous;
+            card.masksToBounds = YES;
+            card.backgroundColor = sp->winCount > 0 ? cardFilledBg : cardEmptyBg;
+
+            Thumb *thumb = (spec->captures && sp->previewWid) ? slideThumbLookup(sp->previewWid) : NULL;
+            if (thumb && thumb->image && thumb->area.size.width > 0 && thumb->area.size.height > 0) {
+                CALayer *thumbL = [CALayer layer];
+                thumbL.frame = CGRectMake(0, 0, cw, ch);
+                thumbL.contents = (id)thumb->image;
+                CGFloat rx = (thumb->src.origin.x - thumb->area.origin.x) / thumb->area.size.width;
+                CGFloat ry = (thumb->src.origin.y - thumb->area.origin.y) / thumb->area.size.height;
+                CGFloat rw = thumb->src.size.width / thumb->area.size.width;
+                CGFloat rh = thumb->src.size.height / thumb->area.size.height;
+                rx = fmax(0.0, fmin(1.0, rx));
+                ry = fmax(0.0, fmin(1.0, ry));
+                rw = fmax(0.0, fmin(1.0 - rx, rw));
+                rh = fmax(0.0, fmin(1.0 - ry, rh));
+                thumbL.contentsRect = CGRectMake(rx, ry, rw, rh);
+                thumbL.contentsGravity = kCAGravityResize;
+                [card addSublayer:thumbL];
+
+                if (sp->app[0]) {
+                    CALayer *bar = [CALayer layer];
+                    bar.frame = CGRectMake(0, ch - 20.0, cw, 20.0);
+                    bar.backgroundColor = capBarBg;
+                    CATextLayer *appLbl = [CATextLayer layer];
+                    appLbl.string = [NSString stringWithUTF8String:sp->app];
+                    if (titleFont) appLbl.font = titleFont;
+                    appLbl.fontSize = 11.0;
+                    appLbl.alignmentMode = kCAAlignmentCenter;
+                    appLbl.truncationMode = kCATruncationEnd;
+                    appLbl.contentsScale = ds->scale;
+                    appLbl.foregroundColor = textBright;
+                    appLbl.frame = CGRectMake(6.0, 3.0, fmax(1.0, cw - 12.0), 15.0);
+                    [bar addSublayer:appLbl];
+                    [card addSublayer:bar];
+                }
+            } else {
+                CATextLayer *mid = [CATextLayer layer];
+                NSString *txt = (sp->winCount > 0 && sp->app[0])
+                    ? [NSString stringWithUTF8String:sp->app]
+                    : @"Empty";
+                mid.string = txt;
+                if (sp->winCount > 0 && labelFont) mid.font = labelFont;
+                else if (titleFont) mid.font = titleFont;
+                mid.fontSize = sp->winCount > 0 ? 13.0 : 12.0;
+                mid.alignmentMode = kCAAlignmentCenter;
+                mid.truncationMode = kCATruncationEnd;
+                mid.contentsScale = ds->scale;
+                mid.foregroundColor = sp->winCount > 0 ? textBright : textMuted;
+                mid.frame = CGRectMake(8.0, (ch - 18.0) / 2.0 + 6.0, fmax(1.0, cw - 16.0), 18.0);
+                [card addSublayer:mid];
+            }
+
+            // Top-left key label pill (e.g. A, S, D).
+            if (sp->label[0]) {
+                NSString *lbl = [NSString stringWithUTF8String:sp->label];
+                CGFloat bw = fmax(24.0, (CGFloat)lbl.length * 8.5 + 12.0);
+                CALayer *badge = [CALayer layer];
+                badge.frame = CGRectMake(7.0, 7.0, bw, 22.0);
+                badge.cornerRadius = 7.0;
+                badge.cornerCurve = kCACornerCurveContinuous;
+                badge.borderColor = badgeBorder;
+                badge.borderWidth = 1.0;
+
+                CATextLayer *bt = [CATextLayer layer];
+                bt.string = lbl;
+                if (labelFont) bt.font = labelFont;
+                bt.fontSize = 12.0;
+                bt.alignmentMode = kCAAlignmentCenter;
+                bt.truncationMode = kCATruncationEnd;
+                bt.contentsScale = ds->scale;
+                bt.foregroundColor = textBright;
+                bt.frame = CGRectMake(2.0, 3.0, bw - 4.0, 16.0);
+                [badge addSublayer:bt];
+
+                [card addSublayer:badge];
+                sv->badgeBg = badge;
+            }
+
+            // Top-right window count pill when multiple windows are stowed.
+            if (sp->winCount > 1) {
+                NSString *cntStr = [NSString stringWithFormat:@"%d", sp->winCount];
+                CGFloat cntW = fmax(20.0, (CGFloat)cntStr.length * 7.5 + 10.0);
+                CALayer *cnt = [CALayer layer];
+                cnt.frame = CGRectMake(cw - cntW - 7.0, 7.0, cntW, 20.0);
+                cnt.cornerRadius = 6.0;
+                cnt.cornerCurve = kCACornerCurveContinuous;
+                cnt.backgroundColor = countBg;
+                cnt.borderColor = badgeBorder;
+                cnt.borderWidth = 1.0;
+
+                CATextLayer *ct = [CATextLayer layer];
+                ct.string = cntStr;
+                if (labelFont) ct.font = labelFont;
+                ct.fontSize = 11.0;
+                ct.alignmentMode = kCAAlignmentCenter;
+                ct.contentsScale = ds->scale;
+                ct.foregroundColor = textBright;
+                ct.frame = CGRectMake(2.0, 2.5, cntW - 4.0, 15.0);
+                [cnt addSublayer:ct];
+                [card addSublayer:cnt];
+            }
+
+            [shelf addSublayer:card];
+            sv->cardLayer = card;
+        }
+
+        CGColorRelease(cardFilledBg);
+        CGColorRelease(cardEmptyBg);
+        CGColorRelease(badgeBorder);
+        CGColorRelease(countBg);
+        CGColorRelease(capBarBg);
+        CGColorRelease(textBright);
+        CGColorRelease(textMuted);
+
+        [d->root addSublayer:shelf];
+        d->shelfLayer = shelf;
+    }
+
+    // 5. Drag ghost layer (hidden until drag starts).
     CALayer *drag = [CALayer layer];
     drag.hidden = YES;
     drag.opacity = 0.85f;
@@ -831,6 +1057,11 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
     if (spec->animate && !(spec->motion.ease && spec->motion.duration <= 0)) {
         [backdrop addAnimation:slideAnimate(spec->motion, kOpacityKey, @0.0, @1.0, 0) forKey:kOpacityKey];
         [stack addAnimation:slideAnimate(spec->motion, kScaleKey, @1.0, @(zoom), 0) forKey:kScaleKey];
+        if (d->shelfLayer) {
+            CGFloat toY = d->shelfLayer.position.y;
+            [d->shelfLayer addAnimation:slideAnimate(spec->motion, kOpacityKey, @0.0, @1.0, 0) forKey:kOpacityKey];
+            [d->shelfLayer addAnimation:slideAnimate(spec->motion, kPosYKey, @(toY + 24.0), @(toY), 0) forKey:kPosYKey];
+        }
         for (int wi = 0; wi < ds->wsCount; wi++) {
             OvWsView *wv = &d->ws[wi];
             if (wv->labelLayer) {
@@ -956,6 +1187,36 @@ int l_overviewOpen(lua_State *L) {
             ds->hoveredWin = (uint32_t)slideNumberField(L, -1, "hoveredWin", 0);
             int drop = (int)slideNumberField(L, -1, "dropWs", 0);
             ds->dropWs = drop > 0 ? drop - 1 : -1;
+            int hovShelf = (int)slideNumberField(L, -1, "hoveredShelf", 0);
+            ds->hoveredShelf = hovShelf > 0 ? hovShelf - 1 : -1;
+            int drpShelf = (int)slideNumberField(L, -1, "dropShelf", 0);
+            ds->dropShelf = drpShelf > 0 ? drpShelf - 1 : -1;
+
+            lua_getfield(L, -1, "shelfFrame");
+            ds->shelfFrame = slideReadRect(L, -1);
+            lua_pop(L, 1);
+
+            lua_getfield(L, -1, "shelf");
+            if (lua_type(L, -1) == LUA_TTABLE) {
+                lua_Integer sn = luaL_len(L, -1);
+                for (lua_Integer si = 1; si <= sn && ds->shelfCount < MAX_OVERVIEW_SHELF; si++) {
+                    lua_rawgeti(L, -1, si);
+                    if (lua_type(L, -1) != LUA_TTABLE) { lua_pop(L, 1); continue; }
+                    OvShelfSpec *sp = &ds->shelf[ds->shelfCount];
+                    sp->n = (int)slideNumberField(L, -1, "n", 0);
+                    sp->showing = readBoolField(L, -1, "showing", false);
+                    sp->winCount = (int)slideNumberField(L, -1, "winCount", 0);
+                    sp->previewWid = (uint32_t)slideNumberField(L, -1, "previewWid", 0);
+                    lua_getfield(L, -1, "rect");
+                    sp->rect = slideReadRect(L, -1);
+                    lua_pop(L, 1);
+                    readStringField(L, -1, "label", sp->label, sizeof(sp->label));
+                    readStringField(L, -1, "app", sp->app, sizeof(sp->app));
+                    if (slideValidRect(sp->rect)) ds->shelfCount++;
+                    lua_pop(L, 1);
+                }
+            }
+            lua_pop(L, 1); // shelf
 
             lua_getfield(L, -1, "workspaces");
             if (lua_type(L, -1) == LUA_TTABLE) {
@@ -1052,6 +1313,8 @@ typedef struct {
     uint32_t selectedWin;
     uint32_t hoveredWin;
     int dropWs;
+    int hoveredShelf;
+    int dropShelf;
     int panCount;
     double panX[MAX_OVERVIEW_WS];
 } OvDisplayUpdate;
@@ -1091,6 +1354,10 @@ int l_overviewUpdate(lua_State *L) {
             du->hoveredWin = (uint32_t)slideNumberField(L, -1, "hoveredWin", 0);
             int drop = (int)slideNumberField(L, -1, "dropWs", 0);
             du->dropWs = drop > 0 ? drop - 1 : -1;
+            int hovShelf = (int)slideNumberField(L, -1, "hoveredShelf", 0);
+            du->hoveredShelf = hovShelf > 0 ? hovShelf - 1 : -1;
+            int drpShelf = (int)slideNumberField(L, -1, "dropShelf", 0);
+            du->dropShelf = drpShelf > 0 ? drpShelf - 1 : -1;
 
             lua_getfield(L, -1, "panX");
             if (lua_type(L, -1) == LUA_TTABLE) {
@@ -1142,6 +1409,8 @@ int l_overviewUpdate(lua_State *L) {
                 d->selectedWin = du->selectedWin;
                 d->hoveredWin = du->hoveredWin;
                 d->dropWs = du->dropWs;
+                d->hoveredShelf = du->hoveredShelf;
+                d->dropShelf = du->dropShelf;
                 updateWsStyles(d, ovZoom);
             }
             slideCommitChanges();
@@ -1162,6 +1431,7 @@ int l_overviewDrag(lua_State *L) {
                 OvDisplayView *d = &ovDisplays[i];
                 d->dragWid = 0;
                 d->dropWs = -1;
+                d->dropShelf = -1;
                 if (d->dragLayer) {
                     d->dragLayer.hidden = YES;
                     removeSublayersRecursive(d->dragLayer);
@@ -1180,6 +1450,7 @@ int l_overviewDrag(lua_State *L) {
     CGRect frame = slideReadRect(L, -1); // display-local rect
     lua_pop(L, 1);
     int dropWs = (int)slideNumberField(L, 1, "dropWs", 0) - 1;
+    int dropShelf = (int)slideNumberField(L, 1, "dropShelf", 0) - 1;
     bool useCaptures = readBoolField(L, 1, "captures", true);
     char app[64], title[128];
     readStringField(L, 1, "app", app, sizeof(app));
@@ -1195,6 +1466,7 @@ int l_overviewDrag(lua_State *L) {
                 bool here = (i == displayIdx);
                 d->dragWid = targetWid;
                 d->dropWs = here ? dropWs : -1;
+                d->dropShelf = here ? dropShelf : -1;
                 if (d->dragLayer) {
                     if (!here) {
                         d->dragLayer.hidden = YES;
@@ -1346,6 +1618,19 @@ int l_overviewClose(lua_State *L) {
                 [d->backdropLayer removeAnimationForKey:kOpacityKey];
                 d->backdropLayer.opacity = 0.0f;
                 [d->backdropLayer addAnimation:slideAnimate(m, kOpacityKey, @(fromOp), @0.0, 0) forKey:kOpacityKey];
+            }
+
+            // Fade & tuck the floating scratchpad shelf out.
+            if (d->shelfLayer) {
+                CALayer *presShelf = (CALayer *)d->shelfLayer.presentationLayer ?: d->shelfLayer;
+                CGFloat fromOp = presShelf.opacity;
+                CGFloat fromY = presShelf.position.y;
+                [d->shelfLayer removeAnimationForKey:kOpacityKey];
+                [d->shelfLayer removeAnimationForKey:kPosYKey];
+                d->shelfLayer.opacity = 0.0f;
+                d->shelfLayer.position = CGPointMake(d->shelfLayer.position.x, fromY + 20.0);
+                [d->shelfLayer addAnimation:slideAnimate(m, kOpacityKey, @(fromOp), @0.0, 0) forKey:kOpacityKey];
+                [d->shelfLayer addAnimation:slideAnimate(m, kPosYKey, @(fromY), @(fromY + 20.0), 0) forKey:kPosYKey];
             }
 
             // Un-round target workspace corners & fade shadows, borders, labels, rings.

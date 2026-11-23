@@ -45,12 +45,13 @@ runIsolated(function()
     assert(cfg.workspaceShadow == true)
     assert(cfg.showLabels == true)
     assert(cfg.emptyWorkspace == true)
+    assert(cfg.scratchpads == false, "scratchpads excluded from overview by default")
     assert(cfg.captures == true)
     assert(cfg.swipe == false)
     assert(Overview.swipeFingers() == nil)
 
     S.cfg.overview = { style = "grid", zoom = 5, workspaceGap = -10, swipe = 4, captures = false,
-        backdrop = "color", backdropBlur = false, backdropDim = 2 }
+        backdrop = "color", backdropBlur = false, backdropDim = 2, scratchpads = true }
     cfg = Overview.config()
     assert(cfg.style == "grid")
     assert(near(cfg.zoom, 0.95), "zoom clamps to 0.95")
@@ -58,8 +59,14 @@ runIsolated(function()
     assert(cfg.backdropBlur == 0, "backdropBlur=false disables blur")
     assert(near(cfg.backdropDim, 1), "backdropDim clamps to 1")
     assert(cfg.workspaceGap == 0, "negative gap clamps to 0")
+    assert(cfg.scratchpads == "shelf", "scratchpads=true maps to shelf")
     assert(cfg.captures == false)
     assert(Overview.swipeFingers() == 4)
+
+    S.cfg.overview = { scratchpads = "stack" }
+    assert(Overview.config().scratchpads == "stack")
+    S.cfg.overview = { scratchpads = "shelf" }
+    assert(Overview.config().scratchpads == "shelf")
 
     S.cfg.overview = { zoom = 0.01, swipe = 2, backdropBlur = 500, backdropDim = -0.5 }
     cfg = Overview.config()
@@ -131,6 +138,20 @@ runIsolated(function()
     local hitEmpty = Overview.hitTest(atWs3, 720, 450)
     assert(hitEmpty.kind == "workspace" and hitEmpty.ws.n == 3, "empty workspace surface hits workspace")
 
+    -- Floating scratchpad shelf layout & hit-test priority over peeking workspace behind it.
+    local shelf = Overview.computeShelfLayout(display, {
+        { n = 101, label = "A", winCount = 1 },
+        { n = 102, label = "S", winCount = 0 },
+        { n = 103, label = "D", winCount = 0 },
+    })
+    assert(shelf and #shelf.items == 3)
+    assert(near(shelf.frame.x + shelf.frame.w / 2, display.w / 2), "shelf is horizontally centred")
+    assert(shelf.frame.y + shelf.frame.h < display.h, "shelf sits near bottom with margin")
+    local sItem = shelf.items[2].rect
+    local hitShelf = Overview.hitTest(zoomed, sItem.x + sItem.w / 2, sItem.y + sItem.h / 2, shelf)
+    assert(hitShelf.kind == "shelf" and hitShelf.shelfIdx == 2 and hitShelf.sp.n == 102,
+        "shelf card beats peeking workspace behind it in hitTest")
+
     -- Horizontal panBounds & navigation across workspaces, columns, and displays.
     local minPan, maxPan = Overview.panBounds(display, workspaces[1])
     assert(minPan < 0 and maxPan > 0, "scrolling strip with columns on both sides has negative and positive pan bounds")
@@ -201,6 +222,7 @@ runIsolated(function()
     local reorders = {}
     local focusedWins = {}
     local gotoCalls = {}
+    local toggleCalls = {}
     local revealCalls = {}
     local nativeLog = {}
     local scrollOffset = 0
@@ -230,6 +252,9 @@ runIsolated(function()
         { n = 2, display = "MAIN", showing = false, windows = {
             { id = 201, win = w3, frame = { x = 0, y = 0, w = 1440, h = 900 } },
         } },
+        { n = 101, display = "MAIN", showing = false, windows = {
+            { id = 301, win = fakeWin(301, "Discord", "Chat"), frame = { x = 50, y = 50, w = 1340, h = 800 } },
+        } },
     }
 
     local TYPES = {
@@ -241,6 +266,7 @@ runIsolated(function()
         [53] = "escape", [36] = "return", [49] = "space", [48] = "tab", [51] = "delete",
         [126] = "up", [125] = "down", [123] = "left", [124] = "right",
         [7] = "x", [4] = "h", [38] = "j", [40] = "k", [37] = "l",
+        [0] = "a", [1] = "s", [2] = "d",
         [18] = "1", [19] = "2",
     }
     local pendingTimer = nil
@@ -302,6 +328,7 @@ runIsolated(function()
         isHidden = function(id) return id == 201 end,
         nextEmptyWorkspace = function() return 3 end,
         gotoWorkspace = function(n) gotoCalls[#gotoCalls + 1] = n end,
+        toggleWorkspace = function(n) toggleCalls[#toggleCalls + 1] = n end,
         sendWindowToWorkspace = function(w, n)
             sentMoves[#sentMoves + 1] = { w:id(), n }
             return true
@@ -348,12 +375,13 @@ runIsolated(function()
         }
     end
 
-    -- Open overview: suspends borders, calls native overviewOpen with 3 workspaces (including trailing empty ws 3).
+    -- Open overview: suspends borders, calls native overviewOpen with 3 workspaces
+    -- (ws1, ws2, and trailing empty ws3; scratchpad 101 excluded by default).
     Overview.toggle()
     assert(S.overviewOpen == true)
     assert(suspended[#suspended] == true)
     assert(nativeLog[1][1] == "open")
-    assert(#nativeLog[1][2].displays[1].workspaces == 3, "includes dynamic trailing empty workspace 3")
+    assert(#nativeLog[1][2].displays[1].workspaces == 3, "includes dynamic trailing empty ws3 and omits scratchpad 101")
     assert(nativeLog[1][2].displays[1].workspaces[3].empty == true)
 
     -- Keyboard navigation updates native overlay.
@@ -413,6 +441,54 @@ runIsolated(function()
     assert(S.overviewOpen == false)
     assert(nativeLog[#nativeLog][1] == "stop")
     assert(suspended[#suspended] == false)
+
+    -- Enabling overview.scratchpads = "stack" includes scratchpad 101 inline in the vertical stack.
+    S.cfg.namedWorkspaces = { "A", "S", "D" }
+    S.cfg.overview.scratchpads = "stack"
+    Overview.toggle()
+    assert(#nativeLog[#nativeLog][2].displays[1].workspaces == 4, "scratchpads='stack' includes scratchpad 101")
+    assert(#nativeLog[#nativeLog][2].displays[1].shelf == 0, "stack mode does not build a floating shelf")
+    Overview.stop()
+
+    -- Enabling overview.scratchpads = "shelf" keeps stack clean and shows A/S/D dock cards.
+    S.cfg.overview.scratchpads = "shelf"
+    Overview.toggle()
+    local openShelf = nativeLog[#nativeLog][2].displays[1]
+    assert(#openShelf.workspaces == 3, "shelf mode keeps scratchpads out of vertical stack")
+    assert(#openShelf.shelf == 3, "shelf mode lists all configured namedWorkspaces (A, S, D)")
+    assert(openShelf.shelf[1].label == "A" and openShelf.shelf[1].winCount == 1 and openShelf.shelf[1].previewWid == 301)
+    assert(openShelf.shelf[2].label == "S" and openShelf.shelf[2].winCount == 0)
+
+    -- Drag window 101 from ws1 onto empty shelf card S (n=102).
+    local sCard = openShelf.shelf[2].rect
+    local sx, sy = sCard.x + sCard.w / 2, sCard.y + sCard.h / 2
+    assert(tapHandler(mouseEvent(TYPES.leftMouseDown, 500, 400)))
+    assert(tapHandler(mouseEvent(TYPES.leftMouseDragged, sx, sy)))
+    assert(nativeLog[#nativeLog][1] == "drag" and nativeLog[#nativeLog][2].dropShelf == 2,
+        "dragging over shelf card S highlights dropShelf=2")
+    assert(tapHandler(mouseEvent(TYPES.leftMouseUp, sx, sy)))
+    assert(sentMoves[#sentMoves][1] == 101 and sentMoves[#sentMoves][2] == 102,
+        "dropping onto shelf card S moves window to scratchpad 102")
+
+    -- Drag window 301 OUT of shelf card A onto workspace 1.
+    local aCard = openShelf.shelf[1].rect
+    local ax, ay = aCard.x + aCard.w / 2, aCard.y + aCard.h / 2
+    assert(tapHandler(mouseEvent(TYPES.leftMouseDown, ax, ay)))
+    assert(tapHandler(mouseEvent(TYPES.leftMouseDragged, 500, 400)))
+    assert(nativeLog[#nativeLog][1] == "drag" and nativeLog[#nativeLog][2].wid == 301 and nativeLog[#nativeLog][2].dropWs == 1)
+    assert(tapHandler(mouseEvent(TYPES.leftMouseUp, 500, 400)))
+    assert(sentMoves[#sentMoves][1] == 301 and sentMoves[#sentMoves][2] == 1,
+        "dragging out of shelf card A onto ws1 moves window 301 to ws1")
+
+    -- Clicking shelf card A toggles scratchpad 101 and closes overview.
+    assert(tapHandler(mouseEvent(TYPES.leftMouseDown, ax, ay)))
+    assert(tapHandler(mouseEvent(TYPES.leftMouseUp, ax, ay)))
+    assert(S.overviewOpen == false and toggleCalls[1] == 101, "clicking shelf card A toggles scratchpad 101")
+
+    -- Pressing 'a' inside overview quick-toggles scratchpad A.
+    Overview.toggle()
+    assert(tapHandler(keyEvent(0))) -- 'a'
+    assert(S.overviewOpen == false and toggleCalls[2] == 101, "pressing 'a' toggles scratchpad A")
 end)
 
 -- 3. Pure-Lua hs.canvas fallback (when native slide has no overviewOpen) and classic grid mode.
@@ -551,6 +627,68 @@ runIsolated(function()
         "w1 moved to hidden workspace 2 and parked")
     -- Now workspace 2 is the last numbered workspace and has w1 -> trailing empty workspace is 3!
     assert(Spaces.nextEmptyWorkspace("A") == 3, "next empty workspace after occupied ws2 is 3")
+end)
+
+-- 5. 3-finger vertical swipe toggles overview while 3-finger horizontal swipe still switches workspaces.
+runIsolated(function()
+    local noop = function() end
+    local toggles, relMoves, queued = 0, {}, {}
+    local function flush()
+        while #queued > 0 do table.remove(queued, 1)() end
+    end
+    hs = {
+        settings = { get = function() return nil end },
+        timer = {
+            doAfter = function(_, fn) queued[#queued + 1] = fn; return { stop = noop } end,
+            secondsSinceEpoch = function() return 100 end,
+        },
+        mouse = { getCurrentScreen = function() return nil end },
+    }
+    package.loaded["hyprspoon.spaces"] = { gotoWorkspaceRelative = function(d) relMoves[#relMoves + 1] = d end }
+    package.loaded["hyprspoon.slide"] = { canPan = function() return false end }
+    package.loaded["hyprspoon.scroll"] = { swipeFingers = function() return nil end }
+    local S = require("hyprspoon.state")
+    S.cfg = {
+        swipe = { fingers = 3, follow = false, distance = 0.12 },
+        slide = { workspaces = "horizontal" },
+        overview = { swipe = 3 },
+    }
+    S.overviewOpen = false
+    package.loaded["hyprspoon.overview"] = {
+        toggle = function()
+            toggles = toggles + 1
+            S.overviewOpen = not S.overviewOpen
+        end,
+    }
+    local Swipe = require("hyprspoon.swipe")
+
+    local function touchEvent(n, x, y)
+        local list = {}
+        for i = 1, n do
+            list[i] = { touching = true, phase = "moved", normalizedPosition = { x = x, y = y } }
+        end
+        return { getTouches = function() return list end }
+    end
+
+    -- 3-finger swipe UP opens overview.
+    Swipe.onGesture(touchEvent(3, 0.5, 0.3))
+    Swipe.onGesture(touchEvent(3, 0.5, 0.42))
+    flush()
+    assert(toggles == 1 and S.overviewOpen == true, "3-finger swipe up opens overview")
+    Swipe.onGesture(touchEvent(0, 0, 0))
+
+    -- 3-finger swipe DOWN closes overview.
+    Swipe.onGesture(touchEvent(3, 0.5, 0.6))
+    Swipe.onGesture(touchEvent(3, 0.5, 0.48))
+    flush()
+    assert(toggles == 2 and S.overviewOpen == false, "3-finger swipe down closes overview")
+    Swipe.onGesture(touchEvent(0, 0, 0))
+
+    -- 3-finger horizontal swipe still switches workspaces.
+    Swipe.onGesture(touchEvent(3, 0.5, 0.5))
+    Swipe.onGesture(touchEvent(3, 0.35, 0.5))
+    flush()
+    assert(#relMoves == 1 and relMoves[1] == 1, "3-finger horizontal swipe still switches workspace")
 end)
 
 print("Overview tests passed")

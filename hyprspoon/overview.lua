@@ -61,6 +61,7 @@ local DEFAULTS = {
     workspaceRadius = 12,
     showLabels = true,
     emptyWorkspace = true,
+    scratchpads = false,
     captures = true,
     swipe = false,
 }
@@ -91,6 +92,12 @@ function M.config()
     local gap = finite(raw.workspaceGap) and math.max(0, raw.workspaceGap) or DEFAULTS.workspaceGap
     local radius = finite(raw.workspaceRadius) and math.max(0, raw.workspaceRadius) or DEFAULTS.workspaceRadius
     local swipe = finite(raw.swipe) and math.floor(raw.swipe) >= 3 and math.floor(raw.swipe) or false
+    local scratchpads = false
+    if raw.scratchpads == "shelf" or raw.scratchpads == true then
+        scratchpads = "shelf"
+    elseif raw.scratchpads == "stack" then
+        scratchpads = "stack"
+    end
     return {
         style = style,
         zoom = zoom,
@@ -103,6 +110,7 @@ function M.config()
         workspaceRadius = radius,
         showLabels = raw.showLabels ~= false,
         emptyWorkspace = raw.emptyWorkspace ~= false,
+        scratchpads = scratchpads,
         captures = raw.captures ~= false,
         swipe = swipe,
     }
@@ -183,10 +191,54 @@ local function inRect(x, y, r)
     return x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h
 end
 
--- Hit-tests a display-local point (localX, localY) against a computed layout.
--- Checks windows before workspace surfaces (reverse order so floats on top win),
--- including scrolling columns that extend horizontally past the workspace card.
-function M.hitTest(layout, localX, localY)
+-- Computes display-local geometry for the floating bottom scratchpad shelf.
+-- Returns nil when `scratchpads` is empty.
+function M.computeShelfLayout(displayFrame, scratchpads)
+    if not displayFrame or not scratchpads or #scratchpads == 0 then return nil end
+    local n = #scratchpads
+    local pad, gap, bottomMargin = 12, 12, 24
+    local cardW, cardH = 148, 88
+    local maxDockW = math.max(120, displayFrame.w - 48)
+    if n * cardW + (n - 1) * gap + pad * 2 > maxDockW then
+        cardW = math.max(64, math.floor((maxDockW - pad * 2 - (n - 1) * gap) / n))
+    end
+    local dockW = n * cardW + (n - 1) * gap + pad * 2
+    local dockH = cardH + pad * 2
+    local dockX = (displayFrame.w - dockW) / 2
+    local dockY = displayFrame.h - dockH - bottomMargin
+    local items = {}
+    for i, sp in ipairs(scratchpads) do
+        items[i] = {
+            idx = i,
+            sp = sp,
+            rect = {
+                x = dockX + pad + (i - 1) * (cardW + gap),
+                y = dockY + pad,
+                w = cardW,
+                h = cardH,
+            },
+        }
+    end
+    return {
+        frame = { x = dockX, y = dockY, w = dockW, h = dockH },
+        items = items,
+    }
+end
+
+-- Hit-tests a display-local point (localX, localY) against a computed layout
+-- and optional floating scratchpad shelf. Checks the floating shelf first,
+-- then windows (reverse order so floats on top win), then workspace surfaces.
+function M.hitTest(layout, localX, localY, shelfLayout)
+    if shelfLayout and shelfLayout.items then
+        for _, item in ipairs(shelfLayout.items) do
+            if inRect(localX, localY, item.rect) then
+                return { kind = "shelf", shelfIdx = item.idx, sp = item.sp, rect = item.rect }
+            end
+        end
+        if shelfLayout.frame and inRect(localX, localY, shelfLayout.frame) then
+            return { kind = "shelfDock", rect = shelfLayout.frame }
+        end
+    end
     if not layout or not layout.rows then return { kind = "backdrop" } end
     -- First pass: windows (last-drawn first, so floating windows beat tiles).
     for i = #layout.rows, 1, -1 do
@@ -309,6 +361,7 @@ function M.navigate(model, action)
         d.selectedWin = defaultWindowFor(ws, model.focusRank)
         d.hoveredWin = nil
         d.hoveredWs = nil
+        d.hoveredShelf = nil
         if d.selectedWin then
             for _, w in ipairs(ws.windows) do
                 if w.id == d.selectedWin then ensureWindowVisible(d.frame, ws, w, zoom) break end
@@ -335,6 +388,7 @@ function M.navigate(model, action)
         d.selectedWin = target.id
         d.hoveredWin = nil
         d.hoveredWs = nil
+        d.hoveredShelf = nil
         local beforePan = ws.panX or 0
         ensureWindowVisible(d.frame, ws, target, zoom)
         return changed or math.abs((ws.panX or 0) - beforePan) > 0.5
@@ -557,6 +611,43 @@ local function buildModel(cfg, prevModel)
         for _, pd in ipairs(prevModel.displays) do prevByUUID[pd.uuid] = pd end
     end
 
+    -- Collect scratchpad entries by workspace number (for "shelf" mode).
+    local scratchByN = {}
+    local scratchOrder = {}
+    if cfg.scratchpads == "shelf" then
+        for i, name in ipairs((S.cfg and S.cfg.namedWorkspaces) or {}) do
+            local n = 100 + i
+            scratchByN[n] = { n = n, label = tostring(name), display = nil, showing = false, windows = {} }
+            scratchOrder[#scratchOrder + 1] = n
+        end
+        for _, ws in ipairs(list) do
+            local isScratch = Spaces.isScratchpad and Spaces.isScratchpad(ws.n) or (ws.n > 100)
+            if isScratch then
+                if not scratchByN[ws.n] then
+                    scratchByN[ws.n] = { n = ws.n, label = Spaces.label(ws.n), display = nil, showing = false, windows = {} }
+                    scratchOrder[#scratchOrder + 1] = ws.n
+                end
+                local entry = scratchByN[ws.n]
+                entry.display = ws.display
+                entry.showing = ws.showing == true
+                local wins = {}
+                for _, w in ipairs(ws.windows) do
+                    wins[#wins + 1] = {
+                        id = w.id,
+                        win = w.win,
+                        frame = { x = w.frame.x, y = w.frame.y, w = w.frame.w, h = w.frame.h },
+                        floating = (S.autoFloat and S.autoFloat[w.id]) == true,
+                        focused = w.id == focusedID,
+                        app = appNameFor(w.win),
+                        title = titleFor(w.win),
+                    }
+                end
+                entry.windows = wins
+            end
+        end
+        table.sort(scratchOrder)
+    end
+
     local displays = {}
     local activeDisplay = 1
     for _, screen in ipairs(hs.screen.allScreens()) do
@@ -567,7 +658,8 @@ local function buildModel(cfg, prevModel)
 
         local mine = {}
         for _, ws in ipairs(list) do
-            if ws.display == uuid then
+            local isScratch = Spaces.isScratchpad and Spaces.isScratchpad(ws.n) or (ws.n > 100)
+            if ws.display == uuid and (cfg.scratchpads == "stack" or not isScratch) then
                 local wins = {}
                 for _, w in ipairs(ws.windows) do
                     wins[#wins + 1] = {
@@ -647,20 +739,50 @@ local function buildModel(cfg, prevModel)
                 selectedWin = defaultWindowFor(mine[activeWs], focusRank)
             end
 
+            local dFrame = { x = ff.x, y = ff.y, w = ff.w, h = ff.h }
+            local shelfList = {}
+            for _, n in ipairs(scratchOrder) do
+                local src = scratchByN[n]
+                local front = nil
+                if #src.windows > 0 then
+                    local bestR = nil
+                    for _, w in ipairs(src.windows) do
+                        local r = focusRank[w.id]
+                        if r and (not bestR or r < bestR) then front, bestR = w, r end
+                    end
+                    front = front or src.windows[1]
+                end
+                shelfList[#shelfList + 1] = {
+                    n = src.n,
+                    label = src.label,
+                    showing = src.showing and src.display == uuid,
+                    windows = src.windows,
+                    winCount = #src.windows,
+                    frontWin = front,
+                    previewWid = front and front.id or 0,
+                    app = front and front.app or "",
+                }
+            end
+            local shelfLayout = M.computeShelfLayout(dFrame, shelfList)
+
             local di = #displays + 1
             displays[di] = {
                 uuid = uuid,
                 screen = screen,
-                frame = { x = ff.x, y = ff.y, w = ff.w, h = ff.h },
+                frame = dFrame,
                 scale = scale,
                 wallpaperPath = wallpaperPathFor(screen),
                 workspaces = mine,
+                scratchpads = shelfList,
+                shelfLayout = shelfLayout,
                 showingIdx = showingIdx,
                 activeWs = activeWs,
                 scrollY = scrollY,
                 selectedWin = selectedWin,
                 hoveredWin = nil,
+                hoveredShelf = nil,
                 dropWs = nil,
+                dropShelf = nil,
             }
             if prevModel and prevModel.displays[prevModel.activeDisplay]
                and prevModel.displays[prevModel.activeDisplay].uuid == uuid then
@@ -719,6 +841,21 @@ local function buildNativeOpenSpec(m, animate)
                 windows = winList,
             }
         end
+        local shelfList = {}
+        if d.shelfLayout and d.shelfLayout.items then
+            for si, item in ipairs(d.shelfLayout.items) do
+                local sp = item.sp
+                shelfList[si] = {
+                    n = sp.n,
+                    label = sp.label,
+                    showing = sp.showing == true,
+                    winCount = sp.winCount or 0,
+                    previewWid = sp.previewWid or 0,
+                    app = sp.app or "",
+                    rect = item.rect,
+                }
+            end
+        end
         displays[i] = {
             frame = d.frame,
             scale = d.scale,
@@ -728,6 +865,10 @@ local function buildNativeOpenSpec(m, animate)
             selectedWin = d.selectedWin or 0,
             hoveredWin = d.hoveredWin or 0,
             dropWs = d.dropWs or 0,
+            hoveredShelf = d.hoveredShelf or 0,
+            dropShelf = d.dropShelf or 0,
+            shelfFrame = d.shelfLayout and d.shelfLayout.frame or nil,
+            shelf = shelfList,
             workspaces = wsList,
         }
     end
@@ -763,6 +904,8 @@ local function buildNativeUpdateSpec(m, animate)
             selectedWin = d.selectedWin or 0,
             hoveredWin = d.hoveredWin or 0,
             dropWs = d.dropWs or 0,
+            hoveredShelf = d.hoveredShelf or 0,
+            dropShelf = d.dropShelf or 0,
             panX = pans,
         }
     end
@@ -881,6 +1024,70 @@ local function renderNiriCanvas(m)
             end
         end
 
+        -- Floating scratchpad shelf at the bottom of the display.
+        if d.shelfLayout and d.shelfLayout.items then
+            local sf = d.shelfLayout.frame
+            elems[#elems + 1] = {
+                type = "rectangle", action = "strokeAndFill",
+                frame = sf,
+                roundedRectRadii = { xRadius = 18, yRadius = 18 },
+                fillColor = { white = 0.08, alpha = 0.84 },
+                strokeColor = { white = 1, alpha = 0.16 },
+                strokeWidth = 1,
+            }
+            for _, item in ipairs(d.shelfLayout.items) do
+                local sp = item.sp
+                local sr = item.rect
+                local isDrop = (item.idx == d.dropShelf)
+                local isHover = (item.idx == d.hoveredShelf)
+                elems[#elems + 1] = {
+                    type = "rectangle", action = "strokeAndFill",
+                    frame = sr,
+                    roundedRectRadii = { xRadius = 12, yRadius = 12 },
+                    fillColor = sp.winCount > 0 and { white = 0.16, alpha = 0.96 } or { white = 0.11, alpha = 0.75 },
+                    strokeColor = isDrop and dropColor or ((isHover or sp.showing) and activeColor or { white = 1, alpha = 0.16 }),
+                    strokeWidth = isDrop and 3 or (isHover and 2.5 or (sp.showing and 2 or 1)),
+                }
+                local pillW = math.max(24, #sp.label * 9 + 12)
+                elems[#elems + 1] = {
+                    type = "rectangle", action = "fill",
+                    frame = { x = sr.x + 7, y = sr.y + 7, w = pillW, h = 22 },
+                    roundedRectRadii = { xRadius = 7, yRadius = 7 },
+                    fillColor = isDrop and dropColor or ((isHover or sp.showing) and activeColor or { white = 0.08, alpha = 0.8 }),
+                }
+                elems[#elems + 1] = {
+                    type = "text", text = sp.label,
+                    textSize = 12, textAlignment = "center",
+                    textColor = { white = 1, alpha = 0.96 },
+                    frame = { x = sr.x + 7, y = sr.y + 10, w = pillW, h = 16 },
+                }
+                if sp.winCount > 1 then
+                    local cntText = tostring(sp.winCount)
+                    elems[#elems + 1] = {
+                        type = "text", text = cntText,
+                        textSize = 11, textAlignment = "right",
+                        textColor = { white = 1, alpha = 0.85 },
+                        frame = { x = sr.x + sr.w - 30, y = sr.y + 9, w = 22, h = 16 },
+                    }
+                end
+                local icon = sp.frontWin and iconFor(sp.frontWin.win) or nil
+                if icon then
+                    local sz = 28
+                    elems[#elems + 1] = {
+                        type = "image", image = icon, imageScaling = "scaleProportionally",
+                        frame = { x = sr.x + (sr.w - sz) / 2, y = sr.y + (sr.h - sz) / 2 + 2, w = sz, h = sz },
+                    }
+                end
+                elems[#elems + 1] = {
+                    type = "text",
+                    text = sp.winCount > 0 and (sp.app ~= "" and sp.app or "Window") or "Empty",
+                    textSize = 11, textAlignment = "center", textLineBreak = "truncateTail",
+                    textColor = { white = 1, alpha = sp.winCount > 0 and 0.9 or 0.45 },
+                    frame = { x = sr.x + 6, y = sr.y + sr.h - 20, w = math.max(1, sr.w - 12), h = 16 },
+                }
+            end
+        end
+
         -- Drag ghost on the display holding the pointer.
         if drag and drag.active and drag.ghostDisplayIdx == di and drag.ghostRect then
             local gr = drag.ghostRect
@@ -992,6 +1199,14 @@ local function closeNiri(target)
         S.overviewSuppressSlide = true
         S.instantLayout = true
         local ok, err = pcall(function()
+            if target.scratchpad then
+                if Spaces.toggleWorkspace then
+                    Spaces.toggleWorkspace(target.scratchpad)
+                elseif Spaces.gotoWorkspace then
+                    Spaces.gotoWorkspace(target.scratchpad)
+                end
+                return
+            end
             local win = target.win
             local id = win and win:id()
             if id and not Spaces.isHidden(id) then
@@ -1057,7 +1272,7 @@ local function hitAtPoint(pt)
     local di, d = displayAtPoint(pt)
     if not di then return nil end
     local layout = M.computeLayout(d.frame, d.workspaces, model.cfg, { scrollY = d.scrollY })
-    local hit = M.hitTest(layout, pt.x - d.frame.x, pt.y - d.frame.y)
+    local hit = M.hitTest(layout, pt.x - d.frame.x, pt.y - d.frame.y, d.shelfLayout)
     return di, d, hit, layout
 end
 
@@ -1098,17 +1313,22 @@ local function finishDrag(pt)
 
     local di, d, hit = hitAtPoint(pt)
     local changed = false
-    if di and d and hit and (hit.kind == "window" or hit.kind == "workspace") then
-        local srcDisplay = model.displays[dr.displayIdx]
-        local srcWs = srcDisplay and srcDisplay.workspaces[dr.wsIdx]
+    local srcDisplay = model.displays[dr.displayIdx]
+    local srcWs = (not dr.fromShelf) and srcDisplay and srcDisplay.workspaces[dr.wsIdx] or nil
+    local srcN = dr.fromShelf and dr.srcN or (srcWs and srcWs.n)
+    if di and d and hit and hit.kind == "shelf" and hit.sp then
+        if srcN ~= hit.sp.n and Spaces.sendWindowToWorkspace and Spaces.sendWindowToWorkspace(dr.win.win, hit.sp.n) then
+            changed = true
+        end
+    elseif di and d and hit and (hit.kind == "window" or hit.kind == "workspace") then
         local dstWs = hit.ws
-        if srcWs and dstWs then
-            if dstWs.n ~= srcWs.n then
+        if srcN and dstWs then
+            if dstWs.n ~= srcN then
                 if Spaces.sendWindowToWorkspace and Spaces.sendWindowToWorkspace(dr.win.win, dstWs.n) then
                     changed = true
                 end
-            elseif hit.kind == "window" and hit.win.id ~= dr.win.id then
-                local key = "ws" .. tostring(srcWs.n)
+            elseif not dr.fromShelf and hit.kind == "window" and hit.win.id ~= dr.win.id then
+                local key = "ws" .. tostring(srcN)
                 local localX = pt.x - d.frame.x
                 local side = localX < hit.rect.x + hit.rect.w / 2 and "left" or "right"
                 if Scroll.reorderWindow and Scroll.reorderWindow(key, dr.win.id, hit.win.id, side) then
@@ -1121,7 +1341,10 @@ local function finishDrag(pt)
     if changed then
         rebuildInPlace()
     else
-        for _, disp in ipairs(model.displays) do disp.dropWs = nil end
+        for _, disp in ipairs(model.displays) do
+            disp.dropWs = nil
+            disp.dropShelf = nil
+        end
         pushUpdate(true)
     end
 end
@@ -1137,8 +1360,10 @@ local function updateDrag(pt)
     end
     local di, d, hit = hitAtPoint(pt)
     local dropWs = (hit and (hit.kind == "window" or hit.kind == "workspace")) and hit.wsIdx or nil
+    local dropShelf = (hit and hit.kind == "shelf") and hit.shelfIdx or nil
     for i, disp in ipairs(model.displays) do
         disp.dropWs = (i == di) and dropWs or nil
+        disp.dropShelf = (i == di) and dropShelf or nil
     end
     if di and d then
         local gr = {
@@ -1157,6 +1382,7 @@ local function updateDrag(pt)
                     wid = drag.win.id,
                     frame = gr,
                     dropWs = dropWs or 0,
+                    dropShelf = dropShelf or 0,
                     captures = model.cfg.captures,
                     app = drag.win.app,
                     title = drag.win.title,
@@ -1370,6 +1596,16 @@ local function onNiriKey(event)
         return true
     end
 
+    if model.cfg.scratchpads ~= false and type(keyName) == "string" and #keyName == 1 then
+        local lower = keyName:lower()
+        for i, name in ipairs((S.cfg and S.cfg.namedWorkspaces) or {}) do
+            if type(name) == "string" and name:lower() == lower then
+                closeNiri({ scratchpad = 100 + i })
+                return true
+            end
+        end
+    end
+
     return true
 end
 
@@ -1389,13 +1625,16 @@ local function onNiriEvent(event)
             model.activeDisplay = di
             local newHover = (hit and hit.kind == "window") and hit.win.id or nil
             local newHoverWs = (hit and hit.kind == "window") and hit.wsIdx or nil
+            local newHoverShelf = (hit and hit.kind == "shelf") and hit.shelfIdx or nil
             local changed = false
             for i, disp in ipairs(model.displays) do
                 local want = (i == di) and newHover or nil
                 local wantWs = (i == di) and newHoverWs or nil
-                if disp.hoveredWin ~= want or disp.hoveredWs ~= wantWs then
+                local wantShelf = (i == di) and newHoverShelf or nil
+                if disp.hoveredWin ~= want or disp.hoveredWs ~= wantWs or disp.hoveredShelf ~= wantShelf then
                     disp.hoveredWin = want
                     disp.hoveredWs = wantWs
+                    disp.hoveredShelf = wantShelf
                     changed = true
                 end
             end
@@ -1410,6 +1649,18 @@ local function onNiriEvent(event)
                 displayIdx = di,
                 wsIdx = hit.wsIdx,
                 win = hit.win,
+                startPt = { x = pt.x, y = pt.y },
+                offset = { x = (pt.x - d.frame.x) - hit.rect.x, y = (pt.y - d.frame.y) - hit.rect.y },
+                size = { w = hit.rect.w, h = hit.rect.h },
+                active = false,
+            }
+        elseif di and d and hit and hit.kind == "shelf" and hit.sp and hit.sp.frontWin then
+            drag = {
+                displayIdx = di,
+                fromShelf = true,
+                shelfIdx = hit.shelfIdx,
+                srcN = hit.sp.n,
+                win = hit.sp.frontWin,
                 startPt = { x = pt.x, y = pt.y },
                 offset = { x = (pt.x - d.frame.x) - hit.rect.x, y = (pt.y - d.frame.y) - hit.rect.y },
                 size = { w = hit.rect.w, h = hit.rect.h },
@@ -1430,7 +1681,11 @@ local function onNiriEvent(event)
         end
         drag = nil
         local di, _, hit = hitAtPoint(pt)
-        if di and hit and hit.kind == "window" then
+        if di and hit and hit.kind == "shelf" and hit.sp then
+            closeNiri({ displayIdx = di, scratchpad = hit.sp.n })
+        elseif di and hit and hit.kind == "shelfDock" then
+            -- Clicking the dock's padding between cards keeps overview open.
+        elseif di and hit and hit.kind == "window" then
             closeNiri({ displayIdx = di, wsIdx = hit.wsIdx, n = hit.ws.n, win = hit.win.win })
         elseif di and hit and hit.kind == "workspace" then
             closeNiri({ displayIdx = di, wsIdx = hit.wsIdx, n = hit.ws.n })
@@ -1444,6 +1699,9 @@ local function onNiriEvent(event)
             local di, _, hit = hitAtPoint(event:location())
             if di and hit and hit.kind == "window" then
                 closeWindowEntry(di, hit.wsIdx, hit.win)
+            elseif di and hit and hit.kind == "shelf" and hit.sp and hit.sp.frontWin then
+                pcall(function() hit.sp.frontWin.win:close() end)
+                rebuildInPlace()
             end
         end
         return true
@@ -1494,6 +1752,7 @@ local function onGridKey(event)
 end
 
 local function openGrid()
+    local cfg = M.config()
     local list = Spaces.overview()
     S.overviewOpen = true
     suspendBorders(true)
@@ -1501,7 +1760,8 @@ local function openGrid()
         local uuid = screen:getUUID()
         local mine = {}
         for _, ws in ipairs(list) do
-            if ws.display == uuid then mine[#mine + 1] = ws end
+            local isScratch = Spaces.isScratchpad and Spaces.isScratchpad(ws.n) or (ws.n > 100)
+            if ws.display == uuid and (cfg.scratchpads or not isScratch) then mine[#mine + 1] = ws end
         end
         if #mine > 0 then
             local canvas = drawGrid(screen, mine)

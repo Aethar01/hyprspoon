@@ -32,6 +32,9 @@ local START = 0.015
 -- Progress per second that counts as a flick.
 local FLICK = 1.5
 
+-- Vertical travel (fraction of trackpad height) to open/close overview.
+local OVERVIEW_DISTANCE = 0.08
+
 -- The swipe in progress: where the fingers started, and once it has a
 -- direction (`dir`, 1 for the next workspace) where they were then (`x0`),
 -- the slide's progress and recent samples of it, whether its slide is up
@@ -144,15 +147,17 @@ local function onGesture(event)
             sumY = sumY + touch.normalizedPosition.y
         end
     end
-    local overviewGesture = ovFingers ~= nil and n == ovFingers
+    local cfg = S.cfg.swipe
+    local workspaces = not S.overviewOpen and cfg and n == cfg.fingers
+    -- Vertical overview swipe stays off if workspaces already swipe vertically
+    -- with the same number of fingers.
+    local overviewGesture = ovFingers ~= nil and n == ovFingers and not (workspaces and axis() == "vertical")
     if S.overviewOpen then
         if not overviewGesture then
             endActive()
             return false
         end
     end
-    local cfg = S.cfg.swipe
-    local workspaces = not S.overviewOpen and cfg and n == cfg.fingers
     -- Sideways swipes scroll columns, unless they switch workspaces.
     local columns = not S.overviewOpen and n == Scroll.swipeFingers() and not (workspaces and axis() == "horizontal")
     if not workspaces and not columns and not overviewGesture then
@@ -197,7 +202,7 @@ local function onGesture(event)
 
     -- Vertical swipe with overview.swipe fingers toggles the niri overview
     -- (fingers up opens, fingers down closes).
-    if overviewGesture and math.abs(dy) >= (cfg and cfg.distance or 0.10) and math.abs(dy) > 2 * math.abs(dx) then
+    if overviewGesture and math.abs(dy) >= OVERVIEW_DISTANCE and math.abs(dy) > 2 * math.abs(dx) then
         if (dy > 0 and not S.overviewOpen) or (dy < 0 and S.overviewOpen) then
             local Overview = package.loaded["hyprspoon.overview"]
             if Overview and Overview.toggle then

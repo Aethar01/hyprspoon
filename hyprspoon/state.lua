@@ -119,6 +119,10 @@ S.defaults = {
     --   emptyWorkspace = true show a trailing empty workspace slot to switch
     --                         to or drop windows onto (like niri's dynamic
     --                         empty workspace)
+    --   scratchpads = false   how named scratchpads (e.g. A/S/D) appear in the
+    --                         overview: false (omitted), "shelf" (floating dock
+    --                         bar at the bottom with clickable/droppable cards),
+    --                         or "stack" (rows inside the vertical workspace stack)
     --   captures = true       use live window & wallpaper captures via native
     --                         slide module when available; false or no Screen
     --                         Recording falls back to app/title cards
@@ -136,6 +140,7 @@ S.defaults = {
         workspaceRadius = 12,
         showLabels = true,
         emptyWorkspace = true,
+        scratchpads = false,
         captures = true,
         swipe = false,
     },
