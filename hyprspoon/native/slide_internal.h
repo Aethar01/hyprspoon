@@ -18,11 +18,17 @@
 @end
 
 #define MAX_SHOT_WINS 32
+#define MONITOR_ID_MAX 64
 
 typedef struct {
     int key;
+    char monitor[MONITOR_ID_MAX];
     CGImageRef image;
     CGRect bounds;
+    CGRect lastDisplay; // last active full display bounds (for wallpaper refresh)
+    bool relative;      // bounds (and winRects) are relative to display's fullFrame.origin
+    bool fallback;      // file-loaded wallpaper fallback (aspect-fill; upgrade on live capture)
+    bool black;         // live wallpaper capture was solid black (eligible for settle retry)
     double taken;
     int winCount;
     uint32_t wids[MAX_SHOT_WINS];
@@ -36,9 +42,10 @@ typedef struct {
 
 typedef struct {
     uint32_t wid;
+    char monitor[MONITOR_ID_MAX];
     CGImageRef image; // retained; often shared across tiles from one capture
-    CGRect area;      // capture bounds on screen
-    CGRect src;       // window bounds on screen at capture time
+    CGRect area;      // capture bounds (matches `src` coordinate space)
+    CGRect src;       // window bounds at capture time
     double taken;
 } Thumb;
 
@@ -64,15 +71,16 @@ void slideReleaseOverlay(uint32_t *targetWid, CAContext **ctx, CALayer **layer,
 // Capture and window query helpers (called on slideQueue()).
 bool slideWindowBounds(uint32_t target, CGRect *bounds);
 CGImageRef slideCaptureWindows(uint32_t *wids, int count, CGRect *bounds, bool stacked);
-Shot *slideWallpaper(CGRect display);
+Shot *slideWallpaper(const char *monitor, CGRect display);
 CGFloat slideCornerRadius(uint32_t target, CGFloat fallback);
 
 // Thumbnail cache (called on slideQueue()).
-void slideThumbStore(uint32_t target, CGImageRef image, CGRect area, CGRect src);
-Thumb *slideThumbLookup(uint32_t target);
+void slideThumbStore(const char *monitor, uint32_t target, CGImageRef image, CGRect area, CGRect src);
+Thumb *slideThumbLookup(const char *monitor, uint32_t target);
 void slideThumbForget(uint32_t target);
+void slideThumbForgetMonitor(const char *monitor);
 void slideThumbClear(void);
-void slidePictureStore(int key, CGImageRef image, CGRect bounds,
+void slidePictureStore(const char *monitor, int key, CGImageRef image, CGRect bounds, CGRect display,
                        const uint32_t *wids, const CGRect *winRects, int winCount);
 
 // Lua argument readers.

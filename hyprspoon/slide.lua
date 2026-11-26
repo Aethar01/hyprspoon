@@ -29,9 +29,19 @@ local Anim = require("hyprspoon.anim")
 -- The native module, loaded by M.start(); false if unavailable or off.
 local native = false
 
--- Workspace number -> { ids = its windows, uuid = the display } when its
--- picture was taken.
+-- Monitor UUID -> { [workspace n] = { ids = its windows, dx, dy, w, h, fw, fh, scale } }
+-- when its picture was taken. Keeping a separate cache per monitor lets
+-- switching between an external display and the built-in screen reuse each
+-- display's own pictures and wallpapers without colliding or wiping the other.
 local kept = {}
+
+-- Monitor UUID -> last seen { dx, dy, w, h, fw, fh, scale } for invalidating
+-- only a monitor whose resolution, scale, or usable insets changed.
+local monitorGeom = {}
+
+-- Settle timer after a display change to refresh live wallpapers once macOS
+-- finishes drawing the newly activated display.
+local wallpaperTimer = nil
 
 -- The key the picture of the workspace beneath a scratchpad is kept under.
 -- Far below any negative display-local workspace ID (-1, -2, ...).
@@ -60,34 +70,85 @@ local function rect(f)
     return { x = f.x, y = f.y, w = f.w, h = f.h }
 end
 
+local function screenGeometry(screen)
+    local f = screen:frame()
+    local ff = screen.fullFrame and screen:fullFrame() or f
+    local mode = screen.currentMode and screen:currentMode()
+    local scale = mode and mode.scale or 1
+    return {
+        dx = f.x - ff.x, dy = f.y - ff.y,
+        w = f.w, h = f.h,
+        fw = ff.w, fh = ff.h,
+        scale = scale,
+        frame = rect(f),
+        fullFrame = rect(ff),
+    }
+end
+
+local function sameGeometry(a, b)
+    return a ~= nil and b ~= nil
+        and a.dx == b.dx and a.dy == b.dy
+        and a.w == b.w and a.h == b.h
+        and a.fw == b.fw and a.fh == b.fh
+        and a.scale == b.scale
+end
+
+local function wallpaperPathFor(screen)
+    if not (screen and screen.desktopImageURL) then return nil end
+    local url = screen:desktopImageURL()
+    if type(url) ~= "string" then return nil end
+    local path = url:match("^file://(.+)$")
+    if not path then return nil end
+    return (path:gsub("%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end))
+end
+
 -- Takes workspace `n`'s windows `ids` on `screen` into its kept picture
 -- (key `key`, `n` by default); true if there was anything to take.
 local function take(n, ids, screen, key)
-    local took = #ids > 0 and native.capture(key or n, ids)
-    if not key then kept[n] = took and { ids = signature(ids), uuid = screen:getUUID() } or nil end
+    local uuid = screen:getUUID()
+    local g = screenGeometry(screen)
+    local took = #ids > 0 and native.capture(key or n, ids, uuid, g.fullFrame)
+    if not key and uuid then
+        local byMon = kept[uuid]
+        if took then
+            if not byMon then byMon = {} kept[uuid] = byMon end
+            byMon[n] = { ids = signature(ids), geom = g }
+        elseif byMon then
+            byMon[n] = nil
+        end
+    end
     return took
 end
 
 -- Whether workspace `n`'s picture shows it with the windows `ids`, on `screen`.
 local function current(n, ids, screen)
-    local k = kept[n]
-    return k ~= nil and k.ids == signature(ids) and k.uuid == screen:getUUID()
+    local uuid = screen:getUUID()
+    local byMon = uuid and kept[uuid]
+    local k = byMon and byMon[n]
+    return k ~= nil and k.ids == signature(ids) and sameGeometry(k.geom, screenGeometry(screen))
 end
 
 -- Records that workspace `n`'s picture was already captured into native
--- `pictures[n]` (e.g. when the overview opens), so leaving via overview keeps
--- slide-in pictures warm for later workspace switches.
+-- `pictures[]` for `screen` (e.g. when the overview opens), so leaving via
+-- overview keeps slide-in pictures warm for later workspace switches.
 function M.noteCaptured(n, ids, screen)
     if not native or not n or not screen or not ids or #ids == 0 then return end
-    kept[n] = { ids = signature(ids), uuid = screen:getUUID() }
+    local uuid = screen:getUUID()
+    if not uuid then return end
+    local byMon = kept[uuid]
+    if not byMon then byMon = {} kept[uuid] = byMon end
+    byMon[n] = { ids = signature(ids), geom = screenGeometry(screen) }
 end
 
 -- The slide over `screen`'s usable area, moving as animations.workspaces says.
 local function slide(screen, t)
     local cfg = type(S.cfg.slide) == "table" and S.cfg.slide or {}
-    local mode = screen:currentMode()
-    t.frame = rect(screen:frame())
-    t.scale = mode and mode.scale or 1
+    local g = screenGeometry(screen)
+    t.monitor = screen:getUUID()
+    t.frame = g.frame
+    t.fullFrame = g.fullFrame
+    t.scale = g.scale
+    t.wallpaperPath = wallpaperPathFor(screen)
     for k, v in pairs(Anim.get("workspaces")) do t[k] = v end
     t.wallpaperAge = cfg.wallpaperRefresh or 0
     return t
@@ -219,11 +280,14 @@ function M.retile(screen, tiles, done)
         mod.onReady(ready)
         readyHooked = mod
     end
-    local mode = screen:currentMode()
+    local g = screenGeometry(screen)
     local retile = type(S.cfg.experimental.captureRetile) == "table" and S.cfg.experimental.captureRetile or {}
     local token = mod.retile({
-        frame = rect(screen:frame()),
-        scale = mode and mode.scale or 1,
+        monitor = screen:getUUID(),
+        frame = g.frame,
+        fullFrame = g.fullFrame,
+        scale = g.scale,
+        wallpaperPath = wallpaperPathFor(screen),
         move = Anim.get("windows"),
         fade = Anim.get("fadeIn"),
         hold = retile.hold or 0.05,
@@ -315,20 +379,52 @@ function M.cancelHome()
     return true
 end
 
--- Workspace `n` is gone: its picture with it.
-function M.forget(n)
-    if native and kept[n] then
-        kept[n] = nil
-        native.forget(n)
+local function primeWallpapers(force)
+    if not native then return end
+    for _, screen in ipairs(hs.screen.allScreens()) do
+        native.wallpaper(rect(screen:fullFrame()), screen:getUUID(), wallpaperPathFor(screen), force == true)
     end
 end
 
--- Displays changed: every picture is out of place.
+-- Workspace `n` is gone: its picture with it on every monitor.
+function M.forget(n)
+    if not native then return end
+    local had = false
+    for _, byMon in pairs(kept) do
+        if byMon[n] then
+            byMon[n] = nil
+            had = true
+        end
+    end
+    if had then native.forget(n) end
+end
+
+-- Displays changed: keep each monitor's own picture and wallpaper cache,
+-- dropping only monitors whose resolution, scale, or usable insets changed,
+-- and refresh wallpapers again once displays settle so a transient black
+-- frame during display wake/reconfig never sticks.
 function M.reset()
     if not native then return end
-    kept = {}
-    native.forget()
-    for _, screen in ipairs(hs.screen.allScreens()) do native.wallpaper(rect(screen:fullFrame())) end
+    if wallpaperTimer then wallpaperTimer:stop() wallpaperTimer = nil end
+    for _, screen in ipairs(hs.screen.allScreens()) do
+        local uuid = screen:getUUID()
+        if uuid then
+            local g = screenGeometry(screen)
+            local prev = monitorGeom[uuid]
+            if prev and not sameGeometry(prev, g) then
+                kept[uuid] = nil
+                native.forget(nil, uuid)
+            end
+            monitorGeom[uuid] = g
+        end
+    end
+    primeWallpapers(false)
+    if hs and hs.timer and hs.timer.doAfter then
+        wallpaperTimer = hs.timer.doAfter(1.5, function()
+            wallpaperTimer = nil
+            primeWallpapers(true)
+        end)
+    end
 end
 
 local changeHooked = nil
@@ -370,12 +466,15 @@ end
 
 function M.stop()
     M.cancelHome()
+    if wallpaperTimer then wallpaperTimer:stop() wallpaperTimer = nil end
     pending = {}
     pan = nil
     panShownUntil = 0
     kept = {}
+    monitorGeom = {}
     local mod = native or changeHooked or readyHooked
     if mod then
+        if mod.forget then mod.forget() end
         if mod.stop then
             mod.stop()
         else

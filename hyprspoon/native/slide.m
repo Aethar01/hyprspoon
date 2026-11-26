@@ -23,6 +23,7 @@
 
 #import <Foundation/Foundation.h>
 #import <QuartzCore/QuartzCore.h>
+#import <ImageIO/ImageIO.h>
 #include <dispatch/dispatch.h>
 #include <mach/mach.h>
 #include <os/lock.h>
@@ -175,42 +176,97 @@ static void drainEvents(void *unused) {
 
 // Shot is defined in slide_internal.h.
 
-#define MAX_PICTURES 32
+static void copyMonitor(char dst[MONITOR_ID_MAX], const char *src) {
+    if (!src || !src[0]) {
+        dst[0] = '\0';
+        return;
+    }
+    strncpy(dst, src, MONITOR_ID_MAX - 1);
+    dst[MONITOR_ID_MAX - 1] = '\0';
+}
+
+static bool sameMonitor(const char *a, const char *b) {
+    const char *sa = a ? a : "";
+    const char *sb = b ? b : "";
+    return strcmp(sa, sb) == 0;
+}
+
+#define MAX_PICTURES 64
 static Shot pictures[MAX_PICTURES];
 
-// Per-window thumbnail cache for overview (kept across opens and cleared on
-// display changes / reload, so windows keep their thumbnails without extra
+// Per-window thumbnail cache for overview (kept per monitor across opens and
+// display switches so each display keeps its own thumbnails without extra
 // captures). Hidden workspaces also reuse `pictures[]` directly.
-#define MAX_THUMBS 48
+#define MAX_THUMBS 96
 static Thumb thumbs[MAX_THUMBS];
 
-void slideThumbStore(uint32_t target, CGImageRef image, CGRect area, CGRect src) {
+void slideThumbStore(const char *monitor, uint32_t target, CGImageRef image, CGRect area, CGRect src) {
     if (!target || !image || !validRect(area) || !validRect(src)) return;
     int slot = -1, oldest = 0;
     for (int i = 0; i < MAX_THUMBS; i++) {
-        if (thumbs[i].wid == target) { slot = i; break; }
+        if (thumbs[i].wid == target && sameMonitor(thumbs[i].monitor, monitor)) { slot = i; break; }
         if (!thumbs[i].image && slot < 0) slot = i;
         if (thumbs[i].image && thumbs[i].taken < thumbs[oldest].taken) oldest = i;
     }
     if (slot < 0) slot = oldest;
     CGImageRetain(image);
     if (thumbs[slot].image) CGImageRelease(thumbs[slot].image);
-    thumbs[slot] = (Thumb){ target, image, area, src, CFAbsoluteTimeGetCurrent() };
+    memset(&thumbs[slot], 0, sizeof(thumbs[slot]));
+    thumbs[slot].wid = target;
+    copyMonitor(thumbs[slot].monitor, monitor);
+    thumbs[slot].image = image;
+    thumbs[slot].area = area;
+    thumbs[slot].src = src;
+    thumbs[slot].taken = CFAbsoluteTimeGetCurrent();
 }
 
-Thumb *slideThumbLookup(uint32_t target) {
+Thumb *slideThumbLookup(const char *monitor, uint32_t target) {
+    // 1. Exact monitor match in thumbs[].
     for (int i = 0; i < MAX_THUMBS; i++) {
-        if (thumbs[i].wid == target && thumbs[i].image) return &thumbs[i];
+        if (thumbs[i].wid == target && thumbs[i].image && sameMonitor(thumbs[i].monitor, monitor)) return &thumbs[i];
     }
-    // Fall back to workspace captures slide.m already holds for workspace slides.
+    // 2. Exact monitor match in workspace pictures[].
     static Thumb fromShot;
     for (int i = 0; i < MAX_PICTURES; i++) {
         Shot *p = &pictures[i];
-        if (!p->image || p->winCount <= 0) continue;
+        if (!p->image || p->winCount <= 0 || !sameMonitor(p->monitor, monitor)) continue;
         for (int k = 0; k < p->winCount; k++) {
             if (p->wids[k] == target) {
-                fromShot = (Thumb){ target, p->image, p->bounds, p->winRects[k], p->taken };
+                memset(&fromShot, 0, sizeof(fromShot));
+                fromShot.wid = target;
+                copyMonitor(fromShot.monitor, p->monitor);
+                fromShot.image = p->image;
+                fromShot.area = p->bounds;
+                fromShot.src = p->winRects[k];
+                fromShot.taken = p->taken;
                 return &fromShot;
+            }
+        }
+    }
+    // 3. Overview fallback: any monitor's cached thumbnail for this window.
+    if (monitor && monitor[0]) {
+        Thumb *best = NULL;
+        for (int i = 0; i < MAX_THUMBS; i++) {
+            if (thumbs[i].wid == target && thumbs[i].image
+                && (!best || thumbs[i].taken > best->taken)) {
+                best = &thumbs[i];
+            }
+        }
+        if (best) return best;
+        for (int i = 0; i < MAX_PICTURES; i++) {
+            Shot *p = &pictures[i];
+            if (!p->image || p->winCount <= 0) continue;
+            for (int k = 0; k < p->winCount; k++) {
+                if (p->wids[k] == target) {
+                    memset(&fromShot, 0, sizeof(fromShot));
+                    fromShot.wid = target;
+                    copyMonitor(fromShot.monitor, p->monitor);
+                    fromShot.image = p->image;
+                    fromShot.area = p->bounds;
+                    fromShot.src = p->winRects[k];
+                    fromShot.taken = p->taken;
+                    return &fromShot;
+                }
             }
         }
     }
@@ -226,6 +282,16 @@ void slideThumbForget(uint32_t target) {
     }
 }
 
+void slideThumbForgetMonitor(const char *monitor) {
+    if (!monitor || !monitor[0]) return;
+    for (int i = 0; i < MAX_THUMBS; i++) {
+        if (thumbs[i].image && sameMonitor(thumbs[i].monitor, monitor)) {
+            CGImageRelease(thumbs[i].image);
+            memset(&thumbs[i], 0, sizeof(thumbs[i]));
+        }
+    }
+}
+
 void slideThumbClear(void) {
     for (int i = 0; i < MAX_THUMBS; i++) {
         if (thumbs[i].image) CGImageRelease(thumbs[i].image);
@@ -233,14 +299,17 @@ void slideThumbClear(void) {
     }
 }
 
-// Wallpapers are kept apart, by display bounds.
-#define MAX_WALLPAPERS 8
+// Wallpapers are kept apart, per monitor UUID (and size) so plugging/unplugging
+// displays preserves each monitor's wallpaper across origin shifts.
+#define MAX_WALLPAPERS 16
 static Shot wallpapers[MAX_WALLPAPERS];
 static int wallpaperCount = 0;
 
-static Shot *pictureFor(int key) {
+static Shot *pictureFor(const char *monitor, int key) {
     for (int i = 0; i < MAX_PICTURES; i++) {
-        if (pictures[i].key == key && pictures[i].image) return &pictures[i];
+        if (pictures[i].key == key && pictures[i].image && sameMonitor(pictures[i].monitor, monitor)) {
+            return &pictures[i];
+        }
     }
     return NULL;
 }
@@ -250,27 +319,45 @@ static void dropPicture(Shot *p) {
     memset(p, 0, sizeof(*p));
 }
 
-void slidePictureStore(int key, CGImageRef image, CGRect bounds,
+// Takes ownership of `image` (caller transfers +1 ref). Replaces any existing
+// picture for `(monitor, key)`, else uses a free slot or evicts the oldest.
+static void storePictureOwned(const char *monitor, int key, CGImageRef image, CGRect bounds, CGRect display,
+                              const uint32_t *wids, const CGRect *winRects, int winCount) {
+    if (!key || !image || !validRect(bounds)) {
+        if (image) CGImageRelease(image);
+        return;
+    }
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < MAX_PICTURES; i++) {
+        if (pictures[i].image && pictures[i].key == key && sameMonitor(pictures[i].monitor, monitor)) {
+            slot = i;
+            break;
+        }
+        if (!pictures[i].image && slot < 0) slot = i;
+        if (pictures[i].image && pictures[i].taken < pictures[oldest].taken) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    dropPicture(&pictures[slot]);
+
+    bool rel = validRect(display);
+    pictures[slot].key = key;
+    copyMonitor(pictures[slot].monitor, monitor);
+    pictures[slot].image = image;
+    pictures[slot].relative = rel;
+    pictures[slot].bounds = rel ? CGRectOffset(bounds, -display.origin.x, -display.origin.y) : bounds;
+    pictures[slot].taken = CFAbsoluteTimeGetCurrent();
+    int n = winCount > MAX_SHOT_WINS ? MAX_SHOT_WINS : winCount;
+    pictures[slot].winCount = n;
+    for (int k = 0; k < n; k++) {
+        pictures[slot].wids[k] = wids[k];
+        pictures[slot].winRects[k] = rel ? CGRectOffset(winRects[k], -display.origin.x, -display.origin.y) : winRects[k];
+    }
+}
+
+void slidePictureStore(const char *monitor, int key, CGImageRef image, CGRect bounds, CGRect display,
                        const uint32_t *wids, const CGRect *winRects, int winCount) {
     if (!key || !image || !validRect(bounds)) return;
-    Shot *p = pictureFor(key);
-    if (p) dropPicture(p);
-    for (int i = 0; i < MAX_PICTURES; i++) {
-        if (!pictures[i].image) {
-            memset(&pictures[i], 0, sizeof(pictures[i]));
-            pictures[i].key = key;
-            pictures[i].image = CGImageRetain(image);
-            pictures[i].bounds = bounds;
-            pictures[i].taken = CFAbsoluteTimeGetCurrent();
-            int n = winCount > MAX_SHOT_WINS ? MAX_SHOT_WINS : winCount;
-            pictures[i].winCount = n;
-            for (int k = 0; k < n; k++) {
-                pictures[i].wids[k] = wids[k];
-                pictures[i].winRects[k] = winRects[k];
-            }
-            return;
-        }
-    }
+    storePictureOwned(monitor, key, CGImageRetain(image), bounds, display, wids, winRects, winCount);
 }
 
 // The union of every display's bounds: a capture is of the windows' parts
@@ -282,6 +369,16 @@ static CGRect displaysBounds(void) {
     if (CGGetActiveDisplayList(16, displays, &count) != kCGErrorSuccess) return all;
     for (uint32_t i = 0; i < count; i++) all = CGRectUnion(all, CGDisplayBounds(displays[i]));
     return all;
+}
+
+static bool isActiveDisplayBounds(CGRect display) {
+    CGDirectDisplayID displays[16];
+    uint32_t count = 0;
+    if (CGGetActiveDisplayList(16, displays, &count) != kCGErrorSuccess) return false;
+    for (uint32_t i = 0; i < count; i++) {
+        if (CGRectEqualToRect(CGDisplayBounds(displays[i]), display)) return true;
+    }
+    return false;
 }
 
 // Keeps only the `wids` currently on screen, in their stacking order (front
@@ -327,21 +424,31 @@ static int onScreenByStacking(uint32_t *wids, int count) {
 // One capture of `wids` together on `connection`, and where it covers
 // (retained; NULL if there's nothing to see). With `stacked`, keep only
 // on-screen windows and put them in their stacking order first; windows
-// that don't overlap (tiles) needn't be. Optionally records the on-screen
-// count and each window's clipped bounds without any extra WindowServer call.
-static CGImageRef captureOnInfo(int connection, uint32_t *wids, int count, CGRect *bounds, bool stacked,
-                                int *outCount, uint32_t *outWids, CGRect *outRects, int maxOut) {
+// that don't overlap (tiles) needn't be. When `validRect(clip)` is true,
+// excludes windows that aren't meaningfully on that display (>= 8x8pt) so
+// windows parked or migrating on another display never widen the capture.
+static CGImageRef captureOnClipped(int connection, uint32_t *wids, int count, CGRect clip,
+                                   CGRect *bounds, bool stacked,
+                                   int *outCount, uint32_t *outWids, CGRect *outRects, int maxOut) {
     if (stacked) {
         count = onScreenByStacking(wids, count);
         if (count == 0) return NULL;
     }
+    bool hasClip = validRect(clip);
     CGRect screen = displaysBounds(), area = CGRectNull;
+    uint32_t keptWids[128];
+    int keptCount = 0;
     int recorded = 0;
-    for (int i = 0; i < count; i++) {
-        CGRect b;
-        if (SLSGetWindowBounds(connection, wids[i], &b) != kCGErrorSuccess) continue;
-        b = CGRectIntersection(b, screen);
-        if (!CGRectIsNull(b)) {
+    for (int i = 0; i < count && keptCount < 128; i++) {
+        CGRect raw;
+        if (SLSGetWindowBounds(connection, wids[i], &raw) != kCGErrorSuccess) continue;
+        if (hasClip) {
+            CGRect onDisplay = CGRectIntersection(raw, clip);
+            if (CGRectIsNull(onDisplay) || onDisplay.size.width < 8 || onDisplay.size.height < 8) continue;
+        }
+        CGRect b = CGRectIntersection(raw, screen);
+        if (!CGRectIsNull(b) && !CGRectIsEmpty(b)) {
+            keptWids[keptCount++] = wids[i];
             area = CGRectUnion(area, b);
             if (outWids && outRects && recorded < maxOut) {
                 outWids[recorded] = wids[i];
@@ -350,8 +457,8 @@ static CGImageRef captureOnInfo(int connection, uint32_t *wids, int count, CGRec
             }
         }
     }
-    if (CGRectIsNull(area) || CGRectIsEmpty(area)) return NULL;
-    CFArrayRef list = SLSHWCaptureWindowList(connection, wids, count, CAPTURE_NOMINAL);
+    if (keptCount == 0 || CGRectIsNull(area) || CGRectIsEmpty(area)) return NULL;
+    CFArrayRef list = SLSHWCaptureWindowList(connection, keptWids, keptCount, CAPTURE_NOMINAL);
     if (!list) return NULL;
     CGImageRef image = NULL;
     if (CFArrayGetCount(list) > 0) image = CGImageRetain((CGImageRef)CFArrayGetValueAtIndex(list, 0));
@@ -362,7 +469,7 @@ static CGImageRef captureOnInfo(int connection, uint32_t *wids, int count, CGRec
 }
 
 static CGImageRef captureOn(int connection, uint32_t *wids, int count, CGRect *bounds, bool stacked) {
-    return captureOnInfo(connection, wids, count, bounds, stacked, NULL, NULL, NULL, 0);
+    return captureOnClipped(connection, wids, count, CGRectZero, bounds, stacked, NULL, NULL, NULL, 0);
 }
 
 // A capture of `wids` as they're stacked on screen, on the slide's connection.
@@ -371,61 +478,188 @@ static CGImageRef capture(uint32_t *wids, int count, CGRect *bounds) {
 }
 
 // The windows drawing the desktop of the display at `bounds`: the
-// wallpaper, and Finder's icons over it.
+// wallpaper, and Finder's icons over it (only when matching this display).
 static int desktopWindows(CGRect bounds, uint32_t *out, int max) {
     CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID);
     if (!list) return 0;
     CGPoint middle = { CGRectGetMidX(bounds), CGRectGetMidY(bounds) };
-    uint32_t wallpaper = 0, icons = 0;
+    int32_t desktopLevel = CGWindowLevelForKey(kCGDesktopWindowLevelKey);
+    int32_t iconLevel = CGWindowLevelForKey(kCGDesktopIconWindowLevelKey);
+    uint32_t wallpaper = 0, fallbackWallpaper = 0, icons = 0;
     for (CFIndex i = 0; i < CFArrayGetCount(list); i++) {
         CFDictionaryRef info = CFArrayGetValueAtIndex(list, i);
         int32_t layer = 0;
         uint32_t wid = 0;
         CFNumberRef n = CFDictionaryGetValue(info, kCGWindowLayer);
         if (n) CFNumberGetValue(n, kCFNumberSInt32Type, &layer);
+        if (layer > iconLevel) continue;
         n = CFDictionaryGetValue(info, kCGWindowNumber);
         if (n) CFNumberGetValue(n, kCFNumberSInt32Type, &wid);
+        if (!wid) continue;
         CGRect b = CGRectNull;
         CFDictionaryRef d = CFDictionaryGetValue(info, kCGWindowBounds);
         if (!d || !CGRectMakeWithDictionaryRepresentation(d, &b) || !CGRectContainsPoint(b, middle)) continue;
         CFStringRef name = CFDictionaryGetValue(info, kCGWindowName);
-        if (!wallpaper && name && CFStringCompare(name, CFSTR("Wallpaper"), 0) == kCFCompareEqualTo) {
-            wallpaper = wid;
-        } else if (!icons && layer == CGWindowLevelForKey(kCGDesktopIconWindowLevelKey)) {
+        CFStringRef owner = CFDictionaryGetValue(info, kCGWindowOwnerName);
+        if (layer <= desktopLevel) {
+            if (!wallpaper && name && CFStringCompare(name, CFSTR("Wallpaper"), 0) == kCFCompareEqualTo) {
+                wallpaper = wid;
+            } else if (!fallbackWallpaper && name && CFStringHasPrefix(name, CFSTR("Desktop Picture"))) {
+                fallbackWallpaper = wid;
+            } else if (!fallbackWallpaper && owner && CFStringCompare(owner, CFSTR("Wallpaper"), 0) == kCFCompareEqualTo) {
+                fallbackWallpaper = wid;
+            }
+        } else if (!icons && layer == iconLevel
+                   && fabs(b.origin.x - bounds.origin.x) <= 2 && fabs(b.origin.y - bounds.origin.y) <= 2
+                   && fabs(b.size.width - bounds.size.width) <= 2 && fabs(b.size.height - bounds.size.height) <= 2) {
             icons = wid;
         }
     }
     CFRelease(list);
+    if (!wallpaper) wallpaper = fallbackWallpaper;
+    if (!wallpaper) return 0; // never capture transparent Finder icons without a wallpaper
     int count = 0;
-    if (wallpaper && count < max) out[count++] = wallpaper;
+    if (count < max) out[count++] = wallpaper;
     if (icons && count < max) out[count++] = icons;
     return count;
 }
 
-static Shot *wallpaperFor(CGRect display) {
+// Downsamples `image` to 8x8 RGBA8 (~5us) to detect a completely transparent
+// or solid-black capture (which macOS can emit briefly during display wake /
+// reconfiguration).
+static void inspectWallpaperImage(CGImageRef image, bool *allTransparent, bool *allBlack) {
+    *allTransparent = true;
+    *allBlack = true;
+    if (!image) return;
+    uint8_t pixels[8 * 8 * 4];
+    memset(pixels, 0, sizeof(pixels));
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(pixels, 8, 8, 8, 8 * 4, cs,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        *allTransparent = false;
+        *allBlack = false;
+        return;
+    }
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationLow);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, 8, 8), image);
+    CGContextRelease(ctx);
+    for (int i = 0; i < 64; i++) {
+        uint8_t r = pixels[i * 4 + 0];
+        uint8_t g = pixels[i * 4 + 1];
+        uint8_t b = pixels[i * 4 + 2];
+        uint8_t a = pixels[i * 4 + 3];
+        if (a > 0) *allTransparent = false;
+        if (r > 3 || g > 3 || b > 3) *allBlack = false;
+    }
+}
+
+static CGImageRef loadWallpaperImageFile(const char *path) {
+    if (!path || !path[0]) return NULL;
+    NSString *nsPath = [NSString stringWithUTF8String:path];
+    if (!nsPath) return NULL;
+    NSURL *url = [NSURL fileURLWithPath:nsPath];
+    CGImageSourceRef src = CGImageSourceCreateWithURL((CFURLRef)url, NULL);
+    if (!src) return NULL;
+    CGImageRef img = CGImageSourceCreateImageAtIndex(src, 0, NULL);
+    CFRelease(src);
+    return img;
+}
+
+static bool sameSize2(CGSize a, CGSize b) {
+    return fabs(a.width - b.width) <= 2 && fabs(a.height - b.height) <= 2;
+}
+
+static Shot *wallpaperFor(const char *monitor, CGRect display) {
+    bool hasMon = monitor && monitor[0];
     for (int i = 0; i < wallpaperCount; i++) {
-        if (CGRectEqualToRect(wallpapers[i].bounds, display)) return &wallpapers[i];
+        if (!wallpapers[i].image) continue;
+        if (hasMon) {
+            if (sameMonitor(wallpapers[i].monitor, monitor) && sameSize2(wallpapers[i].bounds.size, display.size)) {
+                wallpapers[i].lastDisplay = display;
+                return &wallpapers[i];
+            }
+        } else if (!wallpapers[i].relative && CGRectEqualToRect(wallpapers[i].bounds, display)) {
+            wallpapers[i].lastDisplay = display;
+            return &wallpapers[i];
+        } else if (wallpapers[i].relative && CGRectEqualToRect(wallpapers[i].lastDisplay, display)) {
+            return &wallpapers[i];
+        }
     }
     return NULL;
 }
 
-// Takes the wallpaper of the display at `display` (its full bounds).
-static Shot *takeWallpaper(CGRect display) {
-    if (!validRect(display)) return NULL;
-    Shot *p = wallpaperFor(display);
-    uint32_t wids[2];
-    int count = desktopWindows(display, wids, 2);
-    CGRect bounds;
-    CGImageRef image = count ? capture(wids, count, &bounds) : NULL;
-    if (!image) return (p && p->image) ? p : NULL;
-    if (!p) {
-        if (wallpaperCount == MAX_WALLPAPERS) dropPicture(&wallpapers[--wallpaperCount]);
+static Shot *allocWallpaperSlot(const char *monitor, CGRect display) {
+    Shot *p = wallpaperFor(monitor, display);
+    if (p) return p;
+    for (int i = 0; i < wallpaperCount; i++) {
+        if (!wallpapers[i].image) {
+            memset(&wallpapers[i], 0, sizeof(wallpapers[i]));
+            return &wallpapers[i];
+        }
+    }
+    if (wallpaperCount < MAX_WALLPAPERS) {
         p = &wallpapers[wallpaperCount++];
         memset(p, 0, sizeof(*p));
+        return p;
     }
+    int oldest = 0;
+    for (int i = 1; i < wallpaperCount; i++) {
+        if (wallpapers[i].taken < wallpapers[oldest].taken) oldest = i;
+    }
+    dropPicture(&wallpapers[oldest]);
+    return &wallpapers[oldest];
+}
+
+// Takes the wallpaper of the display `monitor` at `display` (its full bounds),
+// falling back to `fallbackPath` (desktopImageURL) if live capture fails or
+// returns a transient black/transparent frame during display reconfiguration.
+// Never overwrites an existing non-black wallpaper with a failed/blank/black capture.
+static Shot *takeWallpaper(const char *monitor, CGRect display, const char *fallbackPath) {
+    if (!validRect(display)) return NULL;
+    Shot *existing = wallpaperFor(monitor, display);
+    uint32_t wids[2];
+    int count = desktopWindows(display, wids, 2);
+    CGRect bounds = display;
+    CGImageRef image = count ? capture(wids, count, &bounds) : NULL;
+    bool transparent = false, black = false;
+    if (image) {
+        inspectWallpaperImage(image, &transparent, &black);
+        if (transparent) {
+            CGImageRelease(image);
+            image = NULL;
+        }
+    }
+    bool isFallback = false;
+    if (!image || black) {
+        // Keep an already-valid non-black wallpaper (live or file) over a
+        // transient failed/black capture during display wake or switch.
+        if (existing && existing->image && !existing->black) {
+            if (image) CGImageRelease(image);
+            existing->lastDisplay = display;
+            return existing;
+        }
+        CGImageRef fileImg = loadWallpaperImageFile(fallbackPath);
+        if (fileImg) {
+            if (image) CGImageRelease(image);
+            image = fileImg;
+            bounds = display;
+            black = false;
+            isFallback = true;
+        } else if (!image) {
+            return (existing && existing->image) ? existing : NULL;
+        }
+    }
+    Shot *p = allocWallpaperSlot(monitor, display);
     if (p->image) CGImageRelease(p->image);
     p->image = image;
-    p->bounds = display;
+    copyMonitor(p->monitor, monitor);
+    p->relative = true;
+    p->bounds = (CGRect){ CGPointZero, display.size };
+    p->lastDisplay = display;
+    p->fallback = isFallback;
+    p->black = black;
     p->taken = CFAbsoluteTimeGetCurrent();
     return p;
 }
@@ -618,22 +852,32 @@ static void clearLayers(void) {
 }
 
 // A layer showing `p` where it was on screen, relative to `frame`, moved
-// by `offset`.
-static CALayer *pictureLayer(Shot *p, CGRect frame, CGPoint offset) {
+// by `offset`. Display-relative shots are anchored to `display.origin`.
+static CALayer *pictureLayer(Shot *p, CGRect frame, CGRect display, CGPoint offset) {
     CALayer *layer = [CALayer layer];
     layer.contents = (id)p->image;
-    layer.frame = CGRectMake(p->bounds.origin.x - frame.origin.x + offset.x,
-        p->bounds.origin.y - frame.origin.y + offset.y, p->bounds.size.width, p->bounds.size.height);
+    CGFloat x = p->relative ? (display.origin.x + p->bounds.origin.x - frame.origin.x + offset.x)
+                            : (p->bounds.origin.x - frame.origin.x + offset.x);
+    CGFloat y = p->relative ? (display.origin.y + p->bounds.origin.y - frame.origin.y + offset.y)
+                            : (p->bounds.origin.y - frame.origin.y + offset.y);
+    layer.frame = CGRectMake(x, y, p->bounds.size.width, p->bounds.size.height);
+    if (p->fallback) {
+        layer.contentsGravity = kCAGravityResizeAspectFill;
+        layer.masksToBounds = YES;
+    }
     return layer;
 }
 
 typedef struct {
-    CGRect frame;   // the area that slides (a display's usable area)
-    double scale;   // its backing scale
-    int out, into;  // pictures leaving and arriving (0 for none)
-    int still;      // a picture that stays put beneath them (0 for none)
-    CGPoint toward; // unit direction the arriving one comes from, e.g. (1, 0): the right
-    bool backdrop;  // over the wallpaper, hiding the windows beneath
+    char monitor[MONITOR_ID_MAX];
+    CGRect frame;     // the area that slides (a display's usable area)
+    CGRect fullFrame; // the display's full bounds (optional; falls back to displayHolding)
+    double scale;     // its backing scale
+    int out, into;    // pictures leaving and arriving (0 for none)
+    int still;        // a picture that stays put beneath them (0 for none)
+    CGPoint toward;   // unit direction the arriving one comes from, e.g. (1, 0): the right
+    bool backdrop;    // over the wallpaper, hiding the windows beneath
+    char wallpaperPath[512]; // optional file fallback when live wallpaper capture isn't ready
     Motion motion;
 } Slide;
 
@@ -674,11 +918,14 @@ static void finish(void *unused) {
     [root removeAnimationForKey:opacityKey];
     root.opacity = 1;
     commitChanges();
-    // A stale wallpaper is taken again now, between slides.
+    // A stale wallpaper is taken again now, between slides (active displays only).
     double maxAge = atomic_load(&wallpaperMaxAge);
     if (maxAge <= 0) return;
     for (int i = 0; i < wallpaperCount; i++) {
-        if (CFAbsoluteTimeGetCurrent() - wallpapers[i].taken > maxAge) takeWallpaper(wallpapers[i].bounds);
+        if (wallpapers[i].image && CFAbsoluteTimeGetCurrent() - wallpapers[i].taken > maxAge
+            && validRect(wallpapers[i].lastDisplay) && isActiveDisplayBounds(wallpapers[i].lastDisplay)) {
+            takeWallpaper(wallpapers[i].monitor, wallpapers[i].lastDisplay, NULL);
+        }
     }
 }
 
@@ -693,13 +940,14 @@ static bool build(Slide s, double progress) {
     generation++;
     clearLayers();
     plane = nil;
-    Shot *out = s.out ? pictureFor(s.out) : NULL;
-    Shot *into = s.into ? pictureFor(s.into) : NULL;
+    Shot *out = s.out ? pictureFor(s.monitor, s.out) : NULL;
+    Shot *into = s.into ? pictureFor(s.monitor, s.into) : NULL;
     if (!out && !into) {
         orderWindow(false);
         return false;
     }
     slideMotion = s.motion;
+    CGRect display = validRect(s.fullFrame) ? s.fullFrame : displayHolding(s.frame);
 
     travel = CGPointMake(s.toward.x * s.frame.size.width, s.toward.y * s.frame.size.height);
     beginChanges();
@@ -710,25 +958,24 @@ static bool build(Slide s, double progress) {
     root.frame = (CGRect){ CGPointZero, s.frame.size };
     root.backgroundColor = NULL;
     if (s.backdrop) {
-        CGRect display = displayHolding(s.frame);
-        Shot *wall = wallpaperFor(display);
-        if (!wall) wall = takeWallpaper(display);
+        Shot *wall = wallpaperFor(s.monitor, display);
+        if (!wall) wall = takeWallpaper(s.monitor, display, s.wallpaperPath);
         if (wall) {
-            [root addSublayer:pictureLayer(wall, s.frame, CGPointZero)];
+            [root addSublayer:pictureLayer(wall, s.frame, display, CGPointZero)];
         } else {
             root.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         }
     }
-    Shot *still = s.still ? pictureFor(s.still) : NULL;
-    if (still) [root addSublayer:pictureLayer(still, s.frame, CGPointZero)];
+    Shot *still = s.still ? pictureFor(s.monitor, s.still) : NULL;
+    if (still) [root addSublayer:pictureLayer(still, s.frame, display, CGPointZero)];
     // Both pictures ride one plane, which moves the width (or height) of
     // the area: the leaving one off, the arriving one into place.
     plane = [CALayer layer];
     plane.frame = root.bounds;
     plane.anchorPoint = CGPointZero;
     plane.position = planeAt(progress);
-    if (out) [plane addSublayer:pictureLayer(out, s.frame, CGPointZero)];
-    if (into) [plane addSublayer:pictureLayer(into, s.frame, travel)];
+    if (out) [plane addSublayer:pictureLayer(out, s.frame, display, CGPointZero)];
+    if (into) [plane addSublayer:pictureLayer(into, s.frame, display, travel)];
     [root addSublayer:plane];
     commitChanges();
 
@@ -832,6 +1079,7 @@ static Tile shownTiles[MAX_TILES];
 static CALayer *boxes[MAX_TILES];
 static CALayer *rings[MAX_TILES]; // nil for a tile without one
 static bool live[MAX_TILES];
+static char retileMonitor[MONITOR_ID_MAX] = "";
 static CGRect retileFrame;
 static double popScale = 0.8, retileHold = 0.05;
 static double retileEnds = 0; // when it's taken down (CFAbsoluteTime)
@@ -1115,12 +1363,13 @@ static bool offFrame(CGRect r, CGRect frame) {
     return CGRectIsNull(i) || i.size.width < 8 || i.size.height < 8;
 }
 
-// Pictures of tiles that glided off the display, by window, for when they
-// come back (see above). Each holds the capture it was cut from.
-#define MAX_KEPT 32
+// Pictures of tiles that glided off the display, per monitor and window, for
+// when they come back (see above). Each holds the capture it was cut from.
+#define MAX_KEPT 64
 #define KEPT_MAX_AGE 600.0
 static struct {
     uint32_t wid;
+    char monitor[MONITOR_ID_MAX];
     CALayer *pic;
     double at;
 } kept[MAX_KEPT];
@@ -1129,17 +1378,25 @@ static void dropKept(int i) {
     [kept[i].pic release];
     kept[i].pic = nil;
     kept[i].wid = 0;
+    kept[i].monitor[0] = '\0';
 }
 
 static void dropAllKept(void) {
     for (int i = 0; i < MAX_KEPT; i++) dropKept(i);
 }
 
-// Keeps `pic` for window `w`, in place of one it had, else of the oldest.
-static void keepPicture(uint32_t w, CALayer *pic) {
+static void dropKeptForMonitor(const char *monitor) {
+    if (!monitor || !monitor[0]) return;
+    for (int i = 0; i < MAX_KEPT; i++) {
+        if (kept[i].pic && sameMonitor(kept[i].monitor, monitor)) dropKept(i);
+    }
+}
+
+// Keeps `pic` for window `w` on `monitor`, in place of one it had, else of the oldest.
+static void keepPicture(const char *monitor, uint32_t w, CALayer *pic) {
     int slot = -1, oldest = 0;
     for (int i = 0; i < MAX_KEPT && slot < 0; i++) {
-        if (kept[i].pic && kept[i].wid == w) slot = i;
+        if (kept[i].pic && kept[i].wid == w && sameMonitor(kept[i].monitor, monitor)) slot = i;
     }
     for (int i = 0; i < MAX_KEPT && slot < 0; i++) {
         if (!kept[i].pic) slot = i;
@@ -1149,14 +1406,15 @@ static void keepPicture(uint32_t w, CALayer *pic) {
     [pic retain];
     dropKept(slot);
     kept[slot].wid = w;
+    copyMonitor(kept[slot].monitor, monitor);
     kept[slot].pic = pic;
     kept[slot].at = CFAbsoluteTimeGetCurrent();
 }
 
-// Window `w`'s kept picture, retained, no longer kept; nil if none or stale.
-static CALayer *takeKept(uint32_t w) {
+// Window `w`'s kept picture on `monitor`, retained, no longer kept; nil if none or stale.
+static CALayer *takeKept(const char *monitor, uint32_t w) {
     for (int i = 0; i < MAX_KEPT; i++) {
-        if (!kept[i].pic || kept[i].wid != w) continue;
+        if (!kept[i].pic || kept[i].wid != w || !sameMonitor(kept[i].monitor, monitor)) continue;
         CALayer *pic = CFAbsoluteTimeGetCurrent() - kept[i].at < KEPT_MAX_AGE ? [kept[i].pic retain] : nil;
         dropKept(i);
         return pic;
@@ -1170,7 +1428,7 @@ static void keepGone(void) {
     if (retileGeneration != generation) return;
     for (int i = 0; i < shownCount; i++) {
         CALayer *pic = boxes[i].sublayers.lastObject;
-        if (pic && offFrame(shownTiles[i].to, retileFrame)) keepPicture(shownTiles[i].wid, pic);
+        if (pic && offFrame(shownTiles[i].to, retileFrame)) keepPicture(retileMonitor, shownTiles[i].wid, pic);
     }
 }
 
@@ -1431,11 +1689,12 @@ static CGRect drawnFrame(CALayer *layer) {
 // place, with the picture it has (no capture), so keys pressed in quick
 // succession merge into one motion. Only windows it hasn't got are
 // captured. False if there was nothing to show.
-static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion move, Motion fade, double hold,
+static bool retile(const char *monitor, CGRect frame, CGRect fullFrame, const char *wallpaperPath,
+                   double scale, Tile *tiles, int count, Motion move, Motion fade, double hold,
                    double pop, int refresh, const uint32_t *under, int underCount) {
     if (count <= 0 || count > MAX_TILES || (!wid && !makeWindow())) return false;
     bool carry = shown && retileGeneration == generation && shownCount > 0
-        && CGRectEqualToRect(frame, retileFrame);
+        && CGRectEqualToRect(frame, retileFrame) && sameMonitor(monitor, retileMonitor);
     int was[MAX_TILES];
     uint32_t wids[MAX_TILES];
     int captured = 0;
@@ -1457,6 +1716,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
         glideEnds = 0;
     }
     retileGeneration = generation;
+    copyMonitor(retileMonitor, monitor);
     retileFrame = frame;
     retileMove = move;
     retileFade = fade;
@@ -1470,6 +1730,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     CALayer *nextBoxes[MAX_TILES], *nextRings[MAX_TILES];
     bool used[MAX_TILES] = { false };
     bool nextLive[MAX_TILES] = { false };
+    CGRect display = validRect(fullFrame) ? fullFrame : displayHolding(frame);
     beginChanges();
     // Back from fading out, if it was handing over.
     fadingOut = false;
@@ -1478,16 +1739,15 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
     if (!carry) {
         root.frame = (CGRect){ CGPointZero, frame.size };
         root.backgroundColor = NULL;
-        CGRect display = displayHolding(frame);
-        Shot *wall = wallpaperFor(display);
-        if (!wall) wall = takeWallpaper(display);
+        Shot *wall = wallpaperFor(monitor, display);
+        if (!wall) wall = takeWallpaper(monitor, display, wallpaperPath);
         if (wall) {
-            [root addSublayer:pictureLayer(wall, frame, CGPointZero)];
+            [root addSublayer:pictureLayer(wall, frame, display, CGPointZero)];
         } else {
             root.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         }
         // Over a scratchpad, the workspace it covers, as it shows around it.
-        if (covered) [root addSublayer:pictureLayer(covered, frame, CGPointZero)];
+        if (covered) [root addSublayer:pictureLayer(covered, frame, display, CGPointZero)];
     }
     for (int i = 0; i < count; i++) {
         Tile *t = &tiles[i];
@@ -1537,7 +1797,7 @@ static bool retile(CGRect frame, double scale, Tile *tiles, int count, Motion mo
             box.cornerRadius = t->radius;
             ring = t->ring && t->width > 0 ? ringLayer(t) : nil;
             CGFloat w = ring ? t->width : 0;
-            CALayer *back = t->away && !t->appear ? takeKept(t->wid) : nil;
+            CALayer *back = t->away && !t->appear ? takeKept(monitor, t->wid) : nil;
             if (back) {
                 // Back in view: in with the picture it went with.
                 [box addSublayer:back];
@@ -1976,73 +2236,112 @@ static double numberField(lua_State *L, int index, const char *key, double fallb
     return v;
 }
 
-// capture(key, {wid, ...}): one picture of the windows, kept under `key`
-// (replacing the last). Waits for it (about 40ms): the caller is about to
-// move them. True if there was anything to take.
+static void readStringField(lua_State *L, int index, const char *key, char *dst, size_t size) {
+    dst[0] = '\0';
+    lua_getfield(L, index, key);
+    if (lua_type(L, -1) == LUA_TSTRING) {
+        const char *s = lua_tostring(L, -1);
+        if (s) {
+            strncpy(dst, s, size - 1);
+            dst[size - 1] = '\0';
+        }
+    }
+    lua_pop(L, 1);
+}
+
+// capture(key, {wid, ...} [, monitor [, fullFrame]]): one picture of the
+// windows on `monitor`, kept under `(monitor, key)` (replacing the last).
+// Waits for it (about 40ms): the caller is about to move them. True if there
+// was anything to take.
 static int l_capture(lua_State *L) {
     int key = (int)luaL_checkinteger(L, 1);
     luaL_checktype(L, 2, LUA_TTABLE);
+    char monBuf[MONITOR_ID_MAX];
+    copyMonitor(monBuf, luaL_optstring(L, 3, ""));
+    CGRect display = lua_type(L, 4) == LUA_TTABLE ? readRect(L, 4) : CGRectZero;
     uint32_t list[128];
     int count = luaWindowIds(L, 2, list, 128);
     uint32_t *wids = list; // blocks can't take arrays
+    const char *monPtr = monBuf;
     __block bool took = false;
     dispatch_sync(queue, ^{
-        Shot *p = pictureFor(key);
+        Shot *p = pictureFor(monPtr, key);
         if (p) dropPicture(p);
         if (count == 0) return;
         CGRect bounds;
         uint32_t winIds[MAX_SHOT_WINS];
         CGRect winRects[MAX_SHOT_WINS];
         int winCount = 0;
-        CGImageRef image = captureOnInfo(cid, wids, count, &bounds, true, &winCount, winIds, winRects, MAX_SHOT_WINS);
+        CGImageRef image = captureOnClipped(cid, wids, count, display, &bounds, true,
+            &winCount, winIds, winRects, MAX_SHOT_WINS);
         if (!image) return;
-        for (int i = 0; i < MAX_PICTURES; i++) {
-            if (!pictures[i].image) {
-                memset(&pictures[i], 0, sizeof(pictures[i]));
-                pictures[i].key = key;
-                pictures[i].image = image;
-                pictures[i].bounds = bounds;
-                pictures[i].taken = CFAbsoluteTimeGetCurrent();
-                pictures[i].winCount = winCount;
-                for (int k = 0; k < winCount; k++) {
-                    pictures[i].wids[k] = winIds[k];
-                    pictures[i].winRects[k] = winRects[k];
-                }
-                took = true;
-                return;
-            }
-        }
-        CGImageRelease(image);
+        CGRect anchor = validRect(display) ? display : CGRectZero;
+        storePictureOwned(monPtr, key, image, bounds, anchor, winIds, winRects, winCount);
+        took = true;
     });
     lua_pushboolean(L, took);
     return 1;
 }
 
-// forget(key): drops the picture kept under `key`; forget(): every picture,
-// wallpapers too (the displays changed).
+// forget(): every picture, wallpaper, thumb and scroll-away layer.
+// forget(key): drops the picture kept under `key` across all monitors.
+// forget(nil, monitor): drops every cached picture/wallpaper/thumb for `monitor`.
+// forget(key, monitor): drops the picture kept under `(monitor, key)`.
 static int l_forget(lua_State *L) {
-    bool all = lua_isnoneornil(L, 1);
-    int key = all ? 0 : (int)luaL_checkinteger(L, 1);
+    bool hasKey = !lua_isnoneornil(L, 1);
+    int key = hasKey ? (int)luaL_checkinteger(L, 1) : 0;
+    const char *monArg = luaL_optstring(L, 2, NULL);
+    bool hasMon = monArg && monArg[0] != '\0';
+    NSString *monCopy = hasMon ? [[NSString alloc] initWithUTF8String:monArg] : nil;
     dispatch_async(queue, ^{
+        const char *mon = monCopy ? [monCopy UTF8String] : NULL;
+        bool all = !hasKey && !hasMon;
         for (int i = 0; i < MAX_PICTURES; i++) {
-            if (pictures[i].image && (all || pictures[i].key == key)) dropPicture(&pictures[i]);
+            if (!pictures[i].image) continue;
+            bool matchKey = !hasKey || pictures[i].key == key;
+            bool matchMon = !hasMon || sameMonitor(pictures[i].monitor, mon);
+            if (all || (matchKey && matchMon)) dropPicture(&pictures[i]);
         }
         if (all) {
             for (int i = 0; i < wallpaperCount; i++) dropPicture(&wallpapers[i]);
             wallpaperCount = 0;
+            dropAllKept();
             slideThumbClear();
+        } else if (!hasKey && hasMon) {
+            for (int i = 0; i < wallpaperCount; i++) {
+                if (wallpapers[i].image && sameMonitor(wallpapers[i].monitor, mon)) {
+                    dropPicture(&wallpapers[i]);
+                }
+            }
+            dropKeptForMonitor(mon);
+            slideThumbForgetMonitor(mon);
         }
+        [monCopy release];
     });
     return 0;
 }
 
-// wallpaper({x, y, w, h}): takes the wallpaper of the display with those
-// full bounds ahead of its first slide, without waiting.
+// wallpaper({x, y, w, h} [, monitor [, wallpaperPath [, force]]]): takes the
+// wallpaper of the display ahead of its first slide, without waiting. With
+// `force`, recaptures even if already cached (without overwriting a valid
+// non-black wallpaper with a failed or black capture).
 static int l_wallpaper(lua_State *L) {
     CGRect display = readRect(L, 1);
     if (!validRect(display)) return 0;
+    const char *monArg = luaL_optstring(L, 2, "");
+    const char *pathArg = luaL_optstring(L, 3, "");
+    bool force = lua_toboolean(L, 4);
+    NSString *monCopy = [[NSString alloc] initWithUTF8String:monArg ? monArg : ""];
+    NSString *pathCopy = [[NSString alloc] initWithUTF8String:pathArg ? pathArg : ""];
     dispatch_async(queue, ^{
-        if (!wallpaperFor(display)) takeWallpaper(display);
+        const char *mon = [monCopy UTF8String];
+        const char *path = [pathCopy UTF8String];
+        Shot *wall = wallpaperFor(mon, display);
+        if (force || !wall || wall->fallback || wall->black) {
+            takeWallpaper(mon, display, path);
+        }
+        [monCopy release];
+        [pathCopy release];
     });
     return 0;
 }
@@ -2077,9 +2376,15 @@ static Motion readMotion(lua_State *L, int index, Motion fallback) {
 static Slide readSlide(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
     Slide s;
+    memset(&s, 0, sizeof(s));
+    readStringField(L, 1, "monitor", s.monitor, sizeof(s.monitor));
     lua_getfield(L, 1, "frame");
     s.frame = readRect(L, -1);
     lua_pop(L, 1);
+    lua_getfield(L, 1, "fullFrame");
+    s.fullFrame = readRect(L, -1);
+    lua_pop(L, 1);
+    readStringField(L, 1, "wallpaperPath", s.wallpaperPath, sizeof(s.wallpaperPath));
     double sc = numberField(L, 1, "scale", 1);
     s.scale = isfinite(sc) && sc > 0 ? sc : 1;
     s.out = (int)numberField(L, 1, "out", 0);
@@ -2172,8 +2477,15 @@ static int l_finish(lua_State *L) {
 // beneath can move.
 static int l_retile(lua_State *L) {
     luaL_checktype(L, 1, LUA_TTABLE);
+    char monBuf[MONITOR_ID_MAX];
+    char wallBuf[512];
+    readStringField(L, 1, "monitor", monBuf, sizeof(monBuf));
+    readStringField(L, 1, "wallpaperPath", wallBuf, sizeof(wallBuf));
     lua_getfield(L, 1, "frame");
     CGRect frame = readRect(L, -1);
+    lua_pop(L, 1);
+    lua_getfield(L, 1, "fullFrame");
+    CGRect fullFrame = readRect(L, -1);
     lua_pop(L, 1);
     double scale = numberField(L, 1, "scale", 1);
     if (!isfinite(scale) || scale <= 0) scale = 1;
@@ -2253,9 +2565,14 @@ static int l_retile(lua_State *L) {
     memcpy(under, underList, sizeof(uint32_t) * underCount);
     static int lastToken = 0;
     int token = ++lastToken;
+    NSString *monCopy = [[NSString alloc] initWithUTF8String:monBuf];
+    NSString *wallCopy = [[NSString alloc] initWithUTF8String:wallBuf];
     dispatch_async(queue, ^{
         mirrorBand = band;
-        bool up = retile(frame, scale, list, count, move, fade, hold, pop, refresh, under, underCount);
+        bool up = retile([monCopy UTF8String], frame, fullFrame, [wallCopy UTF8String],
+            scale, list, count, move, fade, hold, pop, refresh, under, underCount);
+        [monCopy release];
+        [wallCopy release];
         free(list);
         postReady(token, up);
     });
@@ -2472,10 +2789,10 @@ bool slideWindowBounds(uint32_t target, CGRect *bounds) {
 CGImageRef slideCaptureWindows(uint32_t *wids, int count, CGRect *bounds, bool stacked) {
     return captureOn(cid, wids, count, bounds, stacked);
 }
-Shot *slideWallpaper(CGRect display) {
+Shot *slideWallpaper(const char *monitor, CGRect display) {
     CGRect full = displayHolding(display);
-    Shot *wall = wallpaperFor(full);
-    if (!wall) wall = takeWallpaper(full);
+    Shot *wall = wallpaperFor(monitor, full);
+    if (!wall) wall = takeWallpaper(monitor, full, NULL);
     return wall;
 }
 CGFloat slideCornerRadius(uint32_t target, CGFloat fallback) {

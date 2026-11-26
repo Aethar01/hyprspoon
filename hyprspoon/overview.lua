@@ -857,6 +857,7 @@ local function buildNativeOpenSpec(m, animate)
             end
         end
         displays[i] = {
+            uuid = d.uuid or "",
             frame = d.frame,
             scale = d.scale,
             wallpaperPath = d.wallpaperPath or "",

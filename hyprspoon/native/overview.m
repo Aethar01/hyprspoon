@@ -70,6 +70,7 @@ typedef struct {
 } OvShelfSpec;
 
 typedef struct {
+    char monitor[MONITOR_ID_MAX];
     CGRect frame; // display fullFrame
     double scale;
     char wallpaperPath[512];
@@ -150,6 +151,7 @@ typedef struct {
     CGRect placed;
     double placedScale;
 
+    char monitor[MONITOR_ID_MAX];
     CGRect frame;
     double scale;
     double rowStep;
@@ -436,7 +438,7 @@ static void captureVisibleWindows(const OvOpenSpec *spec) {
                     if (slideWindowBounds(tileWids[k], &b)) {
                         CGRect inter = CGRectIntersection(b, area);
                         if (!CGRectIsNull(inter) && inter.size.width >= 4 && inter.size.height >= 4) {
-                            slideThumbStore(tileWids[k], img, area, inter);
+                            slideThumbStore(ds->monitor, tileWids[k], img, area, inter);
                             if (capCount < MAX_SHOT_WINS) {
                                 capWids[capCount] = tileWids[k];
                                 capRects[capCount] = inter;
@@ -449,7 +451,7 @@ static void captureVisibleWindows(const OvOpenSpec *spec) {
                 if (floatCount == 0 && capCount > 0) {
                     for (int wi = 0; wi < ds->wsCount; wi++) {
                         if (ds->ws[wi].showing && ds->ws[wi].n != 0) {
-                            slidePictureStore(ds->ws[wi].n, img, area, capWids, capRects, capCount);
+                            slidePictureStore(ds->monitor, ds->ws[wi].n, img, area, ds->frame, capWids, capRects, capCount);
                             break;
                         }
                     }
@@ -462,11 +464,11 @@ static void captureVisibleWindows(const OvOpenSpec *spec) {
             CGRect area = CGRectNull;
             CGImageRef img = slideCaptureWindows(one, 1, &area, false);
             if (img) {
-                slideThumbStore(floatWids[k], img, area, area);
+                slideThumbStore(ds->monitor, floatWids[k], img, area, area);
                 if (tileCount == 0 && floatCount == 1) {
                     for (int wi = 0; wi < ds->wsCount; wi++) {
                         if (ds->ws[wi].showing && ds->ws[wi].n != 0) {
-                            slidePictureStore(ds->ws[wi].n, img, area, one, &area, 1);
+                            slidePictureStore(ds->monitor, ds->ws[wi].n, img, area, ds->frame, one, &area, 1);
                             break;
                         }
                     }
@@ -481,7 +483,7 @@ static void captureVisibleWindows(const OvOpenSpec *spec) {
             CGRect area = CGRectNull;
             CGImageRef img = slideCaptureWindows(one, 1, &area, false);
             if (img) {
-                slideThumbStore(sp->previewWid, img, area, area);
+                slideThumbStore(ds->monitor, sp->previewWid, img, area, area);
                 CGImageRelease(img);
             }
         }
@@ -490,7 +492,7 @@ static void captureVisibleWindows(const OvOpenSpec *spec) {
 
 // Builds a window content layer: real thumbnail from the cache if present,
 // otherwise a dark rounded card with app name and window title.
-static CALayer *makeWindowContentLayer(uint32_t targetWid, CGRect sizeRect, CGFloat radius,
+static CALayer *makeWindowContentLayer(const char *monitor, uint32_t targetWid, CGRect sizeRect, CGFloat radius,
                                        const char *app, const char *title, double scale, double zoom,
                                        bool useCaptures) {
     CALayer *content = [CALayer layer];
@@ -499,7 +501,7 @@ static CALayer *makeWindowContentLayer(uint32_t targetWid, CGRect sizeRect, CGFl
     content.cornerRadius = radius;
     content.cornerCurve = kCACornerCurveContinuous;
 
-    Thumb *thumb = useCaptures ? slideThumbLookup(targetWid) : NULL;
+    Thumb *thumb = useCaptures ? slideThumbLookup(monitor, targetWid) : NULL;
     if (thumb && thumb->image && thumb->area.size.width > 0 && thumb->area.size.height > 0) {
         content.contents = (id)thumb->image;
         CGFloat rx = (thumb->src.origin.x - thumb->area.origin.x) / thumb->area.size.width;
@@ -637,6 +639,8 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
     double rowStep = fh + spec->gap / zoom;
     double wsRadius = spec->radius / zoom;
 
+    strncpy(d->monitor, ds->monitor, sizeof(d->monitor) - 1);
+    d->monitor[sizeof(d->monitor) - 1] = '\0';
     d->frame = ds->frame;
     d->scale = ds->scale;
     d->rowStep = rowStep;
@@ -650,10 +654,18 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
     d->shelfCount = ds->shelfCount;
     d->wsCount = ds->wsCount;
 
-    Shot *wall = (spec->captures && slideCanCapture()) ? slideWallpaper(ds->frame) : NULL;
+    Shot *wall = (spec->captures && slideCanCapture()) ? slideWallpaper(ds->monitor, ds->frame) : NULL;
     CGImageRef wallImg = wall ? wall->image : loadWallpaperFile(idx, ds->wallpaperPath);
     double wallTaken = wall ? wall->taken : 1.0;
-    bool wallFromShot = (wall != NULL && wall->image != NULL);
+    bool wallFromShot = (wall != NULL && wall->image != NULL && !wall->fallback);
+    CGRect wallRect = CGRectMake(0, 0, fw, fh);
+    if (wallFromShot) {
+        wallRect = wall->relative
+            ? wall->bounds
+            : CGRectMake(wall->bounds.origin.x - ds->frame.origin.x,
+                         wall->bounds.origin.y - ds->frame.origin.y,
+                         wall->bounds.size.width, wall->bounds.size.height);
+    }
 
     slideBeginChanges();
     d->root.frame = CGRectMake(0, 0, fw, fh);
@@ -672,11 +684,7 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
             ? blurredWallpaperFor(idx, wallImg, wallTaken, spec->backdropBlur)
             : NULL;
         CALayer *wpBg = [CALayer layer];
-        wpBg.frame = wallFromShot
-            ? CGRectMake(wall->bounds.origin.x - ds->frame.origin.x,
-                         wall->bounds.origin.y - ds->frame.origin.y,
-                         wall->bounds.size.width, wall->bounds.size.height)
-            : CGRectMake(0, 0, fw, fh);
+        wpBg.frame = wallRect;
         wpBg.contents = (id)(bgImg ? bgImg : wallImg);
         wpBg.contentsGravity = wallFromShot ? kCAGravityResize : kCAGravityResizeAspectFill;
         [backdrop addSublayer:wpBg];
@@ -757,11 +765,7 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
         wallClip.backgroundColor = surfaceFill;
         if (wallImg) {
             CALayer *wp = [CALayer layer];
-            wp.frame = wallFromShot
-                ? CGRectMake(wall->bounds.origin.x - ds->frame.origin.x,
-                             wall->bounds.origin.y - ds->frame.origin.y,
-                             wall->bounds.size.width, wall->bounds.size.height)
-                : CGRectMake(0, 0, fw, fh);
+            wp.frame = wallRect;
             wp.contents = (id)wallImg;
             wp.contentsGravity = wallFromShot ? kCAGravityResize : kCAGravityResizeAspectFill;
             [wallClip addSublayer:wp];
@@ -818,7 +822,7 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
                 container.shadowRadius = 14.0 / zoom;
                 container.shadowOffset = CGSizeMake(0, 6.0 / zoom);
             }
-            CALayer *content = makeWindowContentLayer(w->wid, local, winRad, w->app, w->title,
+            CALayer *content = makeWindowContentLayer(ds->monitor, w->wid, local, winRad, w->app, w->title,
                                                       ds->scale, zoom, spec->captures);
             [container addSublayer:content];
 
@@ -924,7 +928,7 @@ static void buildDisplay(int idx, const OvOpenSpec *spec) {
             card.masksToBounds = YES;
             card.backgroundColor = sp->winCount > 0 ? cardFilledBg : cardEmptyBg;
 
-            Thumb *thumb = (spec->captures && sp->previewWid) ? slideThumbLookup(sp->previewWid) : NULL;
+            Thumb *thumb = (spec->captures && sp->previewWid) ? slideThumbLookup(ds->monitor, sp->previewWid) : NULL;
             if (thumb && thumb->image && thumb->area.size.width > 0 && thumb->area.size.height > 0) {
                 CALayer *thumbL = [CALayer layer];
                 thumbL.frame = CGRectMake(0, 0, cw, ch);
@@ -1180,6 +1184,7 @@ int l_overviewOpen(lua_State *L) {
             if (!slideValidRect(ds->frame)) { lua_pop(L, 1); continue; }
             double sc = slideNumberField(L, -1, "scale", 1.0);
             ds->scale = (isfinite(sc) && sc > 0) ? sc : 1.0;
+            readStringField(L, -1, "uuid", ds->monitor, sizeof(ds->monitor));
             readStringField(L, -1, "wallpaperPath", ds->wallpaperPath, sizeof(ds->wallpaperPath));
             ds->scrollY = slideNumberField(L, -1, "scrollY", 1.0) - 1.0; // Lua 1-based -> C 0-based
             ds->activeWs = (int)slideNumberField(L, -1, "activeWs", 1.0) - 1;
@@ -1479,7 +1484,7 @@ int l_overviewDrag(lua_State *L) {
                         if (rebuild) {
                             removeSublayersRecursive(d->dragLayer);
                             CGFloat r = slideCornerRadius(targetWid, 10.0) * ovZoom;
-                            CALayer *card = makeWindowContentLayer(targetWid, frame, r,
+                            CALayer *card = makeWindowContentLayer(d->monitor, targetWid, frame, r,
                                 [appNs UTF8String], [titleNs UTF8String], d->scale, 1.0, useCaptures);
                             CGColorRef activeCol = makeColor(ovActiveColor);
                             card.borderColor = activeCol;
